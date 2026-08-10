@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(node:*)",
+      "Bash(dir:*)",
+      "WebSearch",
+      "mcp__21st__search"
+    ]
+  }
+}
