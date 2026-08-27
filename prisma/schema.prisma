@@ -23,6 +23,10 @@ model User {
   passwordEnc   String?
   passwordSetAt DateTime?
   passwordSetBy String?
+  // Set when an admin picks someone's password for them (a new account, or a
+  // reset). Middleware sends the person to /settings/password and lets them go
+  // nowhere else until they have replaced it with one only they know.
+  mustChangePassword Boolean @default(false)
   avatar       String?
   phone        String?
   isActive     Boolean   @default(true)

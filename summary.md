@@ -89,6 +89,7 @@ src/
     api/               only three: file upload (→ blob storage), health, NextAuth
   lib/
     actions/           ← ALL reads and writes. One file per area
+                         account.ts = your OWN account (no permission key)
     rbac/              permissions, and the guards
     validations/       Zod schemas, shared by the form and the server
     *.ts               the shared rules — see "one rule, one place" in README

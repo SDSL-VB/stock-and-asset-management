@@ -38,6 +38,7 @@ export const authConfig = {
         token.locationId = user.locationId;
         token.inCentralStock = user.inCentralStock;
         token.hierarchyLevel = user.hierarchyLevel;
+        token.mustChangePassword = user.mustChangePassword;
       }
       return token;
     },
@@ -53,6 +54,10 @@ export const authConfig = {
         session.user.locationId = (token.locationId as string | null) ?? null;
         session.user.inCentralStock = (token.inCentralStock as boolean) ?? false;
         session.user.hierarchyLevel = (token.hierarchyLevel as number) ?? 99;
+        // middleware.ts reads this off req.auth.user to decide whether to send
+        // the person to /settings/password. It runs on the Edge and cannot read
+        // the database, so the flag has to arrive inside the token.
+        session.user.mustChangePassword = token.mustChangePassword === true;
       }
       return session;
     },

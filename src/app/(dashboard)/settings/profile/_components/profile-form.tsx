@@ -4,7 +4,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { UserCircle, Mail, Shield } from "lucide-react";
+import { UserCircle, Mail, Shield, KeyRound } from "lucide-react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
 interface Props {
   user: {
@@ -70,9 +72,23 @@ export function ProfileForm({ user }: Props) {
               {user.role}
             </p>
           </div>
-          <p className="text-xs text-muted-foreground mt-4">
-            Contact your administrator to update your profile details.
-          </p>
+          {/* Your password is the one thing here you can change yourself, so the
+              note below no longer claims otherwise. */}
+          <div className="mt-4 flex items-center justify-between gap-4 border-t pt-4">
+            <p className="text-xs text-muted-foreground">
+              Contact your administrator to change your name, email or role.
+            </p>
+            <Button
+              render={<Link href="/settings/password" />}
+              nativeButton={false}
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+            >
+              <KeyRound />
+              Change password
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

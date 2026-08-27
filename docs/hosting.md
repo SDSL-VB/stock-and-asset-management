@@ -104,7 +104,7 @@ what puts `BLOB_READ_WRITE_TOKEN` into the environment; you never paste it.
 
 | Variable | Value |
 | --- | --- |
-| `DATABASE_URL` | Neon's **pooled** string with `?pgbouncer=true&connection_limit=1` appended |
+| `DATABASE_URL` | Neon's **pooled** string with `?pgbouncer=true&connection_limit=10` appended. **Not `connection_limit=1`**, the usual serverless advice: pages here fan out heavily inside one request (the superadmin dashboard fires 13 fetchers at once), and a single connection makes them queue until Prisma gives up with `P2024`. Measured against Neon: 60 concurrent queries took 1.7s at 10, and failed outright at 1 |
 | `NEXTAUTH_SECRET` | a fresh one — `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
 | `NEXTAUTH_URL` | **do not set it.** next-auth rewrites every request's origin to this value, so a `localhost` one copied from development sends anyone who signs in to their own machine |
 | `AUTH_TRUST_HOST` | optional here — `@auth/core` turns `trustHost` on by itself when it sees Vercel's own `VERCEL` variable |
@@ -113,6 +113,20 @@ what puts `BLOB_READ_WRITE_TOKEN` into the environment; you never paste it.
 
 Redeploy after adding them — a Vercel build bakes the environment in, so
 variables added afterwards do not reach a deployment that already exists.
+
+### Put the functions next to the database
+
+Vercel Hobby runs functions in `iad1` (Washington DC) unless told otherwise. If
+the Neon project is in `ap-southeast-1`, every query crosses an ocean — measured
+at **214 ms per round trip**, which no amount of pool tuning will rescue on a
+page that makes dozens. `vercel.json` pins them together:
+
+```json
+{ "regions": ["sin1"] }
+```
+
+One region is all Hobby allows, which is all this needs. Match the letter codes
+to wherever the database actually is.
 
 ### What you give up on the free tier
 
@@ -130,8 +144,11 @@ variables added afterwards do not reach a deployment that already exists.
 These are not optional, and they matter more than the choice of host.
 
 1. **Rotate every password.** `Welcome@123!` is in `prisma/setup-roles-and-people.ts`,
-   which is in the repository. Change them from each person's profile after the
-   first sign-in, or set `newPassword` per person before seeding.
+   which is in the repository. You no longer have to chase this by hand: the
+   seed marks every account `mustChangePassword`, so each person is stopped at
+   `/settings/password` on first sign-in and cannot go anywhere else until they
+   have replaced it. Set `newPassword` per person before seeding if you want
+   their starting password to differ from the default.
 2. **Generate a fresh `NEXTAUTH_SECRET`** for this environment. Sharing the
    development one means a development session cookie works in production.
 3. **Leave `PASSWORD_ENCRYPTION_KEY` unset.** With it set, the app keeps a

@@ -19,9 +19,34 @@ export async function getCurrentUser() {
   return session?.user ?? null;
 }
 
-export async function requireAuth() {
+/**
+ * Signed in, and nothing more. Only the change-password page should use this.
+ *
+ * `requireAuth` below sends anyone with a forced password change to that page,
+ * so the page itself cannot use it without redirecting to itself forever.
+ */
+export async function requireSignedIn() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  return user;
+}
+
+export async function requireAuth() {
+  const user = await requireSignedIn();
+
+  // Somebody whose password was chosen for them by an admin goes nowhere until
+  // they have replaced it.
+  //
+  // middleware.ts checks this too, but cannot be relied on alone: it only sees
+  // the session cookie, and a cookie is written at sign-in. A page is a React
+  // Server Component and cannot write cookies, so when the jwt callback in
+  // src/auth.ts re-reads the database (every 30 seconds) the fresher token
+  // never reaches the browser — meaning an ALREADY signed-in person keeps a
+  // cookie that says nothing about this flag. That callback's return value does
+  // reach `auth()` here, though, which is why this check is both correct and
+  // free: no extra query, just the value middleware could not see.
+  if (user.mustChangePassword) redirect("/settings/password");
+
   return user;
 }
 

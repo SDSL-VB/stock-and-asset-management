@@ -5,9 +5,9 @@ import { loginAction } from "@/lib/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertCircle, Loader2, LogIn } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, LogIn } from "lucide-react";
 
-export function LoginForm() {
+export function LoginForm({ passwordChanged = false }: { passwordChanged?: boolean }) {
   const [state, formAction, isPending] = useActionState(loginAction, undefined);
 
   return (
@@ -32,6 +32,16 @@ export function LoginForm() {
       </div>
 
       <form action={formAction} className="space-y-4">
+        {passwordChanged && !state?.error && (
+          <div
+            role="status"
+            className="animate-in fade-in zoom-in-95 flex items-center gap-2 rounded-lg bg-brand-green/10 p-3 text-body text-brand-green duration-200"
+          >
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            <span>Password changed. Sign in with your new one.</span>
+          </div>
+        )}
+
         {state?.error && (
           <div
             role="alert"

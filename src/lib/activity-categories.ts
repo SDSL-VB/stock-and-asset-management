@@ -76,7 +76,13 @@ export const ACTIVITY_CATEGORY_KEYS = Object.keys(ACTIVITY_CATEGORIES) as Activi
  * against a User, and grouping it with "renamed a department" would put the
  * most sensitive line in the log behind the least sensitive permission.
  */
-export const SECURITY_ACTIONS = ["PASSWORD_VIEWED", "PASSWORD_RESET"];
+export const SECURITY_ACTIONS = [
+  "PASSWORD_VIEWED",
+  "PASSWORD_RESET",
+  // Somebody changing their own password. Recorded against a User but it
+  // belongs here, the same as the two above.
+  "PASSWORD_CHANGED",
+];
 
 /** The categories a set of permissions may read. */
 export function readableCategories(held: string[]): ActivityCategory[] {

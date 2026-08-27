@@ -367,9 +367,13 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
           roleId: role.id,
           departmentId: department?.id ?? null,
           isActive: true,
+          // The password below is written down in this file, so it is a
+          // starting password only: middleware.ts stops each person at
+          // /settings/password until they have replaced it.
+          mustChangePassword: true,
         },
       });
-      log(`created ${person.name} <${person.email}> — password ${person.newPassword ?? DEFAULT_PASSWORD}`);
+      log(`created ${person.name} <${person.email}> — starting password ${person.newPassword ?? DEFAULT_PASSWORD} (must be changed at first sign-in)`);
     } else {
       await prisma.user.update({
         where: { id: user.id },

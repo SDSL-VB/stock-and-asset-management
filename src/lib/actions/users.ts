@@ -131,6 +131,9 @@ export async function createUser(data: unknown) {
       passwordEnc: encryptPassword(password),
       passwordSetAt: new Date(),
       passwordSetBy: currentUser.name,
+      // Somebody else picked this password, so it is a temporary one until the
+      // new person replaces it — see middleware.ts.
+      mustChangePassword: true,
       departmentId: departmentId || undefined,
     },
     include: { role: { select: { name: true } } },
@@ -525,6 +528,10 @@ export async function setUserPassword(id: string, data: unknown) {
       passwordEnc: encryptPassword(parsed.data.password),
       passwordSetAt: new Date(),
       passwordSetBy: currentUser.name,
+      // Resetting somebody else's account leaves them with a password you know,
+      // so they are made to replace it. Changing your own from this card is not
+      // that, so it does not set the flag on yourself.
+      mustChangePassword: currentUser.id !== id,
     },
   });
 

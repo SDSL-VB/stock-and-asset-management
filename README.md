@@ -316,6 +316,35 @@ name as a snapshot, so searching a departed colleague still finds what they did.
 
 ---
 
+## Passwords
+
+**Nobody keeps a password somebody else chose.** When an admin creates an
+account or resets a password, `mustChangePassword` is set on that person. The
+next time they use the system they are sent to `/settings/password` and can
+reach nothing else until they have replaced it — so the only person who knows
+their password is them. Changing it signs them out, and they sign back in with
+the new one.
+
+Changing your own password is the one thing in the system behind **no permission
+key at all** (`src/lib/actions/account.ts`). That is deliberate: an admin must
+not be able to withhold someone's ability to stop using a password the admin
+knows. Everything else about an account — name, email, role — stays admin-only.
+
+The gate is enforced in **two** places, and both are needed:
+
+* `middleware.ts` catches it before a page is even built, but can only read the
+  session cookie — and a cookie is written at sign-in. So it does not notice a
+  reset that happens while somebody is already signed in.
+* `requireAuth()` in `src/lib/rbac/check.ts` catches exactly that case. The jwt
+  callback in `src/auth.ts` re-reads the database every 30 seconds, and although
+  a page cannot write the refreshed cookie, it can still *read* the fresher
+  value — so this check costs no extra query.
+
+The page itself uses `requireSignedIn()` rather than `requireAuth()`, or it
+would redirect to itself.
+
+---
+
 ## Running it
 
 ```bash

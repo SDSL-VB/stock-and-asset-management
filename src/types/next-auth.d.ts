@@ -21,6 +21,8 @@ declare module "next-auth" {
     inCentralStock?: boolean;
     /** The strongest rank held. Lower is stronger. */
     hierarchyLevel: number;
+    /** True until the person replaces a password an admin chose for them. */
+    mustChangePassword?: boolean;
   }
 
   interface Session {
@@ -33,6 +35,7 @@ declare module "next-auth" {
       locationId?: string | null;
       inCentralStock?: boolean;
       hierarchyLevel: number;
+      mustChangePassword?: boolean;
     } & DefaultSession["user"];
   }
 }
@@ -47,5 +50,6 @@ declare module "next-auth/jwt" {
     locationId?: string | null;
     inCentralStock?: boolean;
     hierarchyLevel: number;
+    mustChangePassword?: boolean;
   }
 }

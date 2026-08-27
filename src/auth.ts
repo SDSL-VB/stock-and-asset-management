@@ -49,6 +49,7 @@ type AuthUser = {
   }[];
   department: { locationId: string | null; isCentralStock: boolean } | null;
   extraPermissions: { expiresAt: Date | null; permission: { key: string } }[];
+  mustChangePassword: boolean;
 };
 
 /**
@@ -108,6 +109,7 @@ function toSessionUser(user: AuthUser) {
     locationId: user.department?.locationId ?? null,
     inCentralStock: user.department?.isCentralStock ?? false,
     hierarchyLevel: strongestHierarchy(user),
+    mustChangePassword: user.mustChangePassword,
   };
 }
 
@@ -170,6 +172,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.locationId = user.locationId;
         token.inCentralStock = user.inCentralStock;
         token.hierarchyLevel = user.hierarchyLevel;
+        token.mustChangePassword = user.mustChangePassword;
         token.refreshedAt = Date.now();
         return token;
       }
@@ -195,6 +198,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.locationId = shaped.locationId;
         token.inCentralStock = shaped.inCentralStock;
         token.hierarchyLevel = shaped.hierarchyLevel;
+        token.mustChangePassword = shaped.mustChangePassword;
         token.refreshedAt = Date.now();
       }
       return token;
