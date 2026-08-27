@@ -1,0 +1,1110 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Phase 1: Core Models
+// ============================================
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  password     String
+  // Reversible (AES-256-GCM) mirror of the password so holders of
+  // users.password.view can read it back. Written only when a password is set
+  // through the app; `password` (bcrypt) stays the source of truth for login.
+  // Null for accounts whose password predates this feature.
+  passwordEnc   String?
+  passwordSetAt DateTime?
+  passwordSetBy String?
+  avatar       String?
+  phone        String?
+  isActive     Boolean   @default(true)
+  // A single system account that inherits the records of deleted people. It is
+  // hidden from every list and cannot log in.
+  isSystem     Boolean   @default(false)
+  roleId       String
+  departmentId String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  role       Role        @relation(fields: [roleId], references: [id])
+  department Department? @relation(fields: [departmentId], references: [id])
+
+  // Roles held in addition to the primary one above. A person's permissions are
+  // the union of every role they hold, so a stock entry operator who also runs
+  // dispatch is one account with two roles rather than a pile of individual
+  // grants. The primary role stays on roleId because that is what the badge,
+  // the directory filter and the hierarchy rules read.
+  additionalRoles UserRole[] @relation("UserAdditionalRoles")
+  rolesAssigned   UserRole[] @relation("UserRoleAssigner")
+
+  activityLogs         ActivityLog[]
+  stockEntriesCreated  StockEntry[]          @relation("StockEntryCreator")
+  stockEntriesApproved StockEntry[]          @relation("StockEntryApprover")
+  attachmentsUploaded  StockEntryAttachment[] @relation("AttachmentUploader")
+  approvalsGiven       StockApproval[]
+  stockIssuesCreated   StockIssue[]          @relation("StockIssueCreator")
+  productRequestsMade      ProductRequest[]       @relation("ProductRequester")
+  productRequestsReviewed  ProductRequest[]       @relation("ProductRequestReviewer")
+  transferRequestsMade     StockTransferRequest[] @relation("TransferRequester")
+  transferRequestsReviewed StockTransferRequest[] @relation("TransferReviewer")
+  billsOfMaterialsAuthored BillOfMaterials[]      @relation("BomAuthor")
+  billsOfMaterialsApproved BillOfMaterials[]      @relation("BomApprover")
+  buildsMade               Build[]                @relation("BuildCreator")
+  // Permissions granted to this person on top of their role, and the ones they
+  // handed out to other people
+  recordsDeleted           DeletedRecord[]        @relation("RecordDeleter")
+  extraPermissions         UserPermission[]       @relation("UserExtraPermissions")
+  permissionsGranted       UserPermission[]       @relation("PermissionGranter")
+  dispatchesCreated        Dispatch[]             @relation("DispatchCreator")
+  dispatchesAccepted       Dispatch[]             @relation("DispatchAcceptor")
+  dispatchesReceived       Dispatch[]             @relation("DispatchReceiver")
+  siteRequestsMade         SiteRequest[]          @relation("SiteRequester")
+  siteRequestsReviewed     SiteRequest[]          @relation("SiteRequestReviewer")
+  purchaseIntentsRaised    PurchaseIntent[]       @relation("IntentRequester")
+  purchaseIntentsReviewed  PurchaseIntent[]       @relation("IntentReviewer")
+  purchaseOrdersRaised     PurchaseOrder[]        @relation("PoCreator")
+  purchaseOrdersClosed     PurchaseOrder[]        @relation("PoCloser")
+
+  @@map("users")
+}
+
+model Role {
+  id             String   @id @default(cuid())
+  name           String   @unique
+  description    String?
+  isSystem       Boolean  @default(false)
+  hierarchyLevel Int      @default(99)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  users         User[]
+  heldAsAdditional UserRole[]
+  permissions   RolePermission[]
+  approvalSteps ApprovalFlowStep[]
+  bomFlowConfigs BomFlowConfig[] @relation("BomApproverRole")
+  procurementFlowConfigs ProcurementFlowConfig[] @relation("IntentApproverRole")
+
+  @@map("roles")
+}
+
+// A role a person holds on top of their primary one.
+//
+// Jobs are not job titles: Kiruba runs a department AND buys AND approves stock,
+// and Uday books stock in AND dispatches it. Rather than inventing a role per
+// combination, small job-shaped roles stack on top of a primary role here.
+// Permissions union across all of them; the hierarchy level is the strongest
+// (lowest) one held.
+model UserRole {
+  id         String   @id @default(cuid())
+  userId     String
+  roleId     String
+  // Who added it and why, for the same reason a per-person grant records it:
+  // "why can this person do that?" should always have an answer.
+  reason     String?
+  grantedById String?
+  createdAt  DateTime @default(now())
+
+  user      User  @relation("UserAdditionalRoles", fields: [userId], references: [id], onDelete: Cascade)
+  role      Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("UserRoleAssigner", fields: [grantedById], references: [id])
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@map("user_roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  description String?
+  module      String
+  createdAt   DateTime @default(now())
+
+  roles RolePermission[]
+  users UserPermission[]
+
+  @@map("permissions")
+}
+
+// A permission held by one person on top of whatever their role carries.
+// Grants only — this can never take a capability away, so "why can't she do
+// this?" is always answered by looking at her role.
+model UserPermission {
+  id           String    @id @default(cuid())
+  userId       String
+  permissionId String
+  // Why this person needs it. Required, and shown next to the grant forever.
+  reason       String
+  // Null means it never expires. Checked when permissions are read, so an
+  // expired grant simply stops applying and nothing has to run on a schedule.
+  expiresAt    DateTime?
+  grantedById  String
+  createdAt    DateTime  @default(now())
+
+  user       User       @relation("UserExtraPermissions", fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  grantedBy  User       @relation("PermissionGranter", fields: [grantedById], references: [id])
+
+  @@unique([userId, permissionId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// A physical site (Hyderabad, Bengaluru, …). Departments belong to one, and a
+// user's location is inherited from their department — so Super Admin and
+// Admin, who have no department, are never narrowed by location.
+model Location {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  departments       Department[]
+  stockEntries      StockEntry[]
+  dispatchesOut     Dispatch[]   @relation("DispatchOrigin")
+  dispatchesIn      Dispatch[]   @relation("DispatchDestination")
+  builds            Build[]
+  siteRequestsAsked SiteRequest[] @relation("SiteRequestFrom")
+  siteRequestsMade  SiteRequest[] @relation("SiteRequestTo")
+  purchaseIntents   PurchaseIntent[]
+  purchaseOrders    PurchaseOrder[]
+
+  @@map("locations")
+}
+
+model Department {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  locationId  String?
+  // The central stock department of its location. Stock entry operators and
+  // central stock managers belong here; it is how they acquire a location.
+  isCentralStock Boolean @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  location         Location? @relation(fields: [locationId], references: [id])
+  users            User[]
+  stockEntries     StockEntry[]
+  stockIssues      StockIssue[]
+  transferRequests StockTransferRequest[]
+  approvalFlow     ApprovalFlowConfig?
+  purchaseIntents  PurchaseIntent[]
+  bomsAuthored     BillOfMaterials[] @relation("BomAuthorDepartment")
+
+  @@index([locationId])
+  @@map("departments")
+}
+
+// A customer we ship to. Stock is never "client stock" in its own right: goods
+// book into a location and leave again as a dispatch addressed to a client.
+model Client {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  gstNumber String?
+  address   String?
+  city      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stockEntries StockEntry[]
+  dispatches   Dispatch[]
+
+  @@index([city])
+  @@map("clients")
+}
+
+// A supplier we buy from. Chosen on the stock entry form from a list an admin
+// maintains, so invoices always carry a consistent GST number and address.
+model Vendor {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  gstNumber String?
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stockEntries    StockEntry[]
+  purchaseIntents PurchaseIntent[]
+  purchaseOrders  PurchaseOrder[]
+
+  @@map("vendors")
+}
+
+// The recycle bin.
+//
+// Deleting stays real — the row genuinely leaves its table — but a full copy is
+// kept here first, so undo is possible without every query in the app having to
+// start excluding soft-deleted rows. That was the deciding argument: soft delete
+// asks a hundred queries to behave, this asks none of them.
+//
+// `snapshot` is the row itself. `relinks` records what was unlinked or
+// re-pointed on the way out (a vendor's stock entries, a deleted person's
+// history), so restoring puts those back rather than guessing.
+model DeletedRecord {
+  id          String   @id @default(cuid())
+  // Prisma model name, e.g. "Vendor" — what to restore into
+  entity      String
+  // The id the row had, reused on restore so nothing else has to be rewritten
+  entityId    String
+  // What to show in the bin, e.g. "1001-0043 Monitor"
+  label       String
+  snapshot    Json
+  relinks     Json?
+  deletedById String
+  deletedAt   DateTime @default(now())
+  // When it ages out. Checked on read, so nothing runs on a schedule.
+  expiresAt   DateTime
+
+  deletedBy User @relation("RecordDeleter", fields: [deletedById], references: [id])
+
+  @@index([entity])
+  @@index([expiresAt])
+  @@index([deletedAt])
+  @@map("deleted_records")
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  userId    String
+  // The actor's name at the time. Snapshotted so that deleting a person leaves
+  // their history searchable by name instead of erasing it.
+  actorName String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entity])
+  @@index([createdAt])
+  @@index([actorName])
+  @@map("activity_logs")
+}
+
+// Assets are not a separate registry. Everything arrives as plain stock, and
+// the movement into a department is what makes it an asset — see StockIssue's
+// `isAsset`. A separate Asset table was written early on and never used by any
+// page or action; it has been removed along with its enums.
+
+enum TransferStatus {
+  PENDING
+  APPROVED
+  IN_TRANSIT
+  COMPLETED
+  REJECTED
+  CANCELLED
+}
+
+// ============================================
+// Phase 3: Stock Entry System
+// ============================================
+
+model ProductCategory {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  // Fixed 4-digit prefix every product code in this category starts with
+  // (Electronics 1001 → 1001-0001). Auto-assigned on creation; editable only
+  // with categories.prefix.edit. Nullable so pre-existing categories can be
+  // backfilled without a destructive migration.
+  codePrefix   String? @unique
+  // Next sequence number to hand out within this category
+  nextSequence Int     @default(1)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products        Product[]
+  productRequests ProductRequest[]
+
+  @@map("product_categories")
+}
+
+enum ProductKind {
+  RAW       // bought in and consumed by a production run
+  FINISHED  // made by a run, or bought whole
+  KIT       // never stocked — a recipe of finished goods, assembled at dispatch
+}
+
+model Product {
+  id         String      @id @default(cuid())
+  code       String      @unique
+  name       String
+  categoryId String
+  kind       ProductKind @default(RAW)
+  // Pieces, metres, kilograms… a recipe line is meaningless without it
+  unit       String      @default("pcs")
+  isActive   Boolean     @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category     ProductCategory @relation(fields: [categoryId], references: [id])
+  stockEntries StockEntry[]
+  siteRequests SiteRequest[]
+  purchaseIntents    PurchaseIntent[]
+  purchaseOrderLines PurchaseOrderLine[]
+  billsOfMaterials BillOfMaterials[] @relation("BomProduct")
+  usedInBomLines   BomLine[]         @relation("BomComponent")
+  builds           Build[]           @relation("BuiltProduct")
+
+  @@index([categoryId])
+  @@index([name])
+  @@index([kind])
+  @@map("products")
+}
+
+// What a product is made of. Versioned: publishing a revision leaves earlier
+// versions readable, so a production run recorded against version 2 still
+// explains itself after version 3 exists.
+// Where a bill of materials is in its life. A member writes one and submits
+// it; a manager approves, which publishes it. Someone holding bom.publish skips
+// the queue entirely.
+enum BomStatus {
+  DRAFT
+  PENDING
+  PUBLISHED
+  REJECTED
+}
+
+model BillOfMaterials {
+  id          String    @id @default(cuid())
+  productId   String
+  version     Int       @default(1)
+  status      BomStatus @default(PUBLISHED)
+  // Set when a manager sends one back, so the author knows what to fix
+  rejectionReason String?
+  submittedAt     DateTime?
+  approvedById    String?
+  approvedAt      DateTime?
+  // Exactly one version per product is the one new work is built to
+  isActive    Boolean  @default(true)
+  notes       String?
+  createdById String
+  // The department the author belonged to when they submitted it. A product
+  // belongs to no department, so this is what routes approval to the right
+  // manager: R&D's work goes to R&D's manager, Production's to Production's.
+  // Null for a version written by someone with no department (an admin), which
+  // stays approvable by anyone holding the key — otherwise an admin's
+  // correction could never be signed off.
+  authorDepartmentId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product    Product   @relation("BomProduct", fields: [productId], references: [id], onDelete: Cascade)
+  createdBy  User      @relation("BomAuthor", fields: [createdById], references: [id])
+  approvedBy User?     @relation("BomApprover", fields: [approvedById], references: [id])
+  authorDepartment Department? @relation("BomAuthorDepartment", fields: [authorDepartmentId], references: [id])
+  lines      BomLine[]
+  builds     Build[]
+
+  @@unique([productId, version])
+  @@index([productId])
+  @@index([status])
+  @@map("bills_of_materials")
+}
+
+// One component and how much of it goes into a single unit of the parent.
+// Deliberately fixed in shape: a line has to be machine-readable to be counted,
+// checked against stock, reserved or consumed.
+model BomLine {
+  id                 String  @id @default(cuid())
+  bomId              String
+  componentProductId String
+  quantityPerUnit    Float
+  // Customer add-ons: present in the recipe, only required when chosen
+  isOptional         Boolean @default(false)
+  notes              String?
+  displayOrder       Int     @default(0)
+
+  bom       BillOfMaterials @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  component Product         @relation("BomComponent", fields: [componentProductId], references: [id])
+
+  @@unique([bomId, componentProductId])
+  @@index([bomId])
+  @@index([componentProductId])
+  @@map("bom_lines")
+}
+
+// Turning components into the thing they make. This is the verb a bill of
+// materials was missing: components genuinely leave central stock and the
+// assembled product genuinely arrives, so dispatch offers the product as a
+// whole and whatever was left over as itself.
+enum BuildStatus {
+  // Components consumed, nothing produced yet — the sheet's "ON THE FLOOR"
+  IN_PROGRESS
+  // Everything that is going to be made has been made. Not always the whole
+  // quantity started: a run can be closed short when the rest is abandoned.
+  COMPLETED
+  // Never made anything; the components went back
+  REVERSED
+}
+
+model Build {
+  id          String      @id @default(cuid())
+  buildNumber String      @unique
+  productId   String
+  // The exact BOM version this was built to, so a later revision never rewrites
+  // what was already made
+  bomId       String
+  // How many were STARTED. How many are finished is the sum of the entries
+  // this build produced — derived, never stored, so the two can never disagree.
+  quantity    Int
+  locationId  String
+  status      BuildStatus @default(COMPLETED)
+  notes       String?
+  builtById   String
+  reversedAt  DateTime?
+  completedAt DateTime?
+  // Set when a run is closed with less finished than started. The components
+  // for the shortfall stay consumed — they are in scrap or half-built units,
+  // not back on the shelf.
+  closedShortReason String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  product      Product            @relation("BuiltProduct", fields: [productId], references: [id])
+  bom          BillOfMaterials    @relation(fields: [bomId], references: [id])
+  location     Location           @relation(fields: [locationId], references: [id])
+  builtBy      User               @relation("BuildCreator", fields: [builtById], references: [id])
+  consumptions BuildConsumption[]
+  outputs      StockEntry[]       @relation("BuildOutput")
+
+  @@index([productId])
+  @@index([locationId])
+  @@index([status])
+  @@map("builds")
+}
+
+// Which stock entry gave up how much to a build. Quantity is a float because a
+// recipe legitimately calls for 25 metres or 0.75 of something.
+//
+// This is also the row that makes recall work: a faulty component batch leads
+// to the builds that consumed it, to the goods those builds produced, to the
+// consignments that carried them.
+model BuildConsumption {
+  id           String @id @default(cuid())
+  buildId      String
+  stockEntryId String
+  quantity     Float
+
+  build      Build      @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id])
+
+  @@index([buildId])
+  @@index([stockEntryId])
+  @@map("build_consumptions")
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ProductRequestType {
+  PRODUCT
+  CATEGORY
+}
+
+// Operator request for a new product code or category, fulfilled by an admin
+model ProductRequest {
+  id            String             @id @default(cuid())
+  type          ProductRequestType
+  name          String
+  categoryId    String?
+  notes         String?
+  status        RequestStatus      @default(PENDING)
+  reviewNote    String?
+  requestedById String
+  reviewedById  String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  category    ProductCategory? @relation(fields: [categoryId], references: [id])
+  requestedBy User             @relation("ProductRequester", fields: [requestedById], references: [id])
+  reviewedBy  User?            @relation("ProductRequestReviewer", fields: [reviewedById], references: [id])
+
+  @@index([status])
+  @@index([requestedById])
+  @@map("product_requests")
+}
+
+// Operator request to move approved stock into a department; approved by the
+// receiving department's manager (or an admin), which creates a StockIssue
+model StockTransferRequest {
+  id            String        @id @default(cuid())
+  requestNumber String        @unique
+  stockEntryId  String
+  departmentId  String
+  quantity      Int
+  // Whether the requester wants this to land in the department as an asset
+  isAsset       Boolean       @default(false)
+  notes         String?
+  status        RequestStatus @default(PENDING)
+  reviewNote    String?
+  requestedById String
+  reviewedById  String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  stockEntry  StockEntry @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  department  Department @relation(fields: [departmentId], references: [id])
+  requestedBy User       @relation("TransferRequester", fields: [requestedById], references: [id])
+  reviewedBy  User?      @relation("TransferReviewer", fields: [reviewedById], references: [id])
+
+  @@index([status])
+  @@index([stockEntryId])
+  @@index([departmentId])
+  @@map("stock_transfer_requests")
+}
+
+enum StockEntryStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum ApprovalStepStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum FieldType {
+  TEXT
+  NUMBER
+  DATE
+  SELECT
+  TEXTAREA
+}
+
+// Where a stock entry came from. Purchased stock arrived from a vendor; built
+// stock came out of a build, and its cost is the rolled-up cost of what went
+// into it. Reports can then separate what was made from what was bought.
+enum StockSource {
+  PURCHASED
+  BUILT
+  // Booked in at the receiving site when a consignment from another site is
+  // confirmed as delivered. These goods were never bought by this site.
+  TRANSFERRED
+}
+
+model StockEntry {
+  id              String           @id @default(cuid())
+  entryNumber     String           @unique
+  source          StockSource      @default(PURCHASED)
+  // Set only on entries a build produced. Not unique — a run finished in two
+  // goes produces two entries, each with its own batch.
+  buildId         String?
+  // Set when these goods arrived against a purchase order line. This is what
+  // makes the outstanding quantity derivable rather than stored.
+  purchaseOrderLineId String?
+  // Set only on entries a received consignment produced — the line of the
+  // dispatch these goods arrived on. Without it a transferred entry looks like
+  // a fresh purchase from the original vendor at a site that never bought it.
+  sourceDispatchItemId String?
+  productId       String?
+  itemCode        String?
+  itemName        String
+  // Snapshotted from the vendor at entry time so a later rename never rewrites
+  // history, and so pre-vendor-master entries keep their typed value.
+  vendorId        String?
+  supplierName    String
+  quantity        Int
+  unitPrice       Float
+  totalPrice      Float
+  invoiceNumber   String?
+  // Where this stock is held. Null only on entries that predate locations.
+  locationId      String?
+  // The batch these goods belong to. Typed by the production team on a run
+  // (phase 7) or by hand for a supplier lot. A dispatch line inherits it rather
+  // than anyone retyping it, so two shipments of one batch always agree.
+  batchNumber     String?
+  // Set when the goods ship straight from the vendor to a client without
+  // reaching our warehouse — it still books in here, then leaves as a dispatch.
+  clientId        String?
+  // Name/city snapshotted at entry time so renaming a client never rewrites
+  // history, and so pre-client-master entries keep their typed values.
+  clientName      String?
+  clientLocation  String?
+  // Default nature of this stock when it moves into a department. Everything
+  // sits in central stock as plain stock; the movement decides what it becomes.
+  isAsset         Boolean          @default(false)
+  status          StockEntryStatus @default(DRAFT)
+  rejectionReason String?
+  customFields    Json?
+  departmentId    String?
+  createdById     String
+  approvedById    String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  product     Product?               @relation(fields: [productId], references: [id])
+  location    Location?              @relation(fields: [locationId], references: [id])
+  client      Client?                @relation(fields: [clientId], references: [id])
+  vendor      Vendor?                @relation(fields: [vendorId], references: [id])
+  department  Department?            @relation(fields: [departmentId], references: [id])
+  createdBy   User                   @relation("StockEntryCreator", fields: [createdById], references: [id])
+  approvedBy  User?                  @relation("StockEntryApprover", fields: [approvedById], references: [id])
+  warranty         StockEntryWarranty?
+  attachments      StockEntryAttachment[]
+  approvals        StockApproval[]
+  issues           StockIssue[]
+  transferRequests StockTransferRequest[]
+  dispatchItems    DispatchItem[]
+  build            Build?             @relation("BuildOutput", fields: [buildId], references: [id])
+  buildConsumptions BuildConsumption[]
+  purchaseOrderLine PurchaseOrderLine? @relation(fields: [purchaseOrderLineId], references: [id])
+  sourceDispatchItem DispatchItem?    @relation("TransferredIn", fields: [sourceDispatchItemId], references: [id])
+
+  @@index([status])
+  @@index([departmentId])
+  @@index([createdById])
+  @@index([productId])
+  @@index([locationId])
+  @@index([clientId])
+  @@index([vendorId])
+  @@index([batchNumber])
+  @@index([purchaseOrderLineId])
+  @@index([sourceDispatchItemId])
+  @@map("stock_entries")
+}
+
+// Movement of approved stock from central stock into a department
+model StockIssue {
+  id           String   @id @default(cuid())
+  issueNumber  String   @unique
+  stockEntryId String
+  departmentId String
+  quantity     Int
+  // Authoritative: whether this quantity is held by the department as an asset
+  // rather than consumable stock.
+  isAsset      Boolean  @default(false)
+  notes        String?
+  issuedById   String
+  createdAt    DateTime @default(now())
+
+  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id])
+  issuedBy   User       @relation("StockIssueCreator", fields: [issuedById], references: [id])
+
+  @@index([stockEntryId])
+  @@index([departmentId])
+  @@map("stock_issues")
+}
+
+enum DispatchStatus {
+  PENDING      // raised, waiting for the destination location to accept
+  IN_TRANSIT   // accepted and on the way (client dispatches start here)
+  RECEIVED     // arrived and confirmed
+  REJECTED     // the destination refused it
+  CANCELLED    // the origin withdrew it
+}
+
+enum DispatchDestination {
+  LOCATION
+  CLIENT
+}
+
+// Outgoing movement of stock or assets: either to another of our locations
+// (which the receiving operator must accept and then confirm) or straight out
+// to a client. Quantity leaves the origin's central stock when the dispatch is
+// raised, and lands as central stock at the destination on receipt.
+model Dispatch {
+  id               String              @id @default(cuid())
+  dispatchNumber   String              @unique
+  originLocationId String
+  destination      DispatchDestination
+  toLocationId     String?
+  clientId         String?
+  status           DispatchStatus      @default(PENDING)
+  notes            String?
+  rejectionReason  String?
+  createdById      String
+  acceptedById     String?
+  receivedById     String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  acceptedAt       DateTime?
+  receivedAt       DateTime?
+
+  originLocation Location  @relation("DispatchOrigin", fields: [originLocationId], references: [id])
+  toLocation     Location? @relation("DispatchDestination", fields: [toLocationId], references: [id])
+  client         Client?   @relation(fields: [clientId], references: [id])
+  createdBy      User      @relation("DispatchCreator", fields: [createdById], references: [id])
+  acceptedBy     User?     @relation("DispatchAcceptor", fields: [acceptedById], references: [id])
+  receivedBy     User?     @relation("DispatchReceiver", fields: [receivedById], references: [id])
+  items          DispatchItem[]
+  // Set when this consignment exists because another site asked for it
+  siteRequest    SiteRequest?
+
+  @@index([status])
+  @@index([originLocationId])
+  @@index([toLocationId])
+  @@index([clientId])
+  @@map("dispatches")
+}
+
+// One line of a consignment. The batch number is the recall handle: look it up
+// and you get the client who received that item, with their contact details.
+model DispatchItem {
+  id           String  @id @default(cuid())
+  dispatchId   String
+  stockEntryId String
+  quantity     Int
+  isAsset      Boolean @default(false)
+  // Inherited from the source stock entry. Nullable for consignments raised
+  // before a batch was known; not unique, because one batch ships many times.
+  batchNumber  String?
+
+  dispatch   Dispatch   @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id])
+  // The entry this line produced at the destination, once delivery was
+  // confirmed. A line books in once, so this holds at most one.
+  receivedAs StockEntry[] @relation("TransferredIn")
+
+  @@index([dispatchId])
+  @@index([stockEntryId])
+  @@index([batchNumber])
+  @@map("dispatch_items")
+}
+
+// ============================================
+// Phase 14: Procurement — intent, purchase order, receipt
+// ============================================
+
+enum PurchaseIntentStatus {
+  PENDING    // raised, waiting for procurement to verify it
+  APPROVED   // verified, ready to be put on an order
+  ORDERED    // a purchase order now carries it
+  REJECTED   // procurement said no
+  CANCELLED  // the asker withdrew it
+}
+
+enum PurchaseOrderStatus {
+  OPEN       // placed with the vendor, not fully delivered
+  CLOSED     // everything arrived, or closed short deliberately
+  CANCELLED  // never going ahead
+}
+
+// "We need 40 bearings from Acme."
+//
+// Raised by whoever needs the goods, not by whoever buys them — the department
+// states the need and procurement decides how to meet it. The vendor is a
+// suggestion at this stage; the order is where it becomes a commitment.
+model PurchaseIntent {
+  id            String               @id @default(cuid())
+  intentNumber  String               @unique
+  productId     String
+  quantity      Int
+  // Who suggested we buy from. Optional: "we need these" is a valid ask even
+  // when the asker has no view on where they come from.
+  vendorId      String?
+  // Who needs them, and where they should land
+  departmentId  String?
+  locationId    String?
+  neededBy      DateTime?
+  notes         String?
+  status        PurchaseIntentStatus @default(PENDING)
+  reviewNote    String?
+  requestedById String
+  reviewedById  String?
+  reviewedAt    DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  product     Product             @relation(fields: [productId], references: [id])
+  vendor      Vendor?             @relation(fields: [vendorId], references: [id])
+  department  Department?         @relation(fields: [departmentId], references: [id])
+  location    Location?           @relation(fields: [locationId], references: [id])
+  requestedBy User                @relation("IntentRequester", fields: [requestedById], references: [id])
+  reviewedBy  User?               @relation("IntentReviewer", fields: [reviewedById], references: [id])
+  orderLines  PurchaseOrderLine[]
+
+  @@index([status])
+  @@index([productId])
+  @@index([vendorId])
+  @@index([departmentId])
+  @@map("purchase_intents")
+}
+
+// The order actually placed with a vendor.
+//
+// One order, one vendor, many lines. What is still outstanding is never stored:
+// it is the ordered quantity less whatever stock entries point at the line, so
+// a part delivery needs no bookkeeping beyond entering the goods that came.
+model PurchaseOrder {
+  id           String              @id @default(cuid())
+  poNumber     String              @unique
+  vendorId     String
+  // Where the goods are expected to land
+  locationId   String
+  status       PurchaseOrderStatus @default(OPEN)
+  expectedDate DateTime?
+  notes        String?
+  // Why an order was closed with quantity still outstanding
+  closeReason  String?
+  createdById  String
+  closedById   String?
+  closedAt     DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  vendor    Vendor              @relation(fields: [vendorId], references: [id])
+  location  Location            @relation(fields: [locationId], references: [id])
+  createdBy User                @relation("PoCreator", fields: [createdById], references: [id])
+  closedBy  User?               @relation("PoCloser", fields: [closedById], references: [id])
+  lines     PurchaseOrderLine[]
+
+  @@index([status])
+  @@index([vendorId])
+  @@index([locationId])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id              String  @id @default(cuid())
+  purchaseOrderId String
+  productId       String
+  quantity        Int
+  unitPrice       Float
+  // The need this line was raised to satisfy, when it came from one
+  intentId        String?
+  notes           String?
+
+  purchaseOrder PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product         @relation(fields: [productId], references: [id])
+  intent        PurchaseIntent? @relation(fields: [intentId], references: [id])
+  // Every delivery booked against this line. The sum is what has arrived.
+  stockEntries  StockEntry[]
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+  @@index([intentId])
+  @@map("purchase_order_lines")
+}
+
+// Whether an intent has to be verified before it can go on an order. Turn it
+// off and whoever raises orders can order straight from a stated need.
+model ProcurementFlowConfig {
+  id               String   @id @default("singleton")
+  requiresApproval Boolean  @default(true)
+  // Who verifies. Null means anyone holding procurement.intent.approve.
+  approverRoleId   String?
+  updatedById      String?
+  updatedAt        DateTime @updatedAt
+
+  approverRole Role? @relation("IntentApproverRole", fields: [approverRoleId], references: [id])
+
+  @@map("procurement_flow_config")
+}
+
+enum SiteRequestStatus {
+  PENDING    // raised, waiting for the holding site to answer
+  ACCEPTED   // agreed, and a dispatch has been raised to carry it
+  REJECTED   // the holding site declined
+  CANCELLED  // the asking site withdrew it
+}
+
+// One site asking another for stock it does not have.
+//
+// The readiness view answers "Bengaluru has seven, we have none"; this is the
+// act that follows. Accepting does not move anything by itself — it raises a
+// real dispatch, so stock leaves and arrives through the one movement path
+// everything else already uses, and the consignment is traceable as usual.
+model SiteRequest {
+  id             String            @id @default(cuid())
+  requestNumber  String            @unique
+  productId      String
+  quantity       Int
+  // fromLocation holds the stock and is being asked; toLocation wants it
+  fromLocationId String
+  toLocationId   String
+  status         SiteRequestStatus @default(PENDING)
+  notes          String?
+  reviewNote     String?
+  // The consignment raised on acceptance. Nullable because a request that was
+  // rejected, cancelled or still pending never produced one.
+  dispatchId     String?           @unique
+  requestedById  String
+  reviewedById   String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  reviewedAt     DateTime?
+
+  product      Product   @relation(fields: [productId], references: [id])
+  fromLocation Location  @relation("SiteRequestFrom", fields: [fromLocationId], references: [id])
+  toLocation   Location  @relation("SiteRequestTo", fields: [toLocationId], references: [id])
+  dispatch     Dispatch? @relation(fields: [dispatchId], references: [id])
+  requestedBy  User      @relation("SiteRequester", fields: [requestedById], references: [id])
+  reviewedBy   User?     @relation("SiteRequestReviewer", fields: [reviewedById], references: [id])
+
+  @@index([status])
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([productId])
+  @@map("site_requests")
+}
+
+// Warranty and registration details, recorded only when someone ticks the box
+// on the entry. Its own table so StockEntry stays lean and "has warranty
+// details" is a simple existence check.
+model StockEntryWarranty {
+  id            String    @id @default(cuid())
+  stockEntryId  String    @unique
+  purchaseDate  DateTime
+  modelNumber   String
+  serialNumber  String
+  modelName     String?
+  warrantyTill  DateTime
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+
+  @@map("stock_entry_warranties")
+}
+
+model StockEntryAttachment {
+  id             String   @id @default(cuid())
+  fileName       String
+  fileUrl        String
+  fileSize       Int
+  mimeType       String
+  attachmentType String
+  stockEntryId   String
+  uploadedById   String
+  createdAt      DateTime @default(now())
+
+  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  uploadedBy User       @relation("AttachmentUploader", fields: [uploadedById], references: [id])
+
+  @@index([stockEntryId])
+  @@map("stock_entry_attachments")
+}
+
+model StockEntryFieldConfig {
+  id           String    @id @default(cuid())
+  fieldName    String    @unique
+  fieldLabel   String
+  fieldType    FieldType @default(TEXT)
+  isRequired   Boolean   @default(false)
+  isActive     Boolean   @default(true)
+  options      Json?
+  displayOrder Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("stock_entry_field_configs")
+}
+
+model AttachmentTypeConfig {
+  id               String   @id @default(cuid())
+  name             String   @unique
+  isRequired       Boolean  @default(false)
+  isActive         Boolean  @default(true)
+  allowedMimeTypes Json?
+  maxSizeBytes     Int      @default(5242880)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("attachment_type_configs")
+}
+
+// One company-wide rule for how a bill of materials becomes the version in
+// force. Deliberately not per department: a bill of materials describes a
+// product, and a product does not belong to a department.
+//
+// A single row — the id is fixed so there can only ever be one.
+model BomFlowConfig {
+  id               String   @id @default("singleton")
+  // Turn this off and anyone who can write a bill of materials publishes it
+  requiresApproval Boolean  @default(true)
+  // Who approves. Null means anyone holding bom.approve.
+  approverRoleId   String?
+  updatedById      String?
+  updatedAt        DateTime @updatedAt
+
+  approverRole Role? @relation("BomApproverRole", fields: [approverRoleId], references: [id])
+
+  @@map("bom_flow_config")
+}
+
+model ApprovalFlowConfig {
+  id           String   @id @default(cuid())
+  name         String
+  departmentId String?  @unique
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  department Department?        @relation(fields: [departmentId], references: [id])
+  steps      ApprovalFlowStep[]
+
+  @@map("approval_flow_configs")
+}
+
+model ApprovalFlowStep {
+  id             String @id @default(cuid())
+  flowId         String
+  stepOrder      Int
+  stepLabel      String
+  approverRoleId String
+
+  flow         ApprovalFlowConfig @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  approverRole Role               @relation(fields: [approverRoleId], references: [id])
+
+  @@unique([flowId, stepOrder])
+  @@map("approval_flow_steps")
+}
+
+model StockApproval {
+  id             String             @id @default(cuid())
+  stockEntryId   String
+  stepOrder      Int
+  stepLabel      String
+  approverRoleId String
+  status         ApprovalStepStatus @default(PENDING)
+  approverUserId String?
+  comments       String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  approver   User?      @relation(fields: [approverUserId], references: [id])
+
+  @@unique([stockEntryId, stepOrder])
+  @@index([stockEntryId])
+  @@map("stock_approvals")
+}

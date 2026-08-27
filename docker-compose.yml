@@ -1,0 +1,47 @@
+# A production-shaped run on one machine: the app, its database, and a volume
+# for uploaded documents. Use this to test the image locally before pushing it
+# anywhere, or as the whole deployment on a small VPS.
+#
+#   cp .env.example .env.production   (fill it in first — see docs/hosting.md)
+#   docker compose --env-file .env.production up -d --build
+#   docker compose exec app npx prisma migrate deploy
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-straightdrive}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sam}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published: only the app needs to reach it. Add a ports mapping only
+    # when you want to connect from your own machine, and never on a public host.
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sam}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-straightdrive}?schema=public
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL}
+      # Deliberately optional — see docs/hosting.md on the password vault
+      PASSWORD_ENCRYPTION_KEY: ${PASSWORD_ENCRYPTION_KEY:-}
+    volumes:
+      # Uploaded invoices survive redeploys only because of this line
+      - uploads:/app/public/uploads
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+volumes:
+  db-data:
+  uploads:

@@ -1,26 +1,423 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-montserrat);
   --font-mono: var(--font-geist-mono);
-}
+  --font-heading: var(--font-montserrat);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  /* Brand colors as Tailwind utilities */
+  --color-brand-green: #00E676;
+  --color-brand-blue: #00AEEF;
+  --color-brand-navy: #0A192F;
+  --color-brand-navy-light: #112240;
+
+  /* ------------------------------------------------------------------
+     Chart colors — extended to 8. Charts must reference these, never
+     hardcoded hex. Both themes are defined in :root / .dark below.
+     ------------------------------------------------------------------ */
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
+
+  /* ------------------------------------------------------------------
+     Status colors — the single source of truth.
+     DRAFT / SUBMITTED / APPROVED / REJECTED were previously re-declared
+     with different values in four separate files. Everything now reads
+     from here via src/lib/design/status.ts.
+
+     Note these are NOT the brand green. #00E676 fails WCAG AA as text
+     on white (1.7:1), so it is reserved for fills, accents and gradients.
+     --status-approved is a darker green that passes as text.
+     ------------------------------------------------------------------ */
+  --color-status-draft: var(--status-draft);
+  --color-status-draft-bg: var(--status-draft-bg);
+  --color-status-pending: var(--status-pending);
+  --color-status-pending-bg: var(--status-pending-bg);
+  --color-status-approved: var(--status-approved);
+  --color-status-approved-bg: var(--status-approved-bg);
+  --color-status-rejected: var(--status-rejected);
+  --color-status-rejected-bg: var(--status-rejected-bg);
+  --color-status-info: var(--status-info);
+  --color-status-info-bg: var(--status-info-bg);
+
+  /* ------------------------------------------------------------------
+     Elevation — tinted with navy rather than black so shadows sit in
+     the brand's color family. Overrides Tailwind's default shadow scale,
+     so every existing `shadow-sm` / `shadow-md` inherits the tint.
+     ------------------------------------------------------------------ */
+  --shadow-2xs: var(--elev-0);
+  --shadow-xs: var(--elev-1);
+  --shadow-sm: var(--elev-2);
+  --shadow-md: var(--elev-3);
+  --shadow-lg: var(--elev-4);
+  --shadow-xl: var(--elev-5);
+
+  /* ------------------------------------------------------------------
+     Type scale — replaces the improvised sizes and the text-[9px] /
+     text-[10px] / text-[11px] arbitrary values used across the app.
+     ------------------------------------------------------------------ */
+  --text-display: 2.25rem;
+  --text-display--line-height: 1.1;
+  --text-display--letter-spacing: -0.03em;
+  --text-display--font-weight: 800;
+
+  --text-h1: 1.75rem;
+  --text-h1--line-height: 1.16;
+  --text-h1--letter-spacing: -0.024em;
+  --text-h1--font-weight: 700;
+
+  --text-h2: 1.25rem;
+  --text-h2--line-height: 1.25;
+  --text-h2--letter-spacing: -0.016em;
+  --text-h2--font-weight: 680;
+
+  --text-h3: 1rem;
+  --text-h3--line-height: 1.35;
+  --text-h3--letter-spacing: -0.008em;
+  --text-h3--font-weight: 650;
+
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.55;
+
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.45;
+
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1.4;
+  --text-micro--letter-spacing: 0.02em;
+
+  /* ------------------------------------------------------------------
+     Motion — one place to retune every animation in the app.
+     Budget: nothing exceeds --duration-slow. Entrance and hover only.
+     ------------------------------------------------------------------ */
+  --ease-out-quart: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-shimmer: shimmer 1.8s ease-in-out infinite;
+  --animate-pulse-ring: pulse-ring 2.4s ease-out infinite;
+
+  @keyframes shimmer {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+  }
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 rgb(0 230 118 / 0.45); }
+    70% { box-shadow: 0 0 0 7px rgb(0 230 118 / 0); }
+    100% { box-shadow: 0 0 0 0 rgb(0 230 118 / 0); }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ============================================
+   STRAIGHT DRIVE — Brand Theme
+   Primary: Vibrant Green #00E676
+   Secondary: Electric Blue #00AEEF
+   Dark: Deep Navy #0A192F
+   Direction: "Innings" — hot navy→green gradients,
+   status-washed KPI tiles, solid green active nav.
+   ============================================ */
+
+:root {
+  --radius: 0.625rem;
+
+  /* Motion durations (plain custom props — consumed by components) */
+  --duration-fast: 150ms;
+  --duration-base: 220ms;
+  --duration-slow: 320ms;
+
+  /* Base */
+  --background: #FFFFFF;
+  --foreground: #0A192F;
+
+  /* Cards & Popovers */
+  --card: #FFFFFF;
+  --card-foreground: #0A192F;
+  --popover: #FFFFFF;
+  --popover-foreground: #0A192F;
+
+  /* Primary — Vibrant Green */
+  --primary: #00E676;
+  --primary-foreground: #0A192F;
+
+  /* Secondary — Electric Blue */
+  --secondary: #E8F8FF;
+  --secondary-foreground: #006B99;
+
+  /* Muted */
+  --muted: #F1F5F9;
+  --muted-foreground: #64748B;
+
+  /* Accent — Electric Blue tint */
+  --accent: #E0F7FA;
+  --accent-foreground: #0A192F;
+
+  /* Destructive */
+  --destructive: #EF4444;
+
+  /* Border / Input / Ring */
+  --border: #E2E8F0;
+  --input: #E2E8F0;
+  --ring: #00E676;
+
+  /* Charts */
+  --chart-1: #00E676;
+  --chart-2: #00AEEF;
+  --chart-3: #0A192F;
+  --chart-4: #64748B;
+  --chart-5: #E2E8F0;
+  --chart-6: #8B5CF6;
+  --chart-7: #F59E0B;
+  --chart-8: #EC4899;
+
+  /* Status — single source of truth (see @theme note above) */
+  --status-draft: #64748B;
+  --status-draft-bg: #F1F5F9;
+  --status-pending: #B45309;
+  --status-pending-bg: #FEF6E7;
+  --status-approved: #047857;
+  --status-approved-bg: #E7F7F0;
+  --status-rejected: #DC2626;
+  --status-rejected-bg: #FDECEC;
+  --status-info: #0369A1;
+  --status-info-bg: #E8F6FE;
+
+  /* Elevation — navy-tinted */
+  --elev-0: 0 1px 1px rgb(10 25 47 / 0.04);
+  --elev-1: 0 1px 2px rgb(10 25 47 / 0.06), 0 1px 3px rgb(10 25 47 / 0.05);
+  --elev-2: 0 1px 2px rgb(10 25 47 / 0.06), 0 2px 6px -1px rgb(10 25 47 / 0.08);
+  --elev-3: 0 2px 4px rgb(10 25 47 / 0.05), 0 8px 20px -8px rgb(10 25 47 / 0.16);
+  --elev-4: 0 4px 8px rgb(10 25 47 / 0.05), 0 16px 36px -12px rgb(10 25 47 / 0.22);
+  --elev-5: 0 8px 16px rgb(10 25 47 / 0.06), 0 28px 60px -18px rgb(10 25 47 / 0.28);
+
+  /* Sidebar — Deep Navy */
+  --sidebar: #0A192F;
+  --sidebar-foreground: #E2E8F0;
+  --sidebar-primary: #00E676;
+  --sidebar-primary-foreground: #0A192F;
+  --sidebar-accent: #112240;
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #1E3A5F;
+  --sidebar-ring: #00E676;
+}
+
+.dark {
+  --background: #0A192F;
+  --foreground: #E2E8F0;
+
+  --card: #112240;
+  --card-foreground: #E2E8F0;
+  --popover: #112240;
+  --popover-foreground: #E2E8F0;
+
+  --primary: #00E676;
+  --primary-foreground: #0A192F;
+
+  --secondary: #1E3A5F;
+  --secondary-foreground: #E2E8F0;
+
+  --muted: #1E3A5F;
+  --muted-foreground: #94A3B8;
+
+  --accent: #1E3A5F;
+  --accent-foreground: #E2E8F0;
+
+  --destructive: #EF4444;
+
+  --border: #1E3A5F;
+  --input: #1E3A5F;
+  --ring: #00E676;
+
+  --chart-1: #00E676;
+  --chart-2: #00AEEF;
+  --chart-3: #64748B;
+  --chart-4: #94A3B8;
+  --chart-5: #1E3A5F;
+  --chart-6: #A78BFA;
+  --chart-7: #FBBF24;
+  --chart-8: #F472B6;
+
+  /* Status — lifted for legibility on navy */
+  --status-draft: #94A3B8;
+  --status-draft-bg: #1E3A5F;
+  --status-pending: #FBBF24;
+  --status-pending-bg: #33280F;
+  --status-approved: #34D399;
+  --status-approved-bg: #0E2E24;
+  --status-rejected: #F87171;
+  --status-rejected-bg: #3A1A1A;
+  --status-info: #38BDF8;
+  --status-info-bg: #10293C;
+
+  /* Elevation — deeper and darker; navy tint would vanish on navy */
+  --elev-0: 0 1px 1px rgb(0 0 0 / 0.25);
+  --elev-1: 0 1px 2px rgb(0 0 0 / 0.35);
+  --elev-2: 0 1px 2px rgb(0 0 0 / 0.35), 0 2px 6px -1px rgb(0 0 0 / 0.4);
+  --elev-3: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 20px -8px rgb(0 0 0 / 0.55);
+  --elev-4: 0 4px 8px rgb(0 0 0 / 0.3), 0 16px 36px -12px rgb(0 0 0 / 0.7);
+  --elev-5: 0 8px 16px rgb(0 0 0 / 0.35), 0 28px 60px -18px rgb(0 0 0 / 0.8);
+
+  --sidebar: #0A192F;
+  --sidebar-foreground: #E2E8F0;
+  --sidebar-primary: #00E676;
+  --sidebar-primary-foreground: #0A192F;
+  --sidebar-accent: #112240;
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #1E3A5F;
+  --sidebar-ring: #00E676;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+
+  /* Figures that sit in columns or animate must not reflow while they change */
+  .tabular,
+  [data-slot="stat-value"] {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* ------------------------------------------------------------------
+     "Innings" brand gradient — the hero treatment.
+     Navy runs all the way through to brand green on a 118deg diagonal,
+     with a green bloom at the lower right and faint pitch lines over it.
+     Defined once here; every hero surface uses .brand-hero.
+     ------------------------------------------------------------------ */
+  .brand-hero {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background: linear-gradient(
+      118deg,
+      #0A192F 0%,
+      #0d2f4a 46%,
+      #0b6b53 82%,
+      #0c8f5f 100%
+    );
+  }
+
+  .brand-hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(90% 140% at 82% 118%, rgb(0 230 118 / 0.38) 0%, transparent 62%),
+      repeating-linear-gradient(
+        118deg,
+        transparent 0 26px,
+        rgb(255 255 255 / 0.045) 26px 27px
+      );
+  }
+
+  /* ------------------------------------------------------------------
+     "Innings" KPI tile — the whole surface is washed in its status colour
+     rather than carrying a thin accent stripe. Reads `--k`, which the
+     component sets from src/lib/design/status.ts, so one rule covers every
+     tone in both themes.
+     ------------------------------------------------------------------ */
+  .kpi-tile {
+    --k: var(--primary);
+    background: color-mix(in srgb, var(--k) 8%, var(--card));
+    --tw-ring-color: color-mix(in srgb, var(--k) 30%, transparent);
+  }
+
+  .dark .kpi-tile {
+    background: color-mix(in srgb, var(--k) 14%, var(--card));
+    --tw-ring-color: color-mix(in srgb, var(--k) 34%, transparent);
+  }
+
+  /* Softer variant for the auth panel, which is tall rather than wide */
+  .brand-hero-panel {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background: linear-gradient(
+      155deg,
+      #0A192F 0%,
+      #0d2f4a 48%,
+      #0b6b53 84%,
+      #0c8f5f 100%
+    );
+  }
+
+  .brand-hero-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      155deg,
+      transparent 0 28px,
+      rgb(255 255 255 / 0.05) 28px 29px
+    );
+  }
+}
+
+/* ------------------------------------------------------------------
+   Reduced motion — neutralise, don't merely shorten.
+   Anything that conveys meaning through movement must still land in
+   its final state, so we collapse duration rather than remove the rule.
+   ------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -1,0 +1,1197 @@
+<title>Access &amp; Flow Rebuild</title>
+<style>
+  :root {
+    color-scheme: light;
+    --paper: #F6F8F4;
+    --surface: #FFFFFF;
+    --surface-sunk: #EEF1EA;
+    --ink: #16232C;
+    --ink-soft: #4A5A61;
+    --ink-faint: #74848A;
+    --rule: #D6DCD2;
+    --rule-strong: #B8C2B4;
+    --accent: #1C6E48;
+    --accent-soft: #E4EFE7;
+    --amber: #8A5B0C;
+    --amber-soft: #F7EEDC;
+    --crimson: #9C2A26;
+    --crimson-soft: #F8E6E4;
+    --shadow: 0 1px 2px rgba(22, 35, 44, .06), 0 8px 24px -16px rgba(22, 35, 44, .28);
+
+    --sans: ui-sans-serif, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --paper: #0F1519;
+      --surface: #161E23;
+      --surface-sunk: #1B252B;
+      --ink: #E6EDE7;
+      --ink-soft: #A9B8B5;
+      --ink-faint: #7E8F8C;
+      --rule: #2A363C;
+      --rule-strong: #3D4C52;
+      --accent: #57C48C;
+      --accent-soft: #163023;
+      --amber: #D9A65B;
+      --amber-soft: #2E2413;
+      --crimson: #E2857F;
+      --crimson-soft: #331B1A;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #0F1519;
+    --surface: #161E23;
+    --surface-sunk: #1B252B;
+    --ink: #E6EDE7;
+    --ink-soft: #A9B8B5;
+    --ink-faint: #7E8F8C;
+    --rule: #2A363C;
+    --rule-strong: #3D4C52;
+    --accent: #57C48C;
+    --accent-soft: #163023;
+    --amber: #D9A65B;
+    --amber-soft: #2E2413;
+    --crimson: #E2857F;
+    --crimson-soft: #331B1A;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px 96px;
+  }
+
+  @media (min-width: 1040px) {
+    .shell { grid-template-columns: 208px minmax(0, 1fr); gap: 56px; padding-right: 40px; }
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    grid-column: 1 / -1;
+    padding: 56px 0 32px;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+
+  h1 {
+    font-size: clamp(34px, 5.2vw, 52px);
+    line-height: 1.04;
+    letter-spacing: -.026em;
+    font-weight: 760;
+    margin: 0 0 18px;
+    text-wrap: balance;
+  }
+
+  .lede {
+    font-family: var(--serif);
+    font-size: 19px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .stamp {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    margin-top: 28px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+  .stamp b { color: var(--ink-soft); font-weight: 500; }
+
+  /* ---------- rail ---------- */
+
+  nav.rail { display: none; }
+
+  @media (min-width: 1040px) {
+    nav.rail {
+      display: block;
+      position: sticky;
+      top: 0;
+      align-self: start;
+      max-height: 100vh;
+      overflow-y: auto;
+      padding: 40px 0;
+    }
+    nav.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+    nav.rail a {
+      display: flex;
+      gap: 10px;
+      padding: 5px 0;
+      font-size: 13px;
+      line-height: 1.35;
+      color: var(--ink-faint);
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+    }
+    nav.rail a:hover { color: var(--accent); }
+    nav.rail a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    nav.rail .n { font-family: var(--mono); font-size: 11px; color: var(--rule-strong); flex: none; padding-top: 2px; }
+  }
+
+  main { min-width: 0; padding-top: 40px; display: flex; flex-direction: column; gap: 64px; }
+
+  section { scroll-margin-top: 24px; }
+
+  h2 {
+    font-size: clamp(24px, 3vw, 31px);
+    line-height: 1.12;
+    letter-spacing: -.02em;
+    font-weight: 720;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+
+  .sec-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: block;
+    margin-bottom: 10px;
+  }
+
+  h3 {
+    font-size: 17px;
+    font-weight: 680;
+    letter-spacing: -.008em;
+    margin: 34px 0 10px;
+  }
+
+  h4 {
+    font-size: 13px;
+    font-family: var(--mono);
+    font-weight: 500;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 24px 0 8px;
+  }
+
+  p { margin: 0 0 14px; max-width: 74ch; }
+  section > p:first-of-type { color: var(--ink-soft); }
+
+  ul, ol { max-width: 74ch; padding-left: 20px; margin: 0 0 14px; }
+  li { margin-bottom: 7px; }
+  li > ul, li > ol { margin-top: 7px; }
+
+  code, .k {
+    font-family: var(--mono);
+    font-size: .86em;
+    background: var(--surface-sunk);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  a { color: var(--accent); }
+
+  strong { font-weight: 640; }
+
+  /* ---------- findings ---------- */
+
+  .finding {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px 18px;
+    padding: 18px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .finding:last-child { border-bottom: 1px solid var(--rule); }
+
+  @media (min-width: 720px) {
+    .finding { grid-template-columns: 62px 1fr; }
+  }
+
+  .fid {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink-faint);
+    padding-top: 3px;
+  }
+
+  .finding h5 {
+    margin: 0 0 6px;
+    font-size: 16px;
+    font-weight: 660;
+    letter-spacing: -.008em;
+  }
+  .finding p { margin: 0 0 8px; font-size: 15px; color: var(--ink-soft); }
+  .finding p:last-child { margin-bottom: 0; }
+  .where { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
+
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 2px;
+    vertical-align: 2px;
+    margin-left: 8px;
+    white-space: nowrap;
+  }
+  .chip.blocks { background: var(--crimson-soft); color: var(--crimson); }
+  .chip.leak { background: var(--amber-soft); color: var(--amber); }
+  .chip.debt { background: var(--surface-sunk); color: var(--ink-faint); }
+
+  /* ---------- tables ---------- */
+
+  .scroller { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    background: var(--surface-sunk);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  td.mono, th.mono { font-family: var(--mono); font-size: 12.5px; }
+
+  /* ---------- role cards ---------- */
+
+  .role {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow);
+  }
+  .role > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+  .role h3 { margin: 0; font-size: 17px; }
+  .role .who { font-size: 13px; color: var(--ink-faint); }
+  .grants { display: grid; gap: 8px 20px; grid-template-columns: 1fr; margin: 0; }
+  @media (min-width: 700px) { .grants { grid-template-columns: 128px 1fr; } }
+  .grants dt {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-top: 3px;
+  }
+  .grants dd { margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.75; color: var(--ink-soft); word-break: break-word; }
+  .grants dd .new { color: var(--accent); font-weight: 600; }
+  .grants dd .gone { color: var(--crimson); text-decoration: line-through; }
+
+  /* ---------- callout ---------- */
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    border-radius: 0 4px 4px 0;
+    margin: 0 0 18px;
+  }
+  .note p { margin: 0; max-width: 68ch; font-size: 15px; }
+  .note p + p { margin-top: 10px; }
+
+  .note.ask { border-left-color: var(--amber); background: var(--amber-soft); }
+
+  /* ---------- test steps ---------- */
+
+  .run { counter-reset: step; margin: 0 0 22px; padding: 0; list-style: none; max-width: none; }
+  .run > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 14px;
+    padding: 12px 0;
+    border-top: 1px solid var(--rule);
+    margin: 0;
+  }
+  .run > li::before {
+    content: counter(step, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--rule-strong);
+    padding-top: 4px;
+  }
+  .run .act { font-weight: 600; }
+  .run .exp { color: var(--ink-soft); font-size: 15px; }
+  .run .exp::before { content: "→ "; color: var(--accent); font-weight: 700; }
+  .run .as { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); }
+
+  footer.end {
+    grid-column: 1 / -1;
+    margin-top: 72px;
+    padding-top: 20px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html { scroll-behavior: smooth; }
+  }
+</style>
+
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">Stock &amp; Asset Management · Plan for approval</p>
+    <h1>Access &amp; Flow Rebuild</h1>
+    <p class="lede">Nine named people, seven roles, one permission model, twenty-three defects — and then a consolidation pass that strips the project back to a first build you can read phase by phase. Nothing below has been built yet.</p>
+    <div class="stamp">
+      <span><b>Read from</b> live database, 14 Aug</span>
+      <span><b>Typecheck</b> clean</span>
+      <span><b>Code changed</b> none</span>
+      <span><b>Revision</b> 3 — every question settled</span>
+      <span><b>Awaiting</b> your command</span>
+    </div>
+  </header>
+
+  <nav class="rail" aria-label="Sections">
+    <ol>
+      <li><a href="#state"><span class="n">01</span><span>Where things actually stand</span></a></li>
+      <li><a href="#findings"><span class="n">02</span><span>What is broken</span></a></li>
+      <li><a href="#requests"><span class="n">03</span><span>Retiring Requests</span></a></li>
+      <li><a href="#model"><span class="n">04</span><span>Model changes</span></a></li>
+      <li><a href="#matrix"><span class="n">05</span><span>Roles &amp; people</span></a></li>
+      <li><a href="#phases"><span class="n">06</span><span>Order of work</span></a></li>
+      <li><a href="#test"><span class="n">07</span><span>The test run</span></a></li>
+      <li><a href="#cleanup"><span class="n">08</span><span>The consolidation pass</span></a></li>
+      <li><a href="#questions"><span class="n">09</span><span>Every answer, settled</span></a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <!-- ============================================ 01 -->
+    <section id="state">
+      <span class="sec-num">01 — Where things actually stand</span>
+      <h2>The database today does not match the brief</h2>
+      <p>I read the live database rather than the seed file, because the seed has drifted a long way behind the fourteen migration scripts that ran after it. This is what is really there.</p>
+
+      <h3>People</h3>
+      <div class="scroller">
+        <table>
+          <thead>
+            <tr><th>Account</th><th>Role</th><th>Department</th><th>Site</th><th>Against your list</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Phani Raj</td><td>Super Admin</td><td>—</td><td>—</td><td>Matches</td></tr>
+            <tr><td>Admin</td><td>Admin</td><td>—</td><td>—</td><td>Generic account; you named <strong>Shravani</strong></td></tr>
+            <tr><td>Kirubakaran</td><td>Department Manager</td><td>Production</td><td>Bengaluru</td><td>Matches; already carries 4 extra grants</td></tr>
+            <tr><td>Manohar</td><td>Department Manager</td><td>R&amp;D</td><td>Bengaluru</td><td>Matches</td></tr>
+            <tr><td>Deepanjona</td><td>Production Engineer</td><td>Production</td><td>Bengaluru</td><td>Role holds <strong>zero permissions</strong></td></tr>
+            <tr><td>Raghava</td><td>R&amp;D Engineer</td><td>R&amp;D</td><td>Bengaluru</td><td>Role holds 4 permissions, none for stock</td></tr>
+            <tr><td>Uday Kherkatary</td><td>Stock Entry Operator</td><td>Central Stock — Bengaluru</td><td>Bengaluru</td><td>Needs dispatch on top</td></tr>
+            <tr><td>Spandana</td><td>Stock Entry Operator</td><td>Central Stock — Bengaluru</td><td>Bengaluru</td><td>Not on your list</td></tr>
+            <tr><td>Dispatch Blore</td><td>Dispatch Operator</td><td>Dispatch Blore</td><td>Bengaluru</td><td>Generic account; Uday does this job</td></tr>
+            <tr><td>Dispatch Hyd</td><td>Dispatch Operator</td><td>Dispatch Hyd</td><td>Hyderabad</td><td>Generic account; you named <strong>Ashish</strong></td></tr>
+            <tr><td colspan="5"><em>Missing entirely:</em> Nagarajan (Auditor, Accounts)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Roles</h3>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>Role</th><th class="num">Keys</th><th class="num">Holders</th><th>Note</th></tr></thead>
+          <tbody>
+            <tr><td>Super Admin</td><td class="num">101</td><td class="num">1</td><td>All 101 permissions</td></tr>
+            <tr><td>Admin</td><td class="num">84</td><td class="num">1</td><td>No stock, no reports, no recycle-bin purge</td></tr>
+            <tr><td>Department Manager</td><td class="num">23</td><td class="num">2</td><td>Holds <code>reports.view</code>, which the brief removes</td></tr>
+            <tr><td>Central Stock Manager</td><td class="num">29</td><td class="num">0</td><td>Nobody holds it — yet it is the only stock approver</td></tr>
+            <tr><td>Auditor</td><td class="num">20</td><td class="num">0</td><td>Nobody holds it</td></tr>
+            <tr><td>Stock Entry Operator</td><td class="num">18</td><td class="num">3</td><td>Includes the system "Deleted user" placeholder</td></tr>
+            <tr><td>Dispatch Operator</td><td class="num">12</td><td class="num">2</td><td>No <code>stock.view</code> at all</td></tr>
+            <tr><td>R&amp;D Engineer</td><td class="num">4</td><td class="num">1</td><td>BOM and intents only</td></tr>
+            <tr><td>Production Engineer</td><td class="num">0</td><td class="num">1</td><td>Empty</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Two sites (Bengaluru, Hyderabad), eight departments, and live data already in the system: 14 stock entries, 7 issues, 4 transfer requests, 2 intents, 2 purchase orders, 4 dispatches, 1 build, 1 site request. The test run in section 07 adds to that rather than wiping it.</p>
+    </section>
+
+    <!-- ============================================ 02 -->
+    <section id="findings">
+      <span class="sec-num">02 — What is broken</span>
+      <h2>Twenty-three findings, from code and data</h2>
+      <p>These come from reading the code and querying the database. They are not yet confirmed by clicking through the app — that is section 07, and it happens after you approve the permission changes, because most of these flows cannot currently be reached by the people who are supposed to run them.</p>
+
+      <h3>Stops the flows you asked me to test</h3>
+
+      <div class="finding">
+        <span class="fid">B1</span>
+        <div>
+          <h5>Nobody can approve a stock entry<span class="chip blocks">Blocks</span></h5>
+          <p>The single global approval step names the <strong>Central Stock Manager</strong> role, and that role has no members. Approval refuses unless your role <em>is</em> the step's role, with only <code>stock.scope.all</code> as an escape hatch — so today only Phani and the Admin account can approve anything. Kiruba, who you want approving stock entries, cannot.</p>
+          <p class="where">src/lib/actions/stock.ts:532–537</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B2</span>
+        <div>
+          <h5>Approval authority is decided by role name, not by permission<span class="chip debt">Model</span></h5>
+          <p>The same check, and the dashboard's review queue, compare the approver's <em>role identity</em> to the step. That is the one thing the permission model says must never happen, and it is why B1 cannot be fixed by handing anyone a key.</p>
+          <p class="where">src/lib/actions/stock.ts:532 · src/lib/actions/dashboard.ts:157–174</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B3</span>
+        <div>
+          <h5>Any approver can approve any site's central stock<span class="chip leak">Scope</span></h5>
+          <p>The "only your own department" guard is skipped when the entry has no department — and central stock never has one. There is no location guard alongside it, so an R&amp;D manager in Bengaluru could approve goods received in Hyderabad.</p>
+          <p class="where">src/lib/actions/stock.ts:517–524, 593–599</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B4</span>
+        <div>
+          <h5>A purchase order can be over-received through drafts<span class="chip blocks">Blocks</span></h5>
+          <p>Outstanding quantity is checked when the entry is <em>created</em>, counting only submitted and approved entries. Two drafts can therefore each claim the full outstanding amount, and submitting re-checks nothing. Order 10, book two drafts of 10, submit both: 20 delivered against a 10-unit line.</p>
+          <p class="where">src/lib/actions/stock.ts:247–269 vs 415–502</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B5</span>
+        <div>
+          <h5>Editing an entry never re-checks the order it is booked against<span class="chip blocks">Blocks</span></h5>
+          <p><code>updateStockEntry</code> accepts <code>purchaseOrderLineId</code> straight from the form and validates none of it — not the product, not the quantity, not whether the order is still open. A rejected entry for 5 can be edited to 500 and resubmitted against the same line.</p>
+          <p class="where">src/lib/actions/stock.ts:309–413</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B6</span>
+        <div>
+          <h5>An order closes on submission, then stays closed if the entry is rejected<span class="chip blocks">Blocks</span></h5>
+          <p>Delivered counts a <em>submitted</em> entry, so the order auto-closes the moment the operator submits. If the approver then rejects it, delivered drops back to zero but the order stays <code>CLOSED</code> — deliberately, since closing is meant to be a decision. Here it was never a decision, and the outstanding goods are now invisible.</p>
+          <p class="where">src/lib/procurement-delivery.ts · src/lib/actions/procurement.ts:718–747</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B7</span>
+        <div>
+          <h5>Approving an entry does not re-sync its order<span class="chip debt">Model</span></h5>
+          <p><code>syncPurchaseOrderFromEntry</code> is called on create and submit, never on approve or reject. Combined with B6, an order's status depends on a status the entry may not keep.</p>
+          <p class="where">src/lib/actions/stock.ts:504–578</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B8</span>
+        <div>
+          <h5>An engineer cannot see stock at another site, so cannot know to ask for it<span class="chip blocks">Blocks</span></h5>
+          <p>You want an engineer to find stock across the sites' central stores and, failing that, request a dispatch from wherever it is. But the Fulfilment planner — the only cross-site view — narrows to the viewer's own site for anyone without <code>stock.scope.all</code>. Cross-site readiness is currently visible only to Super Admin and Admin, which makes the feature unusable for the two roles it exists for.</p>
+          <p class="where">src/lib/actions/fulfilment.ts:126–134</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B9</span>
+        <div>
+          <h5>Dispatch operators cannot see stock at all<span class="chip blocks">Blocks</span></h5>
+          <p>The role carries two scope keys but not <code>stock.view</code>, so the scopes grant nothing and the Stock Entries page is refused. It also carries both <code>stock.scope.department</code> and <code>stock.scope.location</code>; the wider one wins, so the first is dead weight.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B10</span>
+        <div>
+          <h5>An engineer's role has no permissions<span class="chip blocks">Blocks</span></h5>
+          <p>Production Engineer holds nothing, so Deepa signs in to an empty dashboard. R&amp;D Engineer holds four keys and none of them touch stock, so Raghava cannot see a product, let alone request one.</p>
+        </div>
+      </div>
+
+      <h3>Data leaks across a boundary</h3>
+
+      <div class="finding">
+        <span class="fid">B11</span>
+        <div>
+          <h5>Site-scoped people get company-wide dashboard figures<span class="chip leak">Scope</span></h5>
+          <p>The dashboard narrows its numbers for <code>own</code> and <code>department</code> scope but passes nothing for <code>location</code> scope, so it falls through to the unfiltered branch. A Bengaluru operator's tiles count every entry in the company — and the value tile too, if they hold <code>stock.value.view</code>.</p>
+          <p class="where">src/app/(dashboard)/dashboard/page.tsx:44–47</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B12</span>
+        <div>
+          <h5>Every dashboard action is ungated<span class="chip leak">Scope</span></h5>
+          <p>Nothing in <code>src/lib/actions/dashboard.ts</code> calls <code>requirePermission</code>. These are server actions, so any signed-in person can call them directly regardless of what their page renders. <code>getSearchableActivity</code> returns activity-log lines to anyone; <code>getDashboardStats</code> returns headcount and the last ten log entries.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B13</span>
+        <div>
+          <h5>The recycle bin is everyone's, not your own<span class="chip leak">Scope</span></h5>
+          <p>You asked for each person to have their own bin. <code>getRecycleBin</code> returns everything anyone deleted, with no filter on who deleted it, and <code>getRecycleBinCount</code> has no permission check at all.</p>
+          <p class="where">src/lib/actions/recycle-bin.ts:105–140</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B14</span>
+        <div>
+          <h5>A department-scoped person can pull another site's central stock<span class="chip leak">Scope</span></h5>
+          <p>The transfer picker offers every entry with no department — company-wide — because it filters on department without also filtering on location. A Bengaluru engineer can request Hyderabad's central stock straight into their department, skipping dispatch entirely. The stock <em>list</em> gets this right; the picker does not.</p>
+          <p class="where">src/lib/actions/requests.ts:552–566</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B15</span>
+        <div>
+          <h5>Approving a transfer ignores dispatch and build commitments<span class="chip leak">Scope</span></h5>
+          <p>Every other surface asks <code>availableQuantity()</code>, which subtracts issues, pending transfers, dispatches <em>and</em> builds. Transfer approval subtracts issues only, so it will happily move stock already loaded onto a consignment.</p>
+          <p class="where">src/lib/actions/requests.ts:465–471</p>
+        </div>
+      </div>
+
+      <h3>Permission-model debt</h3>
+
+      <div class="finding">
+        <span class="fid">B16</span>
+        <div>
+          <h5>Activity-log breadth is hardcoded to three role names<span class="chip debt">Model</span></h5>
+          <p>Super Admin and Admin see everything, Department Manager sees their department, everyone else sees only their own actions — decided by string comparison on the role name. An Auditor granted <code>activity.view</code> would see nothing but their own clicks, and no new role can ever be given department-wide activity.</p>
+          <p class="where">src/lib/actions/activity.ts:111–135</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B17</span>
+        <div>
+          <h5>Procurement activity cannot be separated from stock activity<span class="chip debt">Model</span></h5>
+          <p>Intents and orders sit inside the "Stock in" category. Your brief gives Shravani procurement activity but not stock-entry activity, and today that combination cannot be expressed.</p>
+          <p class="where">src/lib/activity-categories.ts:17–28</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B18</span>
+        <div>
+          <h5>Four asset permissions do nothing<span class="chip debt">Model</span></h5>
+          <p><code>assets.create</code>, <code>assets.edit</code>, <code>assets.delete</code> and <code>assets.transfer</code> appear in the seed, in the role editor and in the dependency map, but are referenced by no page and no action anywhere in the codebase. Only <code>assets.view</code> does anything; creating an asset is gated on <code>stock.move</code> instead. "Manage assets" is therefore not currently a grantable capability.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B19</span>
+        <div>
+          <h5>There is no way to export a vendor or client list<span class="chip debt">Gap</span></h5>
+          <p>You want Nagarajan to download both. Export exists for stock reports and for dispatch, not for the vendor or client masters — no key, no button, no action.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B20</span>
+        <div>
+          <h5>Reports are held by two roles the brief excludes<span class="chip debt">Config</span></h5>
+          <p>Department Manager and Central Stock Manager both hold <code>reports.view</code>. You were explicit that managers get no reports — stock query and search at locations is enough.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B21</span>
+        <div>
+          <h5>The Auditor role does not match Nagarajan's brief<span class="chip debt">Config</span></h5>
+          <p>It can add products and categories but not edit them; it cannot manage assets, verify needs, or raise a purchase order — all of which you asked for. It also holds <code>recyclebin.view</code>, which under today's behaviour means every deletion in the company.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B22</span>
+        <div>
+          <h5>Admin holds keys it cannot use<span class="chip debt">Config</span></h5>
+          <p><code>stock.batch.edit</code> and <code>stock.warranty.edit</code> without <code>stock.view</code> — both are fields on a stock entry the Admin role cannot open. The dependency map already declares this pairing; the role predates it.</p>
+        </div>
+      </div>
+
+      <div class="finding">
+        <span class="fid">B23</span>
+        <div>
+          <h5>Catalog route protection disagrees with the catalog page<span class="chip debt">Config</span></h5>
+          <p>Middleware admits four keys to <code>/stock/products</code>; the page itself accepts six. Someone holding only <code>products.create.made</code> or <code>categories.prefix.edit</code> is bounced at the door by a rule the page would have let through.</p>
+          <p class="where">middleware.ts:25–30</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================ 03 -->
+    <section id="requests">
+      <span class="sec-num">03 — Retiring Requests</span>
+      <h2>Requests folds into Catalog and Assets</h2>
+      <p>Three queues live on one page today: transfers, product requests and category requests. Catalog owns products and categories; Assets owns what a department holds and how it got there. The queues move to their owners and the page disappears.</p>
+
+      <div class="scroller">
+        <table>
+          <thead><tr><th>Today</th><th>Moves to</th><th>Shape</th></tr></thead>
+          <tbody>
+            <tr><td>Transfers tab</td><td><code>/assets</code></td><td>A second tab beside Holdings, carrying both the raise and the approve queue. The existing "New Asset" dialog already moves central stock into a department — this is the same act, with a manager in the middle.</td></tr>
+            <tr><td>Products tab</td><td><code>/stock/products</code></td><td>A fourth tab beside Raw materials · Products · Categories, visible only to someone who can raise or review one.</td></tr>
+            <tr><td>Categories tab</td><td><code>/stock/products</code></td><td>Merged into the same tab, split by type as it is now.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h4>What is touched</h4>
+      <ul>
+        <li>Delete <code>src/app/(dashboard)/stock/requests/</code> and its three components; the review dialogs move into the Catalog and Assets component folders.</li>
+        <li>Remove the Requests nav item (<code>src/lib/constants.ts</code>) and the <code>/stock/requests</code> route entry (<code>middleware.ts</code>).</li>
+        <li>Repoint the dashboard's quick action and review-queue links to <code>/assets</code> and <code>/stock/products</code> (<code>dynamic-dashboard.tsx</code>, <code>requests.ts</code>).</li>
+        <li>Keep <code>src/lib/actions/requests.ts</code> as the data layer — the actions are sound, only their home page changes. <code>revalidatePath</code> targets are updated.</li>
+      </ul>
+
+      <h4>The permission keys are renamed into their parents</h4>
+      <p>Settled: the <code>requests.*</code> namespace disappears entirely, so nothing in the model still refers to a page that no longer exists.</p>
+      <div class="scroller">
+        <table>
+          <thead><tr><th class="mono">Was</th><th class="mono">Becomes</th><th>Module</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">requests.transfer.create</td><td class="mono">assets.transfer.request</td><td>assets</td></tr>
+            <tr><td class="mono">requests.transfer.approve</td><td class="mono">assets.transfer.approve</td><td>assets</td></tr>
+            <tr><td class="mono">requests.product.create</td><td class="mono">products.request.create</td><td>products</td></tr>
+            <tr><td class="mono">requests.product.approve</td><td class="mono">products.request.approve</td><td>products</td></tr>
+            <tr><td class="mono">requests.category.create</td><td class="mono">categories.request.create</td><td>products</td></tr>
+            <tr><td class="mono">requests.category.approve</td><td class="mono">categories.request.approve</td><td>products</td></tr>
+            <tr><td class="mono">requests.view</td><td><em>retired</em></td><td>—</td></tr>
+            <tr><td class="mono">assets.transfer</td><td><em>absorbed</em> by <code>assets.transfer.request</code></td><td>assets</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The rename is a single migration that updates the <code>Permission</code> rows in place, so every role grant and every individual grant follows the key by foreign key and nothing has to be re-granted. <code>requests.view</code> is dropped along with its six dependency entries, replaced by <code>assets.view</code> and the catalog's manage keys. The previously dead <code>assets.transfer</code> key (B18) is absorbed rather than left to confuse anyone.</p>
+    </section>
+
+    <!-- ============================================ 04 -->
+    <section id="model">
+      <span class="sec-num">04 — Model changes</span>
+      <h2>Six changes to the permission model</h2>
+      <p>Each of these exists because the brief asks for something the current model cannot express. They are the reason this is a plan and not a config change.</p>
+
+      <h3>0 · A person can hold more than one role</h3>
+      <p>You asked whether this is possible. It is, and it is the right answer for Uday and Kiruba — both of whom do two jobs, and both of whom I was otherwise about to paper over with a fistful of personal grants.</p>
+      <p><strong>The shape.</strong> <code>User.roleId</code> stays as the <em>primary</em> role — it is what the badge shows, what the directory filters on, and what the hierarchy rules read. A new <code>UserRole</code> join table carries any <em>additional</em> roles. Permissions become the union of every held role plus the person's individual grants; the hierarchy level becomes the strongest (lowest) of the roles held. Nothing historic references a role, so there is no data at risk.</p>
+      <p><strong>What it touches.</strong> <code>unionPermissions()</code> in <code>src/auth.ts</code> (two call sites), the session shape in <code>next-auth.d.ts</code>, an "Additional roles" card on the user profile, the directory filter matching any held role, and the role-delete guard, which must now also refuse a role held as a secondary. About a dozen files, none of them deep.</p>
+      <div class="note">
+        <p><strong>Two things it does not solve, which is why it lands before the rest.</strong></p>
+        <p>It does not settle the scope conflict. Holding Stock Entry Operator (<code>stock.scope.own</code>) and Dispatch Operator (<code>stock.scope.location</code>) together still resolves widest-wins to the whole site — so Uday sees all of Bengaluru's stock either way. That is a judgement call about Uday, not a mechanism (question 1 in section 08).</p>
+        <p>And it makes every remaining role-name check ambiguous — "is this person a Department Manager?" has no single answer once a person holds three roles. Stock approval (B1, B2) and activity breadth (B16) must move to permissions <em>first</em>, or multi-role will silently break them.</p>
+      </div>
+
+      <h3>1 · Stock approval becomes a permission, not a role</h3>
+      <p>The approval flow keeps its steps and their order — that is a real feature — but the step's role becomes <em>who is expected to do it</em>, not <em>who is allowed to</em>. Authority moves to <code>stock.approve</code>, narrowed by a new location guard so an approver only ever acts on entries received at their own site. Fixes B1, B2, B3 together, and lets Kiruba approve without inventing a role for him.</p>
+
+      <h3>2 · Activity gains a scope family</h3>
+      <p>New keys <code>activity.scope.all</code>, <code>activity.scope.department</code>, <code>activity.scope.own</code>, resolved widest-wins exactly like stock scope, replacing the three role-name comparisons. Fixes B16 and gives you "activity log of his department" as a grant rather than a job title.</p>
+
+      <h3>3 · The recycle bin gains a scope</h3>
+      <p><code>recyclebin.scope.all</code> versus own. Without the wide key you see only what you deleted — which is what makes "everyone has access to their own recycle bin" safe to grant to all nine people. Fixes B13.</p>
+
+      <h3>4 · Procurement becomes its own activity category</h3>
+      <p>Intents and orders move out of "Stock in" into a new <code>activity.view.procurement</code>. Fixes B17 and lets Shravani have buying history without receiving history.</p>
+
+      <h3>5 · Assets gets real management keys, and cross-site readiness opens up</h3>
+      <p>The four dead asset keys (B18) are wired to the Assets page: <code>assets.create</code> gates the New Asset dialog alongside <code>stock.move</code>, <code>assets.edit</code> gates correcting a holding, <code>assets.transfer</code> gates the transfer queue. Separately, the Fulfilment planner stops narrowing to one site: <strong>availability counts</strong> per site are shown to anyone holding <code>fulfilment.view</code>, while the underlying stock entries stay behind the usual scope. Seeing that Hyderabad holds nine of something is what makes asking for them possible; it does not reveal what they cost or who supplied them. Fixes B8, B9, B18.</p>
+
+      <h3>6 · A bill of materials records the department that wrote it</h3>
+      <p>You want a manager approving their own department's work, and the model could not express that because a bill of materials belongs to a product and a product belongs to nobody. So the <em>submission</em> carries the department, not the product: a new <code>authorDepartmentId</code> on <code>BillOfMaterials</code>, stamped from the author at submit time. <code>bom.approve</code> then only reaches submissions from your own department, unless you hold full scope. Raghava's work goes to Manohar, Deepa's to Kiruba, and neither can sign off the other's.</p>
+      <p>Versions written by someone with no department (an admin fixing something) carry no department and stay approvable by anyone holding the key — otherwise an admin correction could become unapprovable.</p>
+
+      <h3>7 · You cannot answer your own request</h3>
+      <p>Ashish is the only pair of hands in Hyderabad, so "accept" was going to be a handshake with himself. The rule is now explicit and applies to everyone: <strong>whoever raised something can never be the one who answers it.</strong></p>
+      <ul>
+        <li><code>acceptDispatch</code> and <code>rejectDispatch</code> refuse when the caller created the consignment.</li>
+        <li><code>acceptSiteRequest</code> and <code>rejectSiteRequest</code> refuse when the caller raised the request.</li>
+      </ul>
+      <p>Confirming <em>delivery</em> is deliberately left alone — receiving goods you asked for is the normal case, not a self-approval. The same guard already exists for bills of materials; this makes it consistent across the three places it was missing.</p>
+
+      <div class="note">
+        <p>Everything else in section 02 is a straightforward repair inside the existing model: PO integrity (B4–B7), dashboard gating and scoping (B11, B12), transfer scope and availability (B14, B15), and the four configuration corrections (B20–B23).</p>
+      </div>
+    </section>
+
+    <!-- ============================================ 05 -->
+    <section id="matrix">
+      <span class="sec-num">05 — Roles &amp; people</span>
+      <h2>Seven roles, nine people, no personal grants</h2>
+      <p>New keys are marked <span class="new">in green</span>; keys being taken away are <span class="gone">struck through</span>. Everyone gets <code>recyclebin.view</code> + <code>recyclebin.restore</code> + <code>recyclebin.scope.own</code> and it is not repeated below.</p>
+      <p>Because roles are now additive, two of them are deliberately small — <strong>Buyer</strong> and <strong>Stock Approver</strong> are jobs, not job titles, and they sit on top of whatever else a person does. That is what removes every one of the eleven personal grants I was otherwise going to hand Kiruba and Uday.</p>
+
+      <div class="role">
+        <header><h3>Super Admin</h3><span class="who">Phani Raj</span></header>
+        <p style="margin:0;font-size:15px;color:var(--ink-soft);max-width:70ch">Every permission, including the five new ones. The only holder of <code>recyclebin.scope.all</code> and <code>recyclebin.purge</code> besides Shravani.</p>
+      </div>
+
+      <div class="role">
+        <header><h3>Admin</h3><span class="who">Shravani — no department, so no site restriction</span></header>
+        <dl class="grants">
+          <dt>Team</dt><dd>users.view/create/edit/delete · users.password.view/edit · users.permissions.grant · roles.* · departments.*</dd>
+          <dt>Masters</dt><dd>vendors.* · clients.* · products.* · categories.* (incl. prefix &amp; code override) <span class="new">· vendors.export · clients.export</span></dd>
+          <dt>Assets</dt><dd>assets.view — <strong>read only</strong>, as you asked</dd>
+          <dt>Procurement</dt><dd>procurement.intent.view/create/approve · po.view/create/close · value.view · config.flows.procurement</dd>
+          <dt>Activity</dt><dd>activity.view <span class="new">· activity.scope.all</span> · view.people · view.catalog <span class="new">· view.procurement</span></dd>
+          <dt>Removed</dt><dd><span class="gone">activity.view.stock · activity.view.movement · activity.view.making · activity.view.security · stock.batch.edit · stock.warranty.edit · stock.move</span></dd>
+          <dt>Never</dt><dd>reports.view · reports.export · stock.view</dd>
+        </dl>
+        <p style="margin:12px 0 0;font-size:14px;color:var(--ink-faint)">Settled: Shravani sees what each department holds and cannot create or move one. Turning central stock into an asset stays with Kiruba and Nagarajan, who can see the stock it comes from. She keeps <code>stock.move</code> out of her set entirely, since without <code>stock.view</code> it could never be used.</p>
+      </div>
+
+      <div class="role">
+        <header><h3>Auditor</h3><span class="who">Nagarajan — Accounts, Bengaluru</span></header>
+        <dl class="grants">
+          <dt>Reports</dt><dd>reports.view · reports.export · stock.view · stock.scope.all · stock.value.view · stock.warranty.view · dispatch.view · dispatch.export</dd>
+          <dt>Read</dt><dd>departments.view · users.view · assets.view · bom.view · products.view · fulfilment.view</dd>
+          <dt>Masters</dt><dd>vendors.view/create/edit · clients.view/create/edit <span class="new">· vendors.export · clients.export</span></dd>
+          <dt>Catalog</dt><dd>products.create <span class="new">· products.create.made · products.edit · categories.edit</span> · categories.create</dd>
+          <dt>Assets</dt><dd><span class="new">assets.create · assets.edit · assets.transfer · stock.move</span></dd>
+          <dt>Removed</dt><dd><span class="gone">recyclebin.view (company-wide)</span> — replaced by the own-scope grant everyone gets; <span class="gone">procurement.*</span> moves to the Buyer role he also holds</dd>
+        </dl>
+      </div>
+
+      <div class="role">
+        <header><h3>Buyer</h3><span class="who">Additional role — Kirubakaran, Nagarajan <strong>(new)</strong></span></header>
+        <dl class="grants">
+          <dt>Buying</dt><dd>procurement.intent.view · procurement.intent.create · procurement.intent.approve · procurement.po.view · procurement.po.create · procurement.po.close · procurement.value.view</dd>
+          <dt>Support</dt><dd>vendors.view · products.view</dd>
+        </dl>
+        <p style="margin:12px 0 0;font-size:14px;color:var(--ink-faint)">The codebase already says "procurement is a job, not a department" in the permission file. This makes that literal: whoever does the buying holds this, whatever else they are.</p>
+      </div>
+
+      <div class="role">
+        <header><h3>Stock Approver</h3><span class="who">Additional role — Kirubakaran <strong>(new, replaces Central Stock Manager)</strong></span></header>
+        <dl class="grants">
+          <dt>Approval</dt><dd>stock.approve · stock.view · stock.scope.location · stock.warranty.view</dd>
+        </dl>
+        <p style="margin:12px 0 0;font-size:14px;color:var(--ink-faint)">The site scope is what makes approval possible at all: without it Kiruba sees only Production's stock and can never open the central-stock entry waiting on him. With the location guard from change 1, it also means he can only ever approve Bengaluru's goods — never Hyderabad's. This is the old Central Stock Manager role, slimmed to the one thing it was load-bearing for.</p>
+      </div>
+
+      <div class="role">
+        <header><h3>Department Manager</h3><span class="who">Kirubakaran — Production · Manohar — R&amp;D</span></header>
+        <dl class="grants">
+          <dt>Stock</dt><dd>stock.view · stock.scope.department · stock.move · stock.warranty.view <span class="gone">· stock.approve</span></dd>
+          <dt>Transfers</dt><dd>requests.transfer.approve · requests.transfer.create</dd>
+          <dt>Assets</dt><dd>assets.view <span class="new">· assets.create · assets.edit · assets.transfer</span></dd>
+          <dt>Making</dt><dd>bom.view/create/edit/approve/publish</dd>
+          <dt>Fulfilment</dt><dd>fulfilment.view · fulfilment.request</dd>
+          <dt>Buying</dt><dd>procurement.intent.view · procurement.intent.create · procurement.po.view</dd>
+          <dt>Activity</dt><dd>activity.view <span class="new">· activity.scope.department</span> · view.people <span class="new">· view.stock · view.movement · view.making</span></dd>
+          <dt>Removed</dt><dd><span class="gone">reports.view</span> · <span class="gone">stock.approve</span> — Kiruba gets approval through the Stock Approver role, Manohar does not</dd>
+          <dt>People</dt><dd>users.view · departments.view</dd>
+        </dl>
+      </div>
+
+      <div class="role">
+        <header><h3>Engineer</h3><span class="who">Deepanjona — Production · Raghava — R&amp;D <strong>(new role, replaces the two empty ones)</strong></span></header>
+        <dl class="grants">
+          <dt>Stock</dt><dd><span class="new">stock.view · stock.scope.department</span> — own department plus their site's central stock</dd>
+          <dt>Catalog</dt><dd><span class="new">products.view · requests.product.create · requests.category.create</span></dd>
+          <dt>Transfers</dt><dd><span class="new">requests.transfer.create</span> — approved by their own manager</dd>
+          <dt>Fulfilment</dt><dd><span class="new">fulfilment.view · fulfilment.request</span> — see every site's availability, ask the holder to send it</dd>
+          <dt>Buying</dt><dd>procurement.intent.view · procurement.intent.create — verified by Kiruba whatever the department</dd>
+          <dt>Making</dt><dd>bom.view · bom.create — submitted, published by their manager</dd>
+          <dt>Assets</dt><dd><span class="new">assets.view</span></dd>
+        </dl>
+      </div>
+
+      <div class="role">
+        <header><h3>Stock Entry Operator</h3><span class="who">Uday — Central Stock, Bengaluru</span></header>
+        <dl class="grants">
+          <dt>Stock</dt><dd>stock.view · stock.create · stock.edit · stock.scope.own · stock.batch.edit · stock.value.view · stock.warranty.view/edit</dd>
+          <dt>Orders</dt><dd>procurement.intent.view/create · procurement.po.view — enough to tell a PO delivery from a fresh one</dd>
+          <dt>Catalog</dt><dd>products.view · requests.product.create · requests.category.create</dd>
+          <dt>Making</dt><dd>bom.view · bom.create</dd>
+          <dt>Removed</dt><dd><span class="gone">requests.transfer.create</span> — an operator books goods in; moving them out is the manager's act</dd>
+        </dl>
+      </div>
+
+      <div class="role">
+        <header><h3>Dispatch Operator</h3><span class="who">Ashish — Dispatch Hyd · also held by Uday as a second role</span></header>
+        <dl class="grants">
+          <dt>Dispatch</dt><dd>dispatch.view · dispatch.create · dispatch.accept · dispatch.receive · dispatch.export</dd>
+          <dt>Stock</dt><dd><span class="new">stock.view</span> · stock.scope.location <span class="gone">· stock.scope.department</span> · stock.warranty.view</dd>
+          <dt>Fulfilment</dt><dd>fulfilment.view · fulfilment.approve <span class="new">· fulfilment.request</span> — check readiness, ask another site, answer their asks</dd>
+          <dt>Catalog</dt><dd>products.view · bom.view</dd>
+          <dt>Never</dt><dd>stock.value.view — a dispatcher moves goods, not money</dd>
+        </dl>
+      </div>
+
+      <div class="role">
+        <header><h3>Retired roles</h3><span class="who">Central Stock Manager · Staff · Production Engineer · R&amp;D Engineer</span></header>
+        <p style="margin:0;font-size:15px;color:var(--ink-soft);max-width:70ch">All four have no live holders once the engineers move to the new Engineer role. Central Stock Manager's one load-bearing job — being the approver on the global flow step — is taken over by the Stock Approver role above and the permission check from change 1, so it is deactivated rather than deleted; its name is on historic approval records. Deleting anything follows the usual deactivate-first flow.</p>
+      </div>
+
+      <h3>Who holds what</h3>
+      <p>With additive roles, nobody in the list needs an individual grant. <code>UserPermission</code> stays for genuine one-offs — a fortnight's cover, a single exception — which is what it is good at.</p>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>Person</th><th>Primary role</th><th>Additional</th><th>Department · site</th></tr></thead>
+          <tbody>
+            <tr><td>Phani Raj</td><td>Super Admin</td><td>—</td><td>— · unrestricted</td></tr>
+            <tr><td>Shravani</td><td>Admin</td><td>—</td><td>— · unrestricted</td></tr>
+            <tr><td>Nagarajan</td><td>Auditor</td><td class="mono">Buyer</td><td>Accounts · Bengaluru</td></tr>
+            <tr><td>Kirubakaran</td><td>Department Manager</td><td class="mono">Buyer · Stock Approver</td><td>Production · Bengaluru</td></tr>
+            <tr><td>Manohar</td><td>Department Manager</td><td>—</td><td>R&amp;D · Bengaluru</td></tr>
+            <tr><td>Deepanjona</td><td>Engineer</td><td>—</td><td>Production · Bengaluru</td></tr>
+            <tr><td>Raghava</td><td>Engineer</td><td>—</td><td>R&amp;D · Bengaluru</td></tr>
+            <tr><td>Uday Kherkatary</td><td>Stock Entry Operator</td><td class="mono">Dispatch Operator</td><td>Central Stock · Bengaluru</td></tr>
+            <tr><td>Ashish</td><td>Dispatch Operator</td><td>—</td><td>Dispatch Hyd · Hyderabad</td></tr>
+            <tr><td>Spandana</td><td>Stock Entry Operator</td><td>—</td><td>Central Stock · Bengaluru</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Accounts — settled</h3>
+      <ul>
+        <li><strong>Create</strong> Nagarajan (Auditor + Buyer, Accounts, Bengaluru).</li>
+        <li><strong>Rename</strong> the generic <em>Admin</em> account to Shravani and <em>Dispatch Hyd</em> to Ashish, keeping their history attached. Email addresses change to match; their passwords are reset and handed to you.</li>
+        <li><strong>Deactivate</strong> <em>Dispatch Blore</em> — Uday covers Bengaluru dispatch through his second role.</li>
+        <li><strong>Keep</strong> Spandana as a second Bengaluru stock entry operator.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================ 06 -->
+    <section id="phases">
+      <span class="sec-num">06 — Order of work</span>
+      <h2>Nine phases, each landing a whole working flow</h2>
+      <p>Ordered so nothing is half-built at the end of a phase: permissions come before the pages that use them, the role-name checks die before multi-role can trip over them, the flow repairs come before the run that tests them — and the consolidation comes <strong>last</strong>, because cleaning code I am about to rewrite would be work done twice.</p>
+
+      <div class="scroller">
+        <table>
+          <thead><tr><th style="width:52px">#</th><th>Phase</th><th>Lands</th><th>Fixes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="mono">P0</td>
+              <td><strong>Roles become additive</strong></td>
+              <td>A <code>UserRole</code> join table beside the existing primary role; permissions unioned across every held role; hierarchy taken as the strongest held; an "Additional roles" card on the profile; directory filter and role-delete guard taught about secondary holdings. Ships with Uday holding two roles, so the mechanism is proven by a real case rather than a test row.</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td class="mono">P1</td>
+              <td><strong>Permission model</strong></td>
+              <td>Five new key families (activity scope, recycle-bin scope, procurement activity, asset management wiring, export keys) added to <code>permissions.ts</code>, the seed and one idempotent migration script. Role-name branches in activity and recycle bin replaced.</td>
+              <td class="mono">B13 B16 B17 B18 B19</td>
+            </tr>
+            <tr>
+              <td class="mono">P2</td>
+              <td><strong>Roles &amp; people</strong></td>
+              <td>The seven role definitions from section 05 including the new Engineer, Buyer and Stock Approver roles, the role assignments for all ten accounts, the account renames and the four retirements. One script, safe to re-run.</td>
+              <td class="mono">B9 B10 B20 B21 B22</td>
+            </tr>
+            <tr>
+              <td class="mono">P3</td>
+              <td><strong>Approval &amp; scope repairs</strong></td>
+              <td>Permission-based stock approval with a location guard; dashboard actions gated and site-scoped; transfer picker location-filtered; transfer approval using the shared availability rule; middleware/page agreement on the catalog route.</td>
+              <td class="mono">B1 B2 B3 B11 B12 B14 B15 B23</td>
+            </tr>
+            <tr>
+              <td class="mono">P4</td>
+              <td><strong>Purchase-order integrity</strong></td>
+              <td>Outstanding re-checked at submit and at edit; the order re-synced on approve and reject; an order that auto-closed re-opens when the delivery that closed it is rejected. Partial and full receipts both come out right.</td>
+              <td class="mono">B4 B5 B6 B7</td>
+            </tr>
+            <tr>
+              <td class="mono">P5</td>
+              <td><strong>Cross-site readiness</strong></td>
+              <td>Fulfilment shows every site's availability to anyone holding <code>fulfilment.view</code>, keeping entry-level detail behind the existing scopes. This is what makes an engineer's "ask another site" real.</td>
+              <td class="mono">B8</td>
+            </tr>
+            <tr>
+              <td class="mono">P6</td>
+              <td><strong>Requests retired</strong></td>
+              <td>Transfers into Assets, product and category requests into Catalog, page and nav and route removed, dashboard links repointed, the six keys renamed into their parents, <code>requests.view</code> retired.</td>
+              <td class="mono">B18</td>
+            </tr>
+            <tr>
+              <td class="mono">P7</td>
+              <td><strong>The test run</strong></td>
+              <td>Section 07, executed against the real database as each of the nine people. I come back with what actually broke before anything else happens.</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td class="mono">P8</td>
+              <td><strong>Consolidation</strong></td>
+              <td>Section 08 in full: history squashed, dead code removed, duplication collapsed, comments rewritten to one convention.</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td class="mono">P9</td>
+              <td><strong>Documentation</strong></td>
+              <td>README, <code>summary.md</code> and <code>permissions.md</code> rewritten for someone reading the project for the first time, with a stated reading order.</td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Every phase ends with <code>npx tsc --noEmit</code>, <code>npm run lint</code> and <code>npm run audit:access</code> green. I report at the end of each one rather than disappearing for the whole run.</p>
+    </section>
+
+    <!-- ============================================ 07 -->
+    <section id="test">
+      <span class="sec-num">07 — The test run</span>
+      <h2>One pass through every flow, in the order the business runs them</h2>
+      <p>This is the script I would follow, signing in as each person in turn against the real database. Each step names who is acting and what should happen. A step that fails is a bug report; a step that succeeds for the wrong person is also a bug report.</p>
+
+      <h3>Setup</h3>
+      <ul>
+        <li>Sign-in for all nine accounts confirmed first — an unusable account invalidates everything after it.</li>
+        <li>Two products used throughout: a <strong>raw material</strong> (bought in, has a vendor) and a <strong>finished product</strong> with a published bill of materials.</li>
+        <li>Existing data is left alone. Every record created below is prefixed so it can be identified and removed afterwards.</li>
+      </ul>
+
+      <h3>A · Catalog and the request queue</h3>
+      <ol class="run">
+        <li><div><span class="as">Uday</span><p class="act">Cannot find a product on the new-entry form; raises a product request with a note.</p><p class="exp">Appears in the Catalog page's Requests tab. Uday sees "Request", never "Create".</p></div></li>
+        <li><div><span class="as">Nagarajan</span><p class="act">Approves it, typing the second half of the code.</p><p class="exp">Prefix comes from the category and is not editable; product exists immediately, code is <code>&lt;prefix&gt;-&lt;typed&gt;</code>.</p></div></li>
+        <li><div><span class="as">Raghava</span><p class="act">Raises a category request; opens the Catalog page.</p><p class="exp">Sees the Requests tab and his own request only — no Raw materials, Products or Categories tabs, since he holds no manage key.</p></div></li>
+        <li><div><span class="as">Deepa</span><p class="act">Opens Catalog.</p><p class="exp">Sees her own requests; sees no request Raghava raised.</p></div></li>
+      </ol>
+
+      <h3>B · A need becomes an order becomes stock</h3>
+      <ol class="run">
+        <li><div><span class="as">Deepa</span><p class="act">Finds no stock of the raw material anywhere; raises a purchase intent for 10.</p><p class="exp">Intent records Production as the asking department and Bengaluru as the site, without her choosing either.</p></div></li>
+        <li><div><span class="as">Manohar</span><p class="act">Opens Procurement.</p><p class="exp">Sees the need (department visibility) but has no Verify button — he does not hold the key.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Verifies Deepa's need, though she is not in R&amp;D or his own team.</p><p class="exp">Status <code>APPROVED</code>; it appears in his dashboard review queue beforehand.</p></div></li>
+        <li><div><span class="as">Raghava</span><p class="act">Raises a second intent from R&amp;D; Kiruba verifies that too.</p><p class="exp">Cross-department verification works in both directions.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Puts both verified needs onto one purchase order to one vendor, for Bengaluru, with prices.</p><p class="exp">Both intents flip to <code>ORDERED</code>; order total shown because he holds <code>procurement.value.view</code>.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Opens Procurement.</p><p class="exp">Sees the order and its outstanding quantities, <strong>with no prices</strong>.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">New stock entry → "Against a purchase order" → picks the line → enters <strong>4 of 10</strong> → attaches the required invoice → submits.</p><p class="exp">Product, vendor and site fill themselves in. Order shows 4 delivered, 6 outstanding, still <code>OPEN</code>.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Tries to enter <strong>7</strong> against the same line.</p><p class="exp">Refused with "only 6 more owed" — and after P4, refused at submit as well as at create, which is the B4 case.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Rejects the 4-unit entry with a reason.</p><p class="exp">Entry returns to draft for Uday; <strong>order goes back to 0 delivered and stays open</strong> — the B6 case.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Edits the rejected entry to 4 and resubmits; tries editing it to 40 first.</p><p class="exp">40 is refused (B5); 4 is accepted; approval history from the first round is cleared, not appended.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Approves it.</p><p class="exp">Entry <code>APPROVED</code>, 4 in Bengaluru central stock, order 6 outstanding.</p></div></li>
+        <li><div><span class="as">Manohar</span><p class="act">Opens the same entry.</p><p class="exp">Visible (central stock at his site) but <strong>no approve action</strong> after P3's location and permission rules — and never approvable if it were Hyderabad's.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Books the remaining <strong>6</strong> against the line and submits; Kiruba approves.</p><p class="exp">Order closes itself, reason recorded as automatic. Nothing outstanding.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Raises a fresh entry with no order behind it, sets a batch number, submits; Kiruba approves.</p><p class="exp">Batch is stored on the entry and will be inherited by any dispatch line from it.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Closes a second order short with a reason while units are still owed.</p><p class="exp">Line keeps showing ordered against delivered; a late delivery cannot silently re-open it.</p></div></li>
+      </ol>
+
+      <h3>C · Stock reaching a department</h3>
+      <ol class="run">
+        <li><div><span class="as">Deepa</span><p class="act">Requests a transfer of 3 from Bengaluru central stock into Production.</p><p class="exp">Only her site's central stock is offered — Hyderabad's does not appear (B14).</p></div></li>
+        <li><div><span class="as">Manohar</span><p class="act">Opens the transfer queue on Assets.</p><p class="exp">Deepa's request is not his to review; Production's requests never reach R&amp;D.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Approves it.</p><p class="exp">Stock moves in one act; central stock falls by 3; Production's holding rises by 3.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Moves 2 more directly, marked as an asset, with no request.</p><p class="exp">Appears under Assets for Production with its value hidden — he has no <code>stock.value.view</code>.</p></div></li>
+        <li><div><span class="as">Deepa</span><p class="act">Requests a transfer of a quantity already committed to a dispatch.</p><p class="exp">Refused on the true available figure, not on quantity-minus-issues (B15).</p></div></li>
+        <li><div><span class="as">Manohar</span><p class="act">Opens Assets.</p><p class="exp">R&amp;D's holdings only. Production's assets are absent, including entries whose stock has fully moved to Production.</p></div></li>
+      </ol>
+
+      <h3>D · Making something</h3>
+      <ol class="run">
+        <li><div><span class="as">Raghava</span><p class="act">Writes a bill of materials for the finished product and submits it.</p><p class="exp">Status <code>PENDING</code>; he sees no Publish button.</p></div></li>
+        <li><div><span class="as">Kiruba</span><p class="act">Opens it.</p><p class="exp">Approvals tab appears; approving publishes it and retires the previous version.</p></div></li>
+        <li><div><span class="as">Manohar</span><p class="act">Writes one himself and publishes it directly.</p><p class="exp">Holding <code>bom.publish</code> skips the queue — the intended manager path.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Starts a build of 3, finishes 2, leaves 1 on the floor.</p><p class="exp">Components leave central stock at the start; two finished units book in as an ordinary approved entry carrying the build number as batch; the third is counted, visible and not dispatchable.</p></div></li>
+      </ol>
+
+      <h3>E · Getting it out, and across sites</h3>
+      <ol class="run">
+        <li><div><span class="as">Ashish</span><p class="act">Checks fulfilment for 5 of the finished product.</p><p class="exp">After P5, sees both sites' availability and that Bengaluru holds them (B8).</p></div></li>
+        <li><div><span class="as">Ashish</span><p class="act">Asks Bengaluru for 5.</p><p class="exp">Site request raised from Hyderabad to Bengaluru.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Agrees to it.</p><p class="exp">A consignment is raised <strong>in transit</strong>, not pending — Hyderabad asked, so there is no second handshake. Stock is picked oldest-first.</p></div></li>
+        <li><div><span class="as">Ashish</span><p class="act">Marks it received.</p><p class="exp">Books in as Hyderabad central stock; every existing query sees it with no special case.</p></div></li>
+        <li><div><span class="as">Ashish</span><p class="act">Dispatches to a client; then, on a second consignment, rejects one arriving and cancels one he raised.</p><p class="exp">Client dispatch leaves immediately. Both exits free the committed quantity, and the site request behind the cancelled one re-opens.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Books an entry that ships straight from vendor to client; Kiruba approves it.</p><p class="exp">Approval raises the client consignment automatically — it never sits in stock with nowhere to go.</p></div></li>
+        <li><div><span class="as">Ashish</span><p class="act">Looks up the batch from step 16 of section B.</p><p class="exp">Every consignment carrying it is listed — that list is the recall list.</p></div></li>
+        <li><div><span class="as">Nagarajan</span><p class="act">Exports the dispatch report and the stock report.</p><p class="exp">Both cover every site and include value; nobody else's export does.</p></div></li>
+      </ol>
+
+      <h3>F · What each person must <em>not</em> see</h3>
+      <p>Run last, as a sweep. Every one of these is a "the control is absent", not "the control errors".</p>
+      <ol class="run">
+        <li><div><span class="as">Kiruba, Manohar</span><p class="act">Look for Reports.</p><p class="exp">No nav item, and <code>/reports</code> refuses directly.</p></div></li>
+        <li><div><span class="as">Kiruba, Manohar</span><p class="act">Open Activity.</p><p class="exp">Their own department's actions only; no security events; category filter offers only what they may read.</p></div></li>
+        <li><div><span class="as">Shravani</span><p class="act">Opens Activity.</p><p class="exp">People, catalog and procurement across the company. No stock entries, no movements, no builds, no password reveals.</p></div></li>
+        <li><div><span class="as">Everyone</span><p class="act">Opens the recycle bin.</p><p class="exp">Only their own deletions. Phani and Shravani see everyone's.</p></div></li>
+        <li><div><span class="as">Ashish, Uday</span><p class="act">Look for any price.</p><p class="exp">Ashish sees none anywhere. Uday sees entry values (he holds the key) but no order prices.</p></div></li>
+        <li><div><span class="as">Deepa, Raghava</span><p class="act">Look for approve buttons on anything.</p><p class="exp">None — not on transfers, not on intents, not on bills of materials, not on entries.</p></div></li>
+        <li><div><span class="as">Uday</span><p class="act">Opens the stock list.</p><p class="exp">After his dispatch grant, his site's stock. Before it, only his own entries — worth confirming which behaviour you want (question 3).</p></div></li>
+        <li><div><span class="as">All nine</span><p class="act">Compare the sidebar against the matrix in section 05.</p><p class="exp">Every visible item is reachable and every reachable item is visible; <code>npm run audit:access</code> agrees.</p></div></li>
+      </ol>
+    </section>
+
+    <!-- ============================================ 08 -->
+    <section id="cleanup">
+      <span class="sec-num">08 — The consolidation pass</span>
+      <h2>Stripping it back to a first build</h2>
+      <p>You want to read this project phase by phase, and you are reading your first Next.js and TypeScript codebase while you do it. So the goal is not "fewer lines" for its own sake — it is that <strong>every file you open should be explicable in a sentence, and nothing you read should be a thing that no longer runs.</strong> Here is exactly what I would do, measured against what is actually there.</p>
+
+      <h3>1 · The history goes</h3>
+      <p>Twenty migration folders and eighteen one-off scripts record how the project got here. That is 3,689 lines in <code>prisma/</code>, of which about 1,900 exist only to patch a database that has already been patched.</p>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>What</th><th class="num">Count</th><th>Becomes</th></tr></thead>
+          <tbody>
+            <tr><td><code>prisma/migrations/*</code> — init through add_procurement</td><td class="num">20</td><td>One <code>0_init</code> generated from the final schema</td></tr>
+            <tr><td><code>add-*.ts</code> permission scripts</td><td class="num">14</td><td>Deleted — <code>seed.ts</code> becomes the only definition</td></tr>
+            <tr><td><code>backfill-*.ts</code>, <code>upgrade-permissions.ts</code></td><td class="num">2</td><td>Deleted — their work is already in the data</td></tr>
+            <tr><td><code>add-phase5/7/8/9/11/12/13/14-permissions.ts</code></td><td class="num">8</td><td>Deleted — the phase numbering is history, not structure</td></tr>
+            <tr><td><code>seed.ts</code></td><td class="num">1</td><td>Rewritten. It currently seeds <strong>60 permissions when the system has 101</strong> — running it today would produce a broken install. It becomes the single, correct, complete definition: permissions, the seven roles, the two sites, the departments, and the ten people.</td></tr>
+            <tr><td><code>audit-page-access.ts</code>, <code>generate-permissions-doc.ts</code>, <code>update-doc-index.ts</code>, <code>import-bom.ts</code>, <code>lib/read-workbook.ts</code></td><td class="num">5</td><td><strong>Kept</strong> — these are live tools, not history</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note ask">
+        <p><strong>The one thing I will not do without you saying so.</strong> Your database has real data in it — 14 stock entries, 2 purchase orders, 4 dispatches, a build. Squashing migrations does <em>not</em> have to touch a single row: the safe path is to write the new baseline and tell Prisma it is already applied, leaving the database exactly as it is. The destructive path — reset and re-seed — gives you a spotless database and loses everything in it.</p>
+        <p>I will take the safe path by default. If you would rather start the data clean too, say so and I will reset and seed instead.</p>
+      </div>
+
+      <h3>2 · Dead code goes</h3>
+      <p>All of the following are confirmed unreferenced by anything, not guessed at:</p>
+      <ul>
+        <li><strong>Eight server actions nobody calls</strong> — <code>startBom</code>, <code>traceBatch</code>, <code>getClientsForSelect</code>, <code>getPurchaseOrder</code>, <code>getRecycleBinCount</code>, <code>getRolesAtOrBelow</code>, <code>getApprovalFlowForDepartment</code>, <code>getPermissionExceptions</code>. Two of these are documented in the README as features, which is worse than not having them.</li>
+        <li><strong>Two whole files</strong> — <code>src/components/shared/auth-guard.tsx</code> and <code>src/lib/validations/role.ts</code>.</li>
+        <li><strong>Four unused exports in <code>src/lib/design/status.ts</code></strong> (<code>statusTone</code>, <code>statusStyles</code>, <code>statusLabel</code>, <code>CHART_SERIES</code>) — the file stays for <code>toneStyles</code>, which two cards use.</li>
+        <li><strong>About thirty unused type and constant exports</strong> across <code>lib/</code> — <code>isRole</code>, <code>hasAnyPermission</code>, <code>isLocationBound</code>, <code>MAX_BOM_DEPTH</code>, <code>outstandingOf</code>, half the Zod <code>*Input</code> types, and so on.</li>
+        <li><strong>The <code>Asset</code>, <code>AssetCategory</code> and <code>AssetTransfer</code> tables</strong> — three models in the schema with zero rows and zero code touching them. Assets are derived from stock issues; these are a false start.</li>
+      </ul>
+
+      <h3>3 · Duplication collapses</h3>
+      <p>This is where the "cut it short" really is. Four patterns are copy-pasted across the actions layer:</p>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>Pattern</th><th>Copies</th><th>Becomes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>Reference-number generators.</strong> <code>SE-</code>, <code>SI-</code>, <code>TR-</code>, <code>DSP-</code>, <code>SRQ-</code>, <code>PI-</code>, <code>PO-</code> — every one a fifteen-line copy of the same "find the last, add one, pad to three".</td>
+              <td class="num">9</td>
+              <td>One <code>nextReference()</code> in <code>src/lib/reference-numbers.ts</code>. <code>SI-</code> is currently generated by two different functions in two files, which is a collision waiting to happen.</td>
+            </tr>
+            <tr>
+              <td><strong>Scope-to-query translation.</strong> The <code>own</code> / <code>department</code> / <code>location</code> / <code>all</code> ladder is rewritten by hand in stock, assets, requests, reports, fulfilment and dashboard.</td>
+              <td class="num">6</td>
+              <td>One <code>scopedStockWhere(user)</code> beside the existing visibility helpers — which is where B14 came from in the first place, one copy having forgotten the location clause.</td>
+            </tr>
+            <tr>
+              <td><strong>The availability include block.</strong> The same four-relation Prisma <code>include</code> — issues, pending transfers, committing dispatches, committing builds — pasted wherever free quantity is needed.</td>
+              <td class="num">7</td>
+              <td>One exported <code>availabilityInclude</code> next to <code>availableQuantity()</code>, so the query and the sum can never disagree. B15 is exactly that disagreement.</td>
+            </tr>
+            <tr>
+              <td><strong>The deactivate-or-delete handshake.</strong> Six delete actions each re-implement the same <code>{ needsConfirmation, message, recommendation }</code> / <code>{ force: true }</code> dance.</td>
+              <td class="num">6</td>
+              <td>One <code>confirmDestructive()</code> helper. The behaviour you asked for — always offer delete, always steer to deactivating first, never block outright — is stated once instead of six times.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Beyond that: <code>src/lib/actions/requests.ts</code> (716 lines) is split and folded into <code>products.ts</code> and <code>assets.ts</code> as part of P6, so no file is named after a page that no longer exists.</p>
+
+      <h3>4 · The comments are rewritten to one rule</h3>
+      <p>There are 1,912 comment lines in <code>src/</code>. The problem is not the count, it is that they are three different things wearing the same clothes: genuine explanation, an argument with a decision made two weeks ago, and narration of the line below. Reading them, you cannot tell which you are getting. Every comment gets re-judged against this:</p>
+      <ol>
+        <li><strong>Every file opens with a short header</strong> — what it is, who calls it, and which rule it owns. Three to six lines, never more. Open any file and you know where you are.</li>
+        <li><strong>Every server action gets a one-line contract</strong> — who may call it, what it changes, what it gives back. This is the layer you will spend the most time in.</li>
+        <li><strong>Inline comments only where the code cannot speak for itself</strong> — a business rule, a guard whose absence would be a bug, a line that looks wrong and is not.</li>
+        <li><strong>Deleted on sight:</strong> narration of the next line; changelog prose ("this used to be X, which was wrong because…") — that belongs in git history, not in the file you are trying to read; and the same explanation repeated in three files, which is kept in exactly one.</li>
+        <li><strong>Added:</strong> a <code>FLOW</code> marker at each step of the seven main journeys, so <code>grep "FLOW: purchase"</code> walks you through intent → verify → order → receipt → close in reading order. This is the part aimed squarely at reading it phase by phase.</li>
+      </ol>
+      <p>My estimate is that comment volume ends up roughly where it started — a good third deleted, a similar amount added where there is currently nothing at all. What changes is that all of it is load-bearing.</p>
+
+      <h3>5 · The documentation is rewritten for a first read</h3>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>File</th><th class="num">Now</th><th>Becomes</th></tr></thead>
+          <tbody>
+            <tr><td><code>README.md</code></td><td class="num">51 KB</td><td>What the system is, the seven flows told end to end in plain English, the four ideas everything follows from, and how to run it. Written to be read once, front to back.</td></tr>
+            <tr><td><code>summary.md</code></td><td class="num">27 KB</td><td>The "which file do I edit" map, kept short and accurate — plus a <strong>stated reading order</strong>: the nine files to read first, in sequence, to understand the whole system.</td></tr>
+            <tr><td><code>permissions.md</code></td><td class="num">20 KB</td><td>Regenerated from the database after the role changes, so it describes the seven roles that exist rather than the nine that used to.</td></tr>
+            <tr><td><code>AGENTS.md</code> / <code>CLAUDE.md</code></td><td class="num">—</td><td>Left alone. The Next.js block is written by <code>next dev</code> and re-appears if removed.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>What I will not touch</h3>
+      <ul>
+        <li><strong><code>src/components/ui/*</code></strong> — these are shadcn-style components on Base UI. They look verbose because they are generated, and rewriting them would break the next component you add. <code>popover</code> and <code>scroll-area</code> looked unused; they are not.</li>
+        <li><strong>Behaviour</strong>, except the twenty-three fixes in section 02. A consolidation pass that quietly changes what the software does is how a working system becomes a broken one.</li>
+        <li><strong>Model and column names</strong> in the schema, beyond the additions decided in section 04 and the three dead asset tables. Renames make every past record harder to trace for no reading benefit.</li>
+        <li><strong>Your uploaded files and the <code>.xlsx</code></strong> in the project root.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================ 09 -->
+    <section id="questions">
+      <span class="sec-num">09 — Every answer, settled</span>
+      <h2>Settled, and still open</h2>
+
+      <p>Nothing here is outstanding. Kept as the record of what was decided and why, because these are the choices you will want to remember when you read the code back.</p>
+      <div class="scroller">
+        <table>
+          <thead><tr><th style="width:30%">Question</th><th>Decision</th></tr></thead>
+          <tbody>
+            <tr><td>The two engineer roles</td><td>One <strong>Engineer</strong> role replaces both empty ones.</td></tr>
+            <tr><td>Cross-site visibility</td><td><strong>Availability counts per site to anyone with <code>fulfilment.view</code></strong>; entry detail stays behind the stock scopes.</td></tr>
+            <tr><td>The four odd accounts</td><td>Admin → <strong>Shravani</strong>, Dispatch Hyd → <strong>Ashish</strong>, Dispatch Blore <strong>deactivated</strong>, <strong>Spandana kept</strong>.</td></tr>
+            <tr><td>Two jobs, one person</td><td>Roles become <strong>additive</strong>. Uday holds two, Kiruba holds three, nobody needs an individual grant.</td></tr>
+            <tr><td>Uday's stock scope</td><td><strong>Widening accepted.</strong> He sees every Bengaluru entry, which is what lets him dispatch stock he did not book in himself. Every other stock entry operator stays own-entries-only.</td></tr>
+            <tr><td>Shravani and assets</td><td><strong>Read only.</strong> She sees what each department holds; creating an asset stays with Kiruba and Nagarajan.</td></tr>
+            <tr><td>Bills of materials by department</td><td><strong>The submission records its author's department</strong> and approval routes to that manager. Change 6 in section 04.</td></tr>
+            <tr><td>Nagarajan and needs</td><td><strong>He verifies needs too</strong>, exactly as Kiruba does — one Buyer role serves both.</td></tr>
+            <tr><td>Permission key names</td><td><strong>Renamed into their parents.</strong> The <code>requests.*</code> namespace disappears. Section 03.</td></tr>
+            <tr><td>Hyderabad's one pair of hands</td><td><strong>Nobody answers their own request</strong> — a hard rule for everyone, not a staffing workaround. Change 7 in section 04.</td></tr>
+            <tr><td>The database during the squash</td><td><strong>Open.</strong> Safe path by default — history squashed, every row kept. Say the word if you want a clean database instead. Section 08.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note ask">
+        <p><strong>Nothing on this page is built.</strong> I am holding for your command. On it I work P0 through P9 in order, reporting at the end of each phase — the permission model, the roles and people, the repairs, the purchase-order integrity, cross-site readiness, retiring Requests, the full test run against your real data, the consolidation, and the rewritten documentation last.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="end">
+    Straight Drive · Stock &amp; Asset Management · plan prepared 14 August · revision 3 · 23 findings · 9 phases · 1 open question
+  </footer>
+
+</div>
