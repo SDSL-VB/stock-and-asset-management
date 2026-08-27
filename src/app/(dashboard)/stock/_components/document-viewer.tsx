@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Download, Eye, FileText } from "lucide-react";
+import { toDownloadUrl } from "@/lib/attachments";
 
 interface Attachment {
   fileName: string;
@@ -73,7 +74,7 @@ export function DocumentViewerButton({ attachment }: { attachment: Attachment })
         </div>
 
         <div className="flex justify-end">
-          <a href={attachment.fileUrl} download={attachment.fileName}>
+          <a href={toDownloadUrl(attachment.fileUrl)} download={attachment.fileName}>
             <Button variant="outline" size="sm">
               <Download className="mr-2 h-4 w-4" />
               Download

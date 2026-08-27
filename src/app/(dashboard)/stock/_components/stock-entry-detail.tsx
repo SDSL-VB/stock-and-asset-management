@@ -21,6 +21,7 @@ import Link from "next/link";
 import { hasPermission } from "@/lib/rbac/check";
 import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
 import { deleteAttachment } from "@/lib/actions/stock";
+import { toDownloadUrl } from "@/lib/attachments";
 import { MoveStockDialog } from "./move-stock-dialog";
 import { RequestTransferDialog } from "./request-transfer-dialog";
 import { DocumentViewerButton } from "./document-viewer";
@@ -576,7 +577,7 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <DocumentViewerButton attachment={att} />
-                        <a href={att.fileUrl} download={att.fileName} title="Download">
+                        <a href={toDownloadUrl(att.fileUrl)} download={att.fileName} title="Download">
                           <Button variant="ghost" size="sm">
                             <Download className="h-4 w-4" />
                           </Button>

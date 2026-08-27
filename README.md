@@ -335,11 +335,12 @@ npm run dev
 | `npm run docs:permissions` | Rewrites `permissions.md` from the database |
 | `npm run docs:index` | Rebuilds the contents lists in this file and `summary.md` |
 
-**Deploying it** is `docs/hosting.md`: a Dockerfile, a compose file, and the
-list of things that have to be true before anyone outside the team can reach
-it. The one that catches people out — uploaded documents are written to the
-filesystem, so the host needs a persistent disk at `/app/public/uploads` or
-every invoice disappears on the next deploy.
+**Deploying it** is `docs/hosting.md`: a Dockerfile, a compose file, a
+free-tier Vercel walkthrough, and the list of things that have to be true before
+anyone outside the team can reach it. Uploaded documents go to Vercel Blob
+(`src/app/api/upload/route.ts`), not to the local filesystem, so a host without
+a persistent disk is fine — but `BLOB_READ_WRITE_TOKEN` has to be set or
+uploading is the one flow that fails.
 
 To change who can do what on a live database, edit
 `prisma/setup-roles-and-people.ts` and run it — it is idempotent, and it is the

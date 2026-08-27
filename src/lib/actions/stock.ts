@@ -743,14 +743,17 @@ export async function deleteAttachment(attachmentId: string) {
     return { error: "Cannot delete attachments from submitted or approved entries" };
   }
 
-  // Delete from filesystem
-  const fs = await import("fs/promises");
-  const path = await import("path");
-  const filePath = path.join(process.cwd(), "public", attachment.fileUrl);
-  try {
-    await fs.unlink(filePath);
-  } catch {
-    // File may not exist, continue with DB deletion
+  // Remove the stored file. Entries created before uploads moved to blob
+  // storage still hold a "/uploads/..." path pointing at a local file that no
+  // longer exists on a serverless host; there is nothing to delete for those.
+  if (attachment.fileUrl.startsWith("http")) {
+    const { del } = await import("@vercel/blob");
+    try {
+      await del(attachment.fileUrl);
+    } catch {
+      // Already gone, or the token is missing locally. The database row is the
+      // thing that matters, so carry on and delete it either way.
+    }
   }
 
   await prisma.stockEntryAttachment.delete({ where: { id: attachmentId } });

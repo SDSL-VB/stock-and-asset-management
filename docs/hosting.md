@@ -8,7 +8,7 @@ What the app needs, and why:
 | Need | Why | If you get it wrong |
 | --- | --- | --- |
 | PostgreSQL | the whole data model | nothing runs |
-| **A persistent disk at `/app/public/uploads`** | `src/app/api/upload/route.ts` writes invoices to the filesystem | every uploaded document disappears on the next deploy, silently |
+| Somewhere to put uploaded files | `src/app/api/upload/route.ts` stores invoices; it writes to Vercel Blob, so a persistent disk is no longer required | uploading errors with a missing-token message; nothing else is affected |
 | A long-running Node process | ordinary server rendering, and Server-Sent Events later | works without it today; blocks live updates later |
 | One small instance | about a dozen people | — |
 
@@ -37,6 +37,7 @@ Postgres, and named volumes for both the database and the uploads.
 | `.dockerignore` | keeps `.env`, `public/uploads` and the docs out of the image |
 | `docker-compose.yml` | app + Postgres + volumes, for a local production-shaped run or a whole small deployment |
 | `.env.example` | every variable, with what happens if you leave it out |
+| `src/lib/attachments.ts` | `toDownloadUrl` — the HTML `download` attribute is ignored cross-origin, so blob URLs get `?download=1` |
 | `src/app/api/health/route.ts` | `/api/health`, which checks the database rather than just the port |
 | `src/app/robots.ts` | keeps the system out of search engines |
 | `src/auth.ts` | eight failed sign-ins for one address buys a fifteen-minute lockout |
@@ -50,17 +51,76 @@ a €5 Hetzner box running the compose file. All of them give you a persistent
 volume, which is the thing that matters. On a plain VPS put Caddy in front for
 automatic HTTPS.
 
-**Vercel is the alternative.** Better to deploy to, but the filesystem is
-ephemeral, so uploads must move to object storage (Vercel Blob or S3) **first**.
-That is a day's work touching the upload route, `deleteAttachment` in
-`src/lib/actions/stock.ts`, and the stored `fileUrl` values. Do not deploy there
-before that change: uploads will appear to work and then vanish.
+**Vercel, free, is the other route — and the quickest one to a test URL.**
+Uploads no longer touch the filesystem, so the objection that used to stand here
+is gone: `src/app/api/upload/route.ts` writes to Vercel Blob and stores the
+returned https URL, and `deleteAttachment` in `src/lib/actions/stock.ts` deletes
+the blob. Pair it with a free Neon Postgres. See "Deploying free on Vercel"
+below.
 
 Whichever you pick:
 
 * Run `npx prisma migrate deploy` on each release. **Never `db push`** — it can
   drop columns to make the schema match.
 * `npm run db:seed` **wipes the database first**. It is for an empty one only.
+
+---
+
+## Deploying free on Vercel
+
+Three free accounts, no card: Vercel (Hobby) runs the app, Neon runs Postgres,
+Vercel Blob holds uploaded documents. Good enough for a dozen people testing
+flows; not a production posture.
+
+### 1. The database
+
+Create a Neon project. It hands you **two** connection strings, and they are not
+interchangeable:
+
+* the **pooled** one (its host contains `-pooler`) — for the running app. Each
+  serverless request opens its own connection, and a plain connection would run
+  the database out of them within minutes.
+* the **direct** one — for migrations, which need a real session.
+
+Point your local `.env` at the **direct** string and set the schema up from your
+own machine:
+
+```bash
+npx prisma migrate deploy     # creates the tables
+npm run db:seed               # ONLY on an empty database — it wipes first
+```
+
+### 2. The project
+
+Import the GitHub repository at vercel.com. It detects Next.js; the defaults are
+correct, and `postinstall` runs `prisma generate` on every build. `next.config.ts`
+turns `output: "standalone"` off automatically when `VERCEL` is set, since Vercel
+packages the routes itself.
+
+Then, in Storage, create a **Blob** store and connect it to the project. That is
+what puts `BLOB_READ_WRITE_TOKEN` into the environment; you never paste it.
+
+### 3. The environment variables
+
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | Neon's **pooled** string with `?pgbouncer=true&connection_limit=1` appended |
+| `NEXTAUTH_SECRET` | a fresh one — `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
+| `AUTH_TRUST_HOST` | `true` — the deployment URL is not known ahead of time, so `NEXTAUTH_URL` cannot be pinned |
+| `BLOB_READ_WRITE_TOKEN` | added for you when the Blob store is connected |
+| `PASSWORD_ENCRYPTION_KEY` | **leave unset.** See the warning below |
+
+Redeploy after adding them — a Vercel build bakes the environment in, so
+variables added afterwards do not reach a deployment that already exists.
+
+### What you give up on the free tier
+
+* Neon suspends the database after a few minutes idle; the first request after a
+  quiet spell waits about a second while it wakes.
+* Server actions are capped at 60 seconds. Nothing here comes close today, but a
+  large report might one day.
+* Blob storage and bandwidth have monthly allowances. Test invoices will not
+  trouble them; check the dashboard before uploading anything in bulk.
 
 ---
 

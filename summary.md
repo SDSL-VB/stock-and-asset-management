@@ -86,7 +86,7 @@ src/
       <page>/
         page.tsx         the server component: gate, fetch, render
         _components/     the client components only that page uses
-    api/               only two: file upload, and NextAuth
+    api/               only three: file upload (→ blob storage), health, NextAuth
   lib/
     actions/           ← ALL reads and writes. One file per area
     rbac/              permissions, and the guards
