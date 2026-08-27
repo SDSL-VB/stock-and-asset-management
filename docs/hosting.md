@@ -106,7 +106,8 @@ what puts `BLOB_READ_WRITE_TOKEN` into the environment; you never paste it.
 | --- | --- |
 | `DATABASE_URL` | Neon's **pooled** string with `?pgbouncer=true&connection_limit=1` appended |
 | `NEXTAUTH_SECRET` | a fresh one — `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
-| `AUTH_TRUST_HOST` | `true` — the deployment URL is not known ahead of time, so `NEXTAUTH_URL` cannot be pinned |
+| `NEXTAUTH_URL` | **do not set it.** next-auth rewrites every request's origin to this value, so a `localhost` one copied from development sends anyone who signs in to their own machine |
+| `AUTH_TRUST_HOST` | optional here — `@auth/core` turns `trustHost` on by itself when it sees Vercel's own `VERCEL` variable |
 | `BLOB_READ_WRITE_TOKEN` | added for you when the Blob store is connected |
 | `PASSWORD_ENCRYPTION_KEY` | **leave unset.** See the warning below |
 
