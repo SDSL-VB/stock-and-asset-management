@@ -14,7 +14,7 @@ import { Upload, Loader2, FileUp } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { upload } from "@vercel/blob/client";
-import { recordStockAttachment } from "@/lib/actions/stock";
+import { checkAttachmentUpload, recordStockAttachment } from "@/lib/actions/stock";
 
 interface AttachmentTypeConfig {
   id: string;
@@ -73,6 +73,20 @@ export function FileUpload({ stockEntryId, attachmentTypes }: Props) {
 
     setUploading(true);
     try {
+      // Ask first, in plain language. @vercel/blob discards the server's reason
+      // when a token is refused and reports only "Failed to retrieve the client
+      // token", so without this step every refusal reads the same.
+      const check = await checkAttachmentUpload({
+        stockEntryId,
+        attachmentType,
+        fileSize: selectedFile.size,
+        mimeType: selectedFile.type,
+      });
+      if ("error" in check) {
+        toast.error(check.error);
+        return;
+      }
+
       // The file goes straight from this browser to Blob storage. It does NOT
       // pass through our server: a serverless function can only receive about
       // 4.5 MB, and anything larger was rejected with a 413 before our code ran.

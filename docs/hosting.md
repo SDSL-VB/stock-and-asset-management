@@ -148,6 +148,15 @@ Blob's own `onUploadCompleted` webhook is deliberately not used for that row: it
 is called from Blob's servers and cannot reach a machine running on localhost,
 which would have made uploads impossible to test in development.
 
+**If uploading says "Failed to retrieve the client token"**, that is the Blob
+client refusing to read the reason our server gave it — it discards the response
+body whenever the token request fails. Nine times in ten the real cause is that
+`BLOB_READ_WRITE_TOKEN` is not set, which happens when the Blob store has not
+been created and connected to the project. `checkAttachmentUpload` in
+`src/lib/actions/stock.ts` runs before the upload starts and says so in plain
+words, so that message should now be rare — but it is what the underlying error
+looks like.
+
 ### What you give up on the free tier
 
 * Neon suspends the database after a few minutes idle; the first request after a

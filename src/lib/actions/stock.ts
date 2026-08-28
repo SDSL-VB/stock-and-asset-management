@@ -2,7 +2,12 @@
 
 import { prisma } from "@/lib/prisma";
 import { nextReference } from "@/lib/reference-numbers";
-import { requireAnyPermission, requirePermission, resolveStockScope } from "@/lib/rbac/check";
+import {
+  requireAnyPermission,
+  requirePermission,
+  requireSignedIn,
+  resolveStockScope,
+} from "@/lib/rbac/check";
 import { stockCandidatesWhere, isStockVisible } from "@/lib/stock-visibility";
 import {
   availableQuantity,
@@ -723,6 +728,74 @@ export async function rejectStockEntry(id: string, stepOrder: number, reason: st
   revalidatePath(`/stock/${id}`);
   revalidatePath("/dashboard");
   return { success: true };
+}
+
+/**
+ * Answers "may I upload this, and will it work?" BEFORE the browser starts.
+ *
+ * Called by stock/_components/file-upload.tsx as its first step.
+ *
+ * This exists for one reason: the Blob client cannot show you why an upload was
+ * refused. When /api/upload declines to issue a token, @vercel/blob throws away
+ * the response body and reports a flat "Failed to retrieve the client token" —
+ * so a missing permission, a submitted entry, a file too large and an
+ * unconfigured storage account all looked identical.
+ *
+ * So the same questions are asked here first, where the answer can be a
+ * sentence. /api/upload still asks them again when it issues the token; that
+ * remains the real gate, because anything a browser is told it may do, a browser
+ * may lie about. This is for the human.
+ */
+export async function checkAttachmentUpload(input: {
+  stockEntryId: string;
+  attachmentType: string;
+  fileSize: number;
+  mimeType: string;
+}): Promise<{ error: string } | { ok: true }> {
+  const user = await requireSignedIn();
+
+  const canUpload =
+    user.permissions?.includes(PERMISSIONS.STOCK_CREATE) ||
+    user.permissions?.includes(PERMISSIONS.STOCK_EDIT);
+  if (!canUpload) return { error: "You do not have permission to add attachments" };
+
+  // Configuration, not the user's fault — so say so plainly rather than letting
+  // it surface as a mysterious storage error a minute later.
+  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    return {
+      error:
+        "File storage is not set up on this deployment (BLOB_READ_WRITE_TOKEN is missing). Everything else works — only uploads are affected.",
+    };
+  }
+
+  const entry = await prisma.stockEntry.findUnique({
+    where: { id: input.stockEntryId },
+    select: { status: true },
+  });
+  if (!entry) return { error: "Stock entry not found" };
+  if (entry.status !== "DRAFT" && entry.status !== "REJECTED") {
+    return { error: "Cannot upload to submitted or approved entries" };
+  }
+
+  const config = await prisma.attachmentTypeConfig.findUnique({
+    where: { name: input.attachmentType },
+  });
+  if (config) {
+    if (input.fileSize > config.maxSizeBytes) {
+      const mb = Math.round(config.maxSizeBytes / 1024 / 1024);
+      return { error: `That file is larger than the ${mb}MB limit for ${input.attachmentType}` };
+    }
+    const allowed = Array.isArray(config.allowedMimeTypes)
+      ? (config.allowedMimeTypes as string[])
+      : [];
+    if (allowed.length > 0 && !allowed.includes(input.mimeType)) {
+      return {
+        error: `${input.attachmentType} accepts ${allowed.join(", ")} — not ${input.mimeType || "that file type"}`,
+      };
+    }
+  }
+
+  return { ok: true };
 }
 
 /**
