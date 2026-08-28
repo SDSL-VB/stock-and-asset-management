@@ -27,6 +27,10 @@ export const approveProductRequestSchema = z.object({
     .optional(),
   name: z.string().min(2, "Name must be at least 2 characters"),
   categoryId: z.string().optional(),
+  // Only read when approving a CATEGORY request: the reviewer types the code
+  // the new category will hand out. Optional here because this schema covers
+  // product approvals too; approveProductRequest insists on it for categories.
+  codePrefix: z.string().optional(),
   reviewNote: z.string().optional(),
 });
 

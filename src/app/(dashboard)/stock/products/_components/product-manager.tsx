@@ -41,7 +41,7 @@ import {
   deleteProductCategory,
 } from "@/lib/actions/products";
 import { SafeDeleteButton } from "@/components/shared/safe-delete-button";
-import { codePrefixOf } from "@/lib/product-codes";
+import { codePrefixOf, CODE_PREFIX_PATTERN } from "@/lib/product-codes";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import {
@@ -534,6 +534,10 @@ function CategoryDialog({ category }: { category?: Category }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState(category?.name ?? "");
+  // Only asked for when creating. Renaming leaves the code alone — changing it
+  // afterwards is a separate act behind categories.prefix.edit (PrefixDialog).
+  const [codePrefix, setCodePrefix] = useState("");
+  const codeLooksValid = CODE_PREFIX_PATTERN.test(codePrefix.trim());
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -541,7 +545,10 @@ function CategoryDialog({ category }: { category?: Category }) {
     try {
       const result = isEditing
         ? await updateProductCategory(category.id, { name: name.trim() })
-        : await createProductCategory({ name: name.trim() });
+        : await createProductCategory({
+            name: name.trim(),
+            codePrefix: codePrefix.trim(),
+          });
 
       if ("error" in result) {
         toast.error(result.error);
@@ -549,7 +556,10 @@ function CategoryDialog({ category }: { category?: Category }) {
       }
       toast.success(isEditing ? "Category updated" : `Category "${name}" added`);
       setOpen(false);
-      if (!isEditing) setName("");
+      if (!isEditing) {
+        setName("");
+        setCodePrefix("");
+      }
       router.refresh();
     } finally {
       setLoading(false);
@@ -586,20 +596,38 @@ function CategoryDialog({ category }: { category?: Category }) {
               placeholder="e.g. Cricket Equipment"
               required
             />
-            {!isEditing && (
-              <p className="text-xs text-muted-foreground">
-                A 4-digit code prefix is assigned automatically — every product in
-                this category will be numbered from it.
-              </p>
-            )}
           </div>
+
+          {!isEditing && (
+            <div className="space-y-2">
+              <Label htmlFor="category-code">Category Code</Label>
+              <Input
+                id="category-code"
+                value={codePrefix}
+                onChange={(e) => setCodePrefix(e.target.value)}
+                placeholder="e.g. 1001"
+                inputMode="numeric"
+                maxLength={4}
+                required
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                Exactly 4 digits, and not one another category already uses.
+                Every product code in this category starts with it —{" "}
+                <span className="font-mono">
+                  {codeLooksValid ? codePrefix.trim() : "1001"}-TV55
+                </span>
+                .
+              </p>
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Cancel
             </Button>
             <Button
               type="submit"
-              disabled={loading || !name.trim()}
+              disabled={loading || !name.trim() || (!isEditing && !codeLooksValid)}
               className="bg-brand-green hover:bg-brand-green/90 text-brand-navy font-semibold"
             >
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

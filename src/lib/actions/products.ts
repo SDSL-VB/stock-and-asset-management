@@ -16,8 +16,7 @@ import {
 } from "@/lib/validations/product";
 import {
   composeProductCode,
-  ensureCodePrefix,
-  nextFreeCodePrefix,
+  CODE_PREFIX_PATTERN,
   CODE_SUFFIX_PATTERN,
 } from "@/lib/product-codes";
 import {
@@ -129,12 +128,20 @@ export async function createProduct(data: unknown) {
     where: { id: parsed.data.categoryId },
   });
   if (!category) return { error: "Category not found" };
+  // Category codes are typed by people and never generated, so a category
+  // without one cannot hand out a product code. Only categories that predate
+  // codes can be in this state.
+  const categoryCode = category.codePrefix;
+  if (!categoryCode) {
+    return {
+      error: `"${category.name}" has no category code yet. Set one on the category first.`,
+    };
+  }
 
-  // The code is the category's prefix plus the half the user typed. The prefix
-  // is never accepted from the client — it always comes from the category.
+  // A product code is the category's code plus the half the user typed. The
+  // first half is never accepted from the client — it comes from the category.
   const product = await prisma.$transaction(async (tx) => {
-    const prefix = await ensureCodePrefix(tx, parsed.data.categoryId);
-    const code = composeProductCode(prefix, parsed.data.codeSuffix);
+    const code = composeProductCode(categoryCode, parsed.data.codeSuffix);
 
     const existing = await tx.product.findUnique({ where: { code } });
     if (existing) {
@@ -276,24 +283,22 @@ export async function createProductCategory(data: unknown) {
   }
 
   const name = parsed.data.name.trim();
+  const { codePrefix } = parsed.data;
+
   const existing = await prisma.productCategory.findUnique({ where: { name } });
   if (existing) return { error: `Category "${name}" already exists` };
 
-  // The prefix is assigned automatically (1001, 1002, …). Two categories
-  // created at the same instant can pick the same number; the unique index
-  // catches it and the retry takes the next one.
-  let category;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      category = await prisma.$transaction(async (tx) => {
-        const codePrefix = await nextFreeCodePrefix(tx);
-        return tx.productCategory.create({ data: { name, codePrefix } });
-      });
-      break;
-    } catch (e) {
-      if (attempt >= 4) throw e;
-    }
+  // Whoever creates the category chooses its code, so the only thing that can
+  // go wrong is picking one already in use. There is no retry loop any more:
+  // nothing is being allocated, so there is nothing to retry with.
+  const clash = await prisma.productCategory.findUnique({ where: { codePrefix } });
+  if (clash) {
+    return { error: `Code ${codePrefix} is already used by "${clash.name}"` };
   }
+
+  const category = await prisma.productCategory.create({
+    data: { name, codePrefix },
+  });
 
   await logActivity(
     "CREATED",
@@ -634,8 +639,18 @@ export async function approveProductRequest(id: string, data: unknown) {
     const existing = await prisma.productCategory.findUnique({ where: { name } });
     if (existing) return { error: `Category "${name}" already exists` };
 
+    // The requester asked for a name; the code is the reviewer's to choose,
+    // because they are the one who knows the numbering scheme.
+    const codePrefix = parsed.data.codePrefix?.trim();
+    if (!codePrefix || !CODE_PREFIX_PATTERN.test(codePrefix)) {
+      return { error: "Enter a 4-digit code for the new category (e.g. 1001)" };
+    }
+    const clash = await prisma.productCategory.findUnique({ where: { codePrefix } });
+    if (clash) {
+      return { error: `Code ${codePrefix} is already used by "${clash.name}"` };
+    }
+
     const category = await prisma.$transaction(async (tx) => {
-      const codePrefix = await nextFreeCodePrefix(tx);
       const created = await tx.productCategory.create({ data: { name, codePrefix } });
       await tx.productRequest.update({
         where: { id },
@@ -680,9 +695,20 @@ export async function approveProductRequest(id: string, data: unknown) {
     return { error: "Use letters, numbers, hyphens and underscores for the code" };
   }
 
+  const approvalCategory = await prisma.productCategory.findUnique({
+    where: { id: categoryId },
+    select: { name: true, codePrefix: true },
+  });
+  if (!approvalCategory) return { error: "Category not found" };
+  if (!approvalCategory.codePrefix) {
+    return {
+      error: `"${approvalCategory.name}" has no category code yet. Set one on the category first.`,
+    };
+  }
+  const approvalPrefix = approvalCategory.codePrefix;
+
   const product = await prisma.$transaction(async (tx) => {
-    const prefix = await ensureCodePrefix(tx, categoryId);
-    const code = composeProductCode(prefix, suffix);
+    const code = composeProductCode(approvalPrefix, suffix);
 
     const duplicate = await tx.product.findUnique({ where: { code } });
     if (duplicate) {

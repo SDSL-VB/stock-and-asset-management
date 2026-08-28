@@ -287,10 +287,19 @@ They raise a request from the entry form. Whoever can change the catalog reviews
 it on the Catalog page, and **approving it is what creates the product** — there
 is no separate step afterwards.
 
-**A product code is two halves.** The category owns a fixed four-digit prefix; a
+**A product code is two halves.** The category owns a fixed four-digit code; a
 person types the rest. Pick Electronics (1004), the field shows `1004-` locked,
-you type `TV55` → `1004-TV55`. The prefix is never accepted from the browser —
-the server re-reads it from the category.
+you type `TV55` → `1004-TV55`. That first half is never accepted from the
+browser on the product form — the server re-reads it from the category.
+
+**The category's own code is typed, never generated.** Whoever adds a category
+chooses its four digits, and the form refuses one already in use. Approving
+somebody's category *request* asks the reviewer for it too, since the request
+carries only a name. Nothing allocates numbers in sequence: which code a
+category gets is a decision about how the catalog is organised, not a counter.
+The consequence to know about is that a category with no code cannot hand one
+out — creating a product in one is refused with a message saying so, rather than
+quietly inventing a code.
 
 Someone who can add products directly sees **Create**, not **Request**.
 

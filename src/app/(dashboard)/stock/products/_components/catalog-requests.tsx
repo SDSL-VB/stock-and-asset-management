@@ -30,7 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { approveProductRequest, rejectProductRequest } from "@/lib/actions/products";
-import { codePrefixOf } from "@/lib/product-codes";
+import { codePrefixOf, CODE_PREFIX_PATTERN } from "@/lib/product-codes";
 import { toast } from "sonner";
 import { Check, Loader2, X } from "lucide-react";
 
@@ -194,6 +194,9 @@ function ReviewActions({
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [code, setCode] = useState("");
+  // Category requests carry only a name, so the reviewer chooses the code the
+  // new category will hand out. Nothing generates one.
+  const [categoryCode, setCategoryCode] = useState("");
   const [name, setName] = useState(request.name);
   const [categoryId, setCategoryId] = useState(request.category?.id ?? "");
   const [reason, setReason] = useState("");
@@ -211,6 +214,7 @@ function ReviewActions({
         code: isProduct ? code.trim() : undefined,
         name: name.trim(),
         categoryId: isProduct ? categoryId : undefined,
+        codePrefix: isProduct ? undefined : categoryCode.trim(),
       });
       if ("error" in result) {
         toast.error(result.error);
@@ -327,6 +331,26 @@ function ReviewActions({
               />
             </div>
 
+            {!isProduct && (
+              <div className="space-y-2">
+                <Label htmlFor={`catcode-${request.id}`}>Category code *</Label>
+                <Input
+                  id={`catcode-${request.id}`}
+                  value={categoryCode}
+                  onChange={(e) => setCategoryCode(e.target.value)}
+                  placeholder="e.g. 1001"
+                  inputMode="numeric"
+                  maxLength={4}
+                  className="font-mono"
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  Exactly 4 digits, unused by any other category. Every product
+                  code in it will start with this.
+                </p>
+              </div>
+            )}
+
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setApproveOpen(false)}>
                 Cancel
@@ -334,7 +358,11 @@ function ReviewActions({
               <Button
                 type="submit"
                 disabled={
-                  approving || !name.trim() || (isProduct && (!categoryId || !code.trim()))
+                  approving ||
+                  !name.trim() ||
+                  (isProduct
+                    ? !categoryId || !code.trim()
+                    : !CODE_PREFIX_PATTERN.test(categoryCode.trim()))
                 }
                 className="bg-brand-green hover:bg-brand-green/90 text-brand-navy font-semibold"
               >

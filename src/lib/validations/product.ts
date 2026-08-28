@@ -29,13 +29,21 @@ export const updateProductSchema = createProductSchema.extend({
   codeSuffix: z.string().trim().optional(),
 });
 
+/**
+ * The category's own code — the fixed half of every product code it hands out.
+ * A person types it; nothing generates it. The same rule applies whether it is
+ * being set at creation or changed afterwards, so both schemas share this.
+ */
+const codePrefixField = z
+  .string()
+  .regex(/^\d{4}$/, "A category code must be exactly 4 digits (e.g. 1001)");
+
 export const createProductCategorySchema = z.object({
   name: z.string().min(2, "Category name must be at least 2 characters"),
+  codePrefix: codePrefixField,
 });
 
 export const categoryPrefixSchema = z.object({
-  codePrefix: z
-    .string()
-    .regex(/^\d{4}$/, "A code prefix must be exactly 4 digits (e.g. 1001)"),
+  codePrefix: codePrefixField,
 });
 
