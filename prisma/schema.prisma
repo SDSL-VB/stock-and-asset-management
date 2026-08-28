@@ -24,8 +24,10 @@ model User {
   passwordSetAt DateTime?
   passwordSetBy String?
   // Set when an admin picks someone's password for them (a new account, or a
-  // reset). Middleware sends the person to /settings/password and lets them go
-  // nowhere else until they have replaced it with one only they know.
+  // reset). requireAuth() sends the person to /settings/password and lets them
+  // go nowhere else until they have replaced it with one only they know. Always
+  // read from the database, never from the session cookie — see
+  // src/lib/rbac/check.ts for why that distinction matters.
   mustChangePassword Boolean @default(false)
   avatar       String?
   phone        String?

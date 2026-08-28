@@ -725,6 +725,71 @@ export async function rejectStockEntry(id: string, stepOrder: number, reason: st
   return { success: true };
 }
 
+/**
+ * Records an attachment the browser has just uploaded to Blob storage.
+ *
+ * Called by stock/_components/file-upload.tsx, straight after the upload
+ * finishes. The bytes never come through the server — /api/upload only issued
+ * the token that allowed the browser to send them — so this is the step that
+ * puts the row in the database.
+ *
+ * It re-checks everything rather than trusting the caller: the URL arrives from
+ * the browser, and a browser can say anything. The permission, the entry's
+ * status and the file's origin are all verified again here.
+ */
+export async function recordStockAttachment(input: {
+  stockEntryId: string;
+  attachmentType: string;
+  fileName: string;
+  fileUrl: string;
+  fileSize: number;
+  mimeType: string;
+}) {
+  const user = await requireAnyPermission([
+    PERMISSIONS.STOCK_CREATE,
+    PERMISSIONS.STOCK_EDIT,
+  ]);
+
+  // Only ever accept a URL that came from our own blob store. Without this,
+  // anyone could point an attachment at any address on the internet.
+  const isBlobUrl = /^https:\/\/[a-z0-9-]+\.public\.blob\.vercel-storage\.com\//i.test(
+    input.fileUrl
+  );
+  if (!isBlobUrl) return { error: "That file did not come from our storage" };
+
+  const entry = await prisma.stockEntry.findUnique({
+    where: { id: input.stockEntryId },
+    select: { status: true, entryNumber: true },
+  });
+  if (!entry) return { error: "Stock entry not found" };
+  if (entry.status !== "DRAFT" && entry.status !== "REJECTED") {
+    return { error: "Cannot upload to submitted or approved entries" };
+  }
+
+  const attachment = await prisma.stockEntryAttachment.create({
+    data: {
+      fileName: input.fileName,
+      fileUrl: input.fileUrl,
+      fileSize: input.fileSize,
+      mimeType: input.mimeType,
+      attachmentType: input.attachmentType,
+      stockEntryId: input.stockEntryId,
+      uploadedById: user.id,
+    },
+  });
+
+  await logActivity(
+    "CREATED",
+    "StockEntryAttachment",
+    attachment.id,
+    `Attached ${input.fileName} to ${entry.entryNumber}`
+  );
+
+  revalidatePath("/stock");
+  revalidatePath(`/stock/${input.stockEntryId}`);
+  return { success: true, attachment };
+}
+
 export async function deleteAttachment(attachmentId: string) {
   const user = await requireAnyPermission([PERMISSIONS.STOCK_CREATE, PERMISSIONS.STOCK_EDIT]);
 

@@ -8,7 +8,7 @@ What the app needs, and why:
 | Need | Why | If you get it wrong |
 | --- | --- | --- |
 | PostgreSQL | the whole data model | nothing runs |
-| Somewhere to put uploaded files | `src/app/api/upload/route.ts` stores invoices; it writes to Vercel Blob, so a persistent disk is no longer required | uploading errors with a missing-token message; nothing else is affected |
+| Somewhere to put uploaded files | invoices go to Vercel Blob, so a persistent disk is no longer required. The browser sends them there **directly** — see below | uploading errors with a missing-token message; nothing else is affected |
 | A long-running Node process | ordinary server rendering, and Server-Sent Events later | works without it today; blocks live updates later |
 | One small instance | about a dozen people | — |
 
@@ -127,6 +127,26 @@ page that makes dozens. `vercel.json` pins them together:
 
 One region is all Hobby allows, which is all this needs. Match the letter codes
 to wherever the database actually is.
+
+### Uploads do not go through the server
+
+A serverless function may only receive a request body of about **4.5 MB**. An
+invoice larger than that was rejected by the platform with a `413` before
+`/api/upload` ran at all, so none of the route's own size checks could report it
+— and the browser then tried to parse the plain-text error as JSON, which is
+where `Unexpected token 'R'` came from.
+
+So the file no longer passes through the function. `/api/upload` issues a signed
+token and nothing else; the browser uploads straight to Blob storage. That route
+is therefore the only gate — signed in, holds `stock.create` or `stock.edit`,
+entry still DRAFT or REJECTED, right MIME type, within `maxSizeBytes` — because
+refusing the token is what refuses the upload. The database row is written
+afterwards by `recordStockAttachment` in `src/lib/actions/stock.ts`, which checks
+all of it a second time, since everything it is told arrives from a browser.
+
+Blob's own `onUploadCompleted` webhook is deliberately not used for that row: it
+is called from Blob's servers and cannot reach a machine running on localhost,
+which would have made uploads impossible to test in development.
 
 ### What you give up on the free tier
 

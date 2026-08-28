@@ -27,8 +27,8 @@ const ROUTE_PERMISSIONS: Record<string, string[]> = {
   "/activity": ["activity.view"],
   "/settings": ["settings.view"],
   // Changing your own password is not a capability an admin can withhold, so it
-  // is gated on nothing beyond being signed in. It must also stay reachable
-  // while mustChangePassword is set, or the redirect below would loop.
+  // is gated on nothing beyond being signed in — and it must stay reachable by
+  // someone requireAuth() is redirecting here, or that redirect would loop.
   "/settings/password": [],
   // Your own profile is not a setting. It sits under /settings only by URL, and
   // the longest-prefix rule below would otherwise hand it to the line above —
@@ -78,12 +78,14 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const user = req.auth?.user;
 
-  // Someone whose password was chosen for them by an admin goes nowhere else
-  // until they have replaced it. This runs before the permission check below so
-  // that it applies to every page, not only the ones with a permission mapping.
-  if (user?.mustChangePassword && pathname !== "/settings/password") {
-    return NextResponse.redirect(new URL("/settings/password", req.nextUrl));
-  }
+  // The forced password change is NOT checked here, deliberately. This file runs
+  // on the Edge and can read only the session cookie, and that cookie is written
+  // at sign-in and never updated afterwards — a page is a React Server Component
+  // and cannot write cookies. So a cookie minted while the flag was set kept
+  // saying so for the full 24-hour session even after the person had changed
+  // their password, and they were sent back here every time. requireAuth() in
+  // src/lib/rbac/check.ts does it instead, against a value re-read from the
+  // database.
 
   // Check route-level permissions against the MOST SPECIFIC matching route,
   // so e.g. /stock/products is governed by its own permissions, not /stock's

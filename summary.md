@@ -86,7 +86,8 @@ src/
       <page>/
         page.tsx         the server component: gate, fetch, render
         _components/     the client components only that page uses
-    api/               only three: file upload (→ blob storage), health, NextAuth
+    api/               only three: upload (issues a blob token — the file
+                       itself never touches the server), health, NextAuth
   lib/
     actions/           ← ALL reads and writes. One file per area
                          account.ts = your OWN account (no permission key)

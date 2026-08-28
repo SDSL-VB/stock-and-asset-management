@@ -13,6 +13,8 @@ import { Badge } from "@/components/ui/badge";
 import { Upload, Loader2, FileUp } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+import { upload } from "@vercel/blob/client";
+import { recordStockAttachment } from "@/lib/actions/stock";
 
 interface AttachmentTypeConfig {
   id: string;
@@ -71,20 +73,30 @@ export function FileUpload({ stockEntryId, attachmentTypes }: Props) {
 
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-      formData.append("stockEntryId", stockEntryId);
-      formData.append("attachmentType", attachmentType);
-
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
+      // The file goes straight from this browser to Blob storage. It does NOT
+      // pass through our server: a serverless function can only receive about
+      // 4.5 MB, and anything larger was rejected with a 413 before our code ran.
+      // /api/upload is asked only for permission, and answers with a token.
+      const blob = await upload(selectedFile.name, selectedFile, {
+        access: "public",
+        handleUploadUrl: "/api/upload",
+        clientPayload: JSON.stringify({ stockEntryId, attachmentType }),
       });
 
-      const data = await res.json();
+      // Only now does the database learn about it. The action re-checks the
+      // permission and the entry's status, because everything it is being told
+      // here came from the browser.
+      const result = await recordStockAttachment({
+        stockEntryId,
+        attachmentType,
+        fileName: selectedFile.name,
+        fileUrl: blob.url,
+        fileSize: selectedFile.size,
+        mimeType: selectedFile.type,
+      });
 
-      if (!res.ok) {
-        toast.error(data.error || "Upload failed");
+      if ("error" in result) {
+        toast.error(result.error);
         return;
       }
 
@@ -93,6 +105,13 @@ export function FileUpload({ stockEntryId, attachmentTypes }: Props) {
       setAttachmentType("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       router.refresh();
+    } catch (error) {
+      // upload() throws on a refused token or a failed transfer. Show what it
+      // said — the old code called res.json() before checking res.ok, so a
+      // plain-text platform error surfaced as "Unexpected token 'R'" instead.
+      toast.error(
+        error instanceof Error ? error.message : "Upload failed. Please try again."
+      );
     } finally {
       setUploading(false);
     }

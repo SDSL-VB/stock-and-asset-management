@@ -339,15 +339,23 @@ key at all** (`src/lib/actions/account.ts`). That is deliberate: an admin must
 not be able to withhold someone's ability to stop using a password the admin
 knows. Everything else about an account — name, email, role — stays admin-only.
 
-The gate is enforced in **two** places, and both are needed:
+The gate lives in exactly **one** place — `requireAuth()` in
+`src/lib/rbac/check.ts` — and the interesting part is which way round it trusts
+things: **the session may say no, but only the database may say yes.**
 
-* `middleware.ts` catches it before a page is even built, but can only read the
-  session cookie — and a cookie is written at sign-in. So it does not notice a
-  reset that happens while somebody is already signed in.
-* `requireAuth()` in `src/lib/rbac/check.ts` catches exactly that case. The jwt
-  callback in `src/auth.ts` re-reads the database every 30 seconds, and although
-  a page cannot write the refreshed cookie, it can still *read* the fresher
-  value — so this check costs no extra query.
+That asymmetry exists because a session is a snapshot. The jwt callback in
+`src/auth.ts` re-reads the database only every 30 seconds, and `middleware.ts`
+reads a cookie written once at sign-in and never rewritten. Either can therefore
+go on claiming somebody still owes a password change after they have made one.
+
+The two directions are not equally harmful, which is what decides the design. A
+stale *no* merely delays an admin's reset by a few seconds. A stale *yes* locks
+somebody out of the whole application — every page bounces them back to the
+change form no matter what they do, for up to 30 seconds via the session and for
+the full 24-hour cookie lifetime via middleware. That is why middleware no longer
+checks it at all, and why a session claiming `true` is confirmed against the
+database before anyone is redirected. The extra query happens only for the few
+people actually carrying the flag.
 
 The page itself uses `requireSignedIn()` rather than `requireAuth()`, or it
 would redirect to itself.

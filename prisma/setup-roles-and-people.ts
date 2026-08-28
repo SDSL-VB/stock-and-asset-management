@@ -368,7 +368,7 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
           departmentId: department?.id ?? null,
           isActive: true,
           // The password below is written down in this file, so it is a
-          // starting password only: middleware.ts stops each person at
+          // starting password only: requireAuth() stops each person at
           // /settings/password until they have replaced it.
           mustChangePassword: true,
         },

@@ -1,4 +1,5 @@
 import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import type { PermissionKey } from "./permissions";
 
@@ -37,15 +38,29 @@ export async function requireAuth() {
   // Somebody whose password was chosen for them by an admin goes nowhere until
   // they have replaced it.
   //
-  // middleware.ts checks this too, but cannot be relied on alone: it only sees
-  // the session cookie, and a cookie is written at sign-in. A page is a React
-  // Server Component and cannot write cookies, so when the jwt callback in
-  // src/auth.ts re-reads the database (every 30 seconds) the fresher token
-  // never reaches the browser — meaning an ALREADY signed-in person keeps a
-  // cookie that says nothing about this flag. That callback's return value does
-  // reach `auth()` here, though, which is why this check is both correct and
-  // free: no extra query, just the value middleware could not see.
-  if (user.mustChangePassword) redirect("/settings/password");
+  // Note which way round this is: the session is trusted to say NO, and the
+  // database is asked to confirm every YES. That asymmetry is the fix for a real
+  // bug — people who had already changed their password were still being sent
+  // here, again and again.
+  //
+  // The reason is that the session is a snapshot. The jwt callback in
+  // src/auth.ts only re-reads the database every 30 seconds, and middleware
+  // (which used to run this same check) reads a cookie written once at sign-in
+  // and never rewritten — so a stale "yes" could outlive the truth by 30 seconds
+  // there and by the full 24-hour session here. A stale "no" is harmless: it
+  // costs an admin's reset a few seconds to take hold. A stale "yes" traps
+  // somebody out of the entire application, so it is never acted on without
+  // asking the database first.
+  //
+  // The extra query therefore only happens for the few people actually carrying
+  // the flag; everyone else takes the cheap path and never touches it.
+  if (user.mustChangePassword) {
+    const row = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { mustChangePassword: true },
+    });
+    if (row?.mustChangePassword) redirect("/settings/password");
+  }
 
   return user;
 }

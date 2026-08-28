@@ -1,123 +1,103 @@
-// POST /api/upload — attaches one document (invoice, bill, delivery note) to a
-// stock entry. Called by the attachment step of the stock-entry form.
+// POST /api/upload — issues a short-lived token that lets the browser upload one
+// document straight to Blob storage. Called by the attachment step of the
+// stock-entry form (stock/_components/file-upload.tsx).
 //
-// The file itself goes to Vercel Blob (object storage), NOT to the local disk.
-// A serverless host gives every request a fresh, read-only filesystem, so a file
-// written into `public/` would fail outright or vanish on the next deploy. Only
-// the resulting public URL is stored in the database.
+// The file itself NEVER passes through this function. That is the whole point:
+// a serverless function may only receive a request body of about 4.5 MB, so
+// posting a 10 MB invoice through it was rejected by the platform with a 413
+// before any of our own code ran. The browser now sends the bytes directly to
+// Blob storage, and this route only decides whether it is allowed to.
+//
+// Which means this file IS the gate. Everything checked here — signed in, holds
+// the permission, entry still editable, correct file type and size — is enforced
+// by refusing to issue a token. Without a token there is no upload.
 import { NextRequest, NextResponse } from "next/server";
+import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import path from "path";
-import { put } from "@vercel/blob";
+
+/** What the browser tells us about the upload it wants to make. */
+type UploadIntent = {
+  stockEntryId: string;
+  attachmentType: string;
+};
 
 export async function POST(request: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  // Check stock.create or stock.edit permission
-  const permissions = session.user.permissions ?? [];
-  const hasPermission = permissions.some(
-    (p) => p === "stock.create" || p === "stock.edit"
-  );
-  if (!hasPermission) {
-    return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
-  }
+  const body = (await request.json()) as HandleUploadBody;
 
   try {
-    const formData = await request.formData();
-    const file = formData.get("file") as File | null;
-    const stockEntryId = formData.get("stockEntryId") as string | null;
-    const attachmentType = formData.get("attachmentType") as string | null;
+    const result = await handleUpload({
+      body,
+      request,
 
-    if (!file || !stockEntryId || !attachmentType) {
-      return NextResponse.json(
-        { error: "Missing required fields: file, stockEntryId, attachmentType" },
-        { status: 400 }
-      );
-    }
-
-    // Verify entry exists and is editable
-    const entry = await prisma.stockEntry.findUnique({
-      where: { id: stockEntryId },
-      select: { status: true, createdById: true },
-    });
-
-    if (!entry) {
-      return NextResponse.json({ error: "Stock entry not found" }, { status: 404 });
-    }
-
-    if (entry.status !== "DRAFT" && entry.status !== "REJECTED") {
-      return NextResponse.json(
-        { error: "Cannot upload to submitted or approved entries" },
-        { status: 400 }
-      );
-    }
-
-    // Validate against attachment type config
-    const typeConfig = await prisma.attachmentTypeConfig.findUnique({
-      where: { name: attachmentType },
-    });
-
-    if (typeConfig) {
-      // Check file size
-      if (file.size > typeConfig.maxSizeBytes) {
-        return NextResponse.json(
-          { error: `File exceeds maximum size of ${Math.round(typeConfig.maxSizeBytes / 1024 / 1024)}MB` },
-          { status: 400 }
-        );
-      }
-
-      // Check mime type
-      if (typeConfig.allowedMimeTypes) {
-        const allowed = typeConfig.allowedMimeTypes as string[];
-        if (allowed.length > 0 && !allowed.includes(file.type)) {
-          return NextResponse.json(
-            { error: `File type ${file.type} is not allowed. Accepted: ${allowed.join(", ")}` },
-            { status: 400 }
-          );
+      // Runs before a token is handed out. Throwing here means no upload.
+      onBeforeGenerateToken: async (_pathname, clientPayload) => {
+        const session = await auth();
+        if (!session?.user?.id) {
+          throw new Error("You are not signed in");
         }
-      }
-    }
 
-    // Upload to blob storage. addRandomSuffix lets two people both upload
-    // "invoice.pdf" without one overwriting the other, while keeping the
-    // original name readable in the URL.
-    const ext = path.extname(file.name);
-    const baseName = path.basename(file.name, ext).replace(/[^a-zA-Z0-9-_]/g, "-");
-    const blob = await put(`stock/${baseName}${ext}`, file, {
-      access: "public",
-      addRandomSuffix: true,
-      contentType: file.type || undefined,
-    });
+        const permissions = session.user.permissions ?? [];
+        const canUpload = permissions.some(
+          (p) => p === "stock.create" || p === "stock.edit"
+        );
+        if (!canUpload) {
+          throw new Error("You do not have permission to add attachments");
+        }
 
-    // An absolute https URL now, instead of a path under /public. Everywhere an
-    // attachment is rendered (document-viewer, quick-docs-dialog) uses this as
-    // an href or src, so those components work unchanged.
-    const fileUrl = blob.url;
+        if (!clientPayload) throw new Error("Missing upload details");
+        const intent = JSON.parse(clientPayload) as UploadIntent;
+        if (!intent.stockEntryId || !intent.attachmentType) {
+          throw new Error("Missing upload details");
+        }
 
-    // Create DB record
-    const attachment = await prisma.stockEntryAttachment.create({
-      data: {
-        fileName: file.name,
-        fileUrl,
-        fileSize: file.size,
-        mimeType: file.type,
-        attachmentType,
-        stockEntryId,
-        uploadedById: session.user.id,
+        const entry = await prisma.stockEntry.findUnique({
+          where: { id: intent.stockEntryId },
+          select: { status: true },
+        });
+        if (!entry) throw new Error("Stock entry not found");
+        if (entry.status !== "DRAFT" && entry.status !== "REJECTED") {
+          throw new Error("Cannot upload to submitted or approved entries");
+        }
+
+        const typeConfig = await prisma.attachmentTypeConfig.findUnique({
+          where: { name: intent.attachmentType },
+        });
+
+        // Blob enforces these two for us, and rejects the upload itself if the
+        // browser tries to exceed them — so the limits are not merely advisory.
+        const allowed = Array.isArray(typeConfig?.allowedMimeTypes)
+          ? (typeConfig.allowedMimeTypes as string[])
+          : [];
+
+        return {
+          addRandomSuffix: true,
+          maximumSizeInBytes: typeConfig?.maxSizeBytes,
+          allowedContentTypes: allowed.length > 0 ? allowed : undefined,
+          // Comes back to onUploadCompleted below.
+          tokenPayload: JSON.stringify({
+            ...intent,
+            uploadedById: session.user.id,
+          }),
+        };
+      },
+
+      // Blob calls this from ITS servers once the file has landed. It cannot
+      // reach a machine running on localhost, so the database row is written by
+      // recordStockAttachment (src/lib/actions/stock.ts) once the browser sees
+      // the upload finish. That works in development and in production alike;
+      // this hook stays as the place to add anything that must happen even if
+      // the browser closes mid-upload.
+      onUploadCompleted: async () => {
+        // Intentionally empty — see the comment above.
       },
     });
 
-    return NextResponse.json({ success: true, attachment });
+    return NextResponse.json(result);
   } catch (error) {
-    console.error("Upload error:", error);
-    const message = error instanceof Error ? error.message : "Failed to upload file";
-    return NextResponse.json(
-      { error: `Upload failed: ${message}` },
-      { status: 500 }
-    );
+    const message =
+      error instanceof Error ? error.message : "Could not start the upload";
+    // 400 rather than 500: every throw above is a rejected request, not a fault.
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
