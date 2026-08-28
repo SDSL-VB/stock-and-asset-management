@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -9,7 +9,9 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ExternalLink, FileText } from "lucide-react";
+import { ExternalLink, FileText, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { getAttachmentViewUrl } from "@/lib/actions/stock";
 
 type Attachment = {
   id: string;
@@ -36,8 +38,38 @@ export function QuickDocsDialog({
   // The chosen tab is remembered against the entry it belongs to, so opening a
   // different entry falls back to its own first document without an effect.
   const [chosen, setChosen] = useState<{ entry: string; id: string } | null>(null);
+  // Documents live in a PRIVATE blob store, so `fileUrl` cannot be used as a
+  // src. A signed, expiring link is fetched for whichever document is on show,
+  // and remembered together with the id it belongs to — so switching tabs makes
+  // the previous link stop applying by itself, with nothing to clear.
+  // `url: null` records an attempt that failed, which is what stops the
+  // spinner from spinning for ever.
+  const [signed, setSigned] = useState<{ id: string; url: string | null } | null>(null);
   const activeId =
     chosen && chosen.entry === entryNumber ? chosen.id : attachments[0]?.id ?? null;
+
+  const forActive = signed && signed.id === activeId ? signed : null;
+  const signedUrl = forActive?.url ?? null;
+  const loadingUrl = !!activeId && !forActive;
+
+  useEffect(() => {
+    // Nothing is set synchronously here on purpose: every write happens once
+    // the request comes back, so opening the dialog cannot cascade renders.
+    if (!activeId || forActive) return;
+    let cancelled = false;
+    getAttachmentViewUrl(activeId).then((result) => {
+      if (cancelled) return;
+      if ("error" in result) {
+        toast.error(result.error);
+        setSigned({ id: activeId, url: null });
+      } else {
+        setSigned({ id: activeId, url: result.url });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, forActive]);
   const setActiveId = (id: string) =>
     setChosen(entryNumber ? { entry: entryNumber, id } : null);
 
@@ -84,30 +116,45 @@ export function QuickDocsDialog({
                 <FileText className="h-4 w-4 text-muted-foreground" />
                 {active.fileName}
               </p>
-              <a href={active.fileUrl} target="_blank" rel="noopener noreferrer">
-                <Button variant="outline" size="sm" nativeButton={false}>
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  Open in a new tab
-                </Button>
-              </a>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!signedUrl}
+                onClick={() => {
+                  if (signedUrl) window.open(signedUrl, "_blank", "noopener,noreferrer");
+                }}
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Open in a new tab
+              </Button>
             </div>
 
-            {isImage && (
+            {loadingUrl && (
+              <div className="flex h-[65vh] w-full items-center justify-center rounded-lg border">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            )}
+            {!loadingUrl && signedUrl && isImage && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={active.fileUrl}
+                src={signedUrl}
                 alt={active.fileName}
                 className="max-h-[65vh] w-full rounded-lg border object-contain"
               />
             )}
-            {isPdf && (
+            {!loadingUrl && signedUrl && isPdf && (
               <iframe
-                src={active.fileUrl}
+                src={signedUrl}
                 title={active.fileName}
                 className="h-[65vh] w-full rounded-lg border"
               />
             )}
-            {!isImage && !isPdf && (
+            {!loadingUrl && !signedUrl && (
+              <p className="rounded-lg border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+                This document could not be opened.
+              </p>
+            )}
+            {signedUrl && !isImage && !isPdf && (
               <p className="rounded-lg border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
                 This file type cannot be previewed here — use “Open in a new tab”.
               </p>

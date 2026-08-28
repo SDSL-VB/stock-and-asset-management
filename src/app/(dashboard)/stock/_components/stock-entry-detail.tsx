@@ -20,8 +20,7 @@ import {
 import Link from "next/link";
 import { hasPermission } from "@/lib/rbac/check";
 import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
-import { deleteAttachment } from "@/lib/actions/stock";
-import { toDownloadUrl } from "@/lib/attachments";
+import { deleteAttachment, getAttachmentViewUrl } from "@/lib/actions/stock";
 import { MoveStockDialog } from "./move-stock-dialog";
 import { RequestTransferDialog } from "./request-transfer-dialog";
 import { DocumentViewerButton } from "./document-viewer";
@@ -577,11 +576,27 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <DocumentViewerButton attachment={att} />
-                        <a href={toDownloadUrl(att.fileUrl)} download={att.fileName} title="Download">
-                          <Button variant="ghost" size="sm">
-                            <Download className="h-4 w-4" />
-                          </Button>
-                        </a>
+                        {/* Private blob: there is no link to point at, so one
+                            is signed on demand. The tab is opened first so the
+                            popup blocker sees it inside the click. */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="Download"
+                          onClick={async () => {
+                            const tab = window.open("", "_blank", "noopener,noreferrer");
+                            const result = await getAttachmentViewUrl(att.id);
+                            if ("error" in result) {
+                              tab?.close();
+                              toast.error(result.error);
+                              return;
+                            }
+                            if (tab) tab.location.href = result.url;
+                            else window.location.href = result.url;
+                          }}
+                        >
+                          <Download className="h-4 w-4" />
+                        </Button>
                         {canUpload && (
                           <Button
                             variant="ghost"

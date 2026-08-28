@@ -24,6 +24,8 @@ import {
 import { raiseClientDispatchForEntry } from "./client-dispatch";
 import { checkOrderLineCapacity, syncPurchaseOrderFromEntry } from "./procurement";
 import { logActivity } from "./activity";
+import { isBlobUrl, isLegacyLocalUpload, blobPathnameOf } from "@/lib/blob-urls";
+import { issueSignedToken, presignUrl } from "@vercel/blob";
 import { revalidatePath } from "next/cache";
 
 /**
@@ -730,6 +732,121 @@ export async function rejectStockEntry(id: string, stepOrder: number, reason: st
   return { success: true };
 }
 
+/** How long a signed link to a document stays usable. */
+const ATTACHMENT_LINK_MINUTES = 10;
+
+/**
+ * A temporary, signed link to one attachment, or an error explaining why not.
+ *
+ * Called by the three places a document is shown: document-viewer.tsx,
+ * quick-docs-dialog.tsx and the download button in stock-entry-detail.tsx.
+ *
+ * Attachments live in a PRIVATE blob store, so `fileUrl` on its own fetches
+ * nothing — which is the point. A link has to be signed for each viewing, and
+ * the signature expires, so a URL copied out of the page stops working rather
+ * than becoming a permanent public handle on an invoice.
+ *
+ * Permission is the same question as "may you see the entry": whoever can open
+ * the stock entry can read its documents, and the scope rules that hide other
+ * departments' stock hide their paperwork with it.
+ */
+export async function getAttachmentViewUrl(attachmentId: string) {
+  const user = await requireAnyPermission([
+    PERMISSIONS.STOCK_VIEW,
+    PERMISSIONS.STOCK_CREATE,
+  ]);
+
+  const attachment = await prisma.stockEntryAttachment.findUnique({
+    where: { id: attachmentId },
+    select: {
+      fileName: true,
+      fileUrl: true,
+      mimeType: true,
+      stockEntry: {
+        select: {
+          status: true,
+          quantity: true,
+          departmentId: true,
+          locationId: true,
+          createdById: true,
+          issues: { select: { departmentId: true, quantity: true } },
+        },
+      },
+    },
+  });
+  if (!attachment) return { error: "Attachment not found" };
+
+  // Exactly the rule getStockEntryById applies, so a document can never be
+  // reachable by someone who cannot reach the entry it belongs to.
+  if (!isStockVisible(attachment.stockEntry, user, resolveStockScope(user))) {
+    return { error: "Attachment not found" };
+  }
+
+  if (isLegacyLocalUpload(attachment.fileUrl)) {
+    return {
+      error:
+        "This document was uploaded before files moved to cloud storage and is no longer available. Please upload it again.",
+    };
+  }
+
+  const pathname = blobPathnameOf(attachment.fileUrl);
+  if (!pathname) return { error: "That file did not come from our storage" };
+
+  try {
+    const validUntil = Date.now() + ATTACHMENT_LINK_MINUTES * 60 * 1000;
+    const signed = await issueSignedToken({
+      pathname,
+      operations: ["get"],
+      validUntil,
+    });
+    const { presignedUrl } = await presignUrl(signed, {
+      operation: "get",
+      pathname,
+      access: "private",
+      validUntil,
+    });
+    return {
+      url: presignedUrl,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return { error: `Could not open that document: ${message}` };
+  }
+}
+
+/**
+ * Whether blob storage is usable, and if not, why — in words a person can act on.
+ *
+ * Returns null when everything looks right.
+ *
+ * The shape of the token matters as much as its presence. A read-write token
+ * reads `vercel_blob_rw_<storeId>_<secret>`, and the SDK pulls the store id
+ * straight out of it by splitting on underscores. Give it anything else — a
+ * Vercel account token, a truncated paste, a placeholder — and it will happily
+ * build a request with an empty store id, which Vercel's API rejects without
+ * CORS headers. The browser then reports a *CORS error*, which says nothing at
+ * all about the real problem. Hence checking the shape here.
+ */
+function describeStorageProblem(): string | null {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+
+  if (!token) {
+    return "File storage is not set up on this deployment (BLOB_READ_WRITE_TOKEN is missing). Everything else works — only uploads are affected.";
+  }
+
+  const parts = token.split("_");
+  const looksRight =
+    token.startsWith("vercel_blob_rw_") && parts.length >= 5 && parts[3].length > 0;
+
+  if (!looksRight) {
+    return "The BLOB_READ_WRITE_TOKEN on this deployment is not a Blob store token (it should look like vercel_blob_rw_…). Create a Blob store in Vercel and use Connect Project rather than adding the variable by hand, then redeploy.";
+  }
+
+  return null;
+}
+
 /**
  * Answers "may I upload this, and will it work?" BEFORE the browser starts.
  *
@@ -761,12 +878,8 @@ export async function checkAttachmentUpload(input: {
 
   // Configuration, not the user's fault — so say so plainly rather than letting
   // it surface as a mysterious storage error a minute later.
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    return {
-      error:
-        "File storage is not set up on this deployment (BLOB_READ_WRITE_TOKEN is missing). Everything else works — only uploads are affected.",
-    };
-  }
+  const storageProblem = describeStorageProblem();
+  if (storageProblem) return { error: storageProblem };
 
   const entry = await prisma.stockEntry.findUnique({
     where: { id: input.stockEntryId },
@@ -825,10 +938,9 @@ export async function recordStockAttachment(input: {
 
   // Only ever accept a URL that came from our own blob store. Without this,
   // anyone could point an attachment at any address on the internet.
-  const isBlobUrl = /^https:\/\/[a-z0-9-]+\.public\.blob\.vercel-storage\.com\//i.test(
-    input.fileUrl
-  );
-  if (!isBlobUrl) return { error: "That file did not come from our storage" };
+  if (!isBlobUrl(input.fileUrl)) {
+    return { error: "That file did not come from our storage" };
+  }
 
   const entry = await prisma.stockEntry.findUnique({
     where: { id: input.stockEntryId },

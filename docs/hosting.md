@@ -148,14 +148,25 @@ Blob's own `onUploadCompleted` webhook is deliberately not used for that row: it
 is called from Blob's servers and cannot reach a machine running on localhost,
 which would have made uploads impossible to test in development.
 
-**If uploading says "Failed to retrieve the client token"**, that is the Blob
-client refusing to read the reason our server gave it — it discards the response
-body whenever the token request fails. Nine times in ten the real cause is that
-`BLOB_READ_WRITE_TOKEN` is not set, which happens when the Blob store has not
-been created and connected to the project. `checkAttachmentUpload` in
-`src/lib/actions/stock.ts` runs before the upload starts and says so in plain
-words, so that message should now be rare — but it is what the underlying error
-looks like.
+**The store must be PRIVATE, and the code assumes it.** Invoices carry vendor
+names, amounts and GST numbers, so they are not world-readable by URL. Uploads
+pass `access: "private"`, and the URL stored in `fileUrl` fetches nothing on its
+own — asking for it directly returns `403 Forbidden`. Every viewing goes through
+`getAttachmentViewUrl` in `src/lib/actions/stock.ts`, which signs a link that
+expires after ten minutes, and only for someone who can already see the stock
+entry the document belongs to.
+
+Two errors both mean "the access mode does not match":
+
+* **"Failed to retrieve the client token"** — the Blob client discards the
+  reason our server gave it, so this one message covers every refusal. Usually
+  `BLOB_READ_WRITE_TOKEN` is missing or is not a store token.
+  `checkAttachmentUpload` now catches both before the upload starts and says so
+  in words.
+* **A CORS error on `vercel.com/api/blob`** — misleading, because that host is
+  correct and nothing is misrouted. Vercel rejected the upload with a 400 and
+  returned no CORS headers, which is all the browser can see. Asking a private
+  store for public access produces exactly this.
 
 ### What you give up on the free tier
 

@@ -71,6 +71,8 @@ export async function POST(request: NextRequest) {
           : [];
 
         return {
+          // Must match the store's own access mode, and the client's.
+          access: "private",
           addRandomSuffix: true,
           maximumSizeInBytes: typeConfig?.maxSizeBytes,
           allowedContentTypes: allowed.length > 0 ? allowed : undefined,

@@ -8,33 +8,88 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Download, Eye, FileText } from "lucide-react";
-import { toDownloadUrl } from "@/lib/attachments";
+import { Download, Eye, FileText, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { getAttachmentViewUrl } from "@/lib/actions/stock";
 
 interface Attachment {
+  id: string;
   fileName: string;
-  fileUrl: string;
   mimeType: string;
 }
 
 /**
  * In-app preview for uploaded documents so nothing needs downloading:
  * images render directly, PDFs via the browser's built-in viewer.
+ *
+ * Documents live in a PRIVATE blob store, so there is no URL that can simply be
+ * put in an `src`. One is asked for when the dialog opens, it is signed, and it
+ * expires — which is why the link is fetched here rather than passed in as a
+ * prop with the rest of the attachment.
  */
 export function DocumentViewerButton({ attachment }: { attachment: Attachment }) {
   const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
 
   const isImage = attachment.mimeType.startsWith("image/");
   const isPdf = attachment.mimeType === "application/pdf";
   const canPreview = isImage || isPdf;
 
+  /** Fetches a fresh signed link. Returns null and complains if it cannot. */
+  async function fetchUrl(): Promise<string | null> {
+    const result = await getAttachmentViewUrl(attachment.id);
+    if ("error" in result) {
+      toast.error(result.error);
+      return null;
+    }
+    return result.url;
+  }
+
+  async function handleOpen() {
+    setLoading(true);
+    try {
+      const fresh = await fetchUrl();
+      if (!fresh) return;
+      setUrl(fresh);
+      setOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /**
+   * Opening in a new tab has to happen inside the click, or the popup blocker
+   * stops it — so the tab is opened first and pointed at the link once it
+   * arrives.
+   */
+  async function handleOpenInTab() {
+    setLoading(true);
+    const tab = window.open("", "_blank", "noopener,noreferrer");
+    try {
+      const fresh = await fetchUrl();
+      if (!fresh) {
+        tab?.close();
+        return;
+      }
+      if (tab) tab.location.href = fresh;
+      else window.location.href = fresh;
+    } finally {
+      setLoading(false);
+    }
+  }
+
   if (!canPreview) {
     return (
-      <a href={attachment.fileUrl} target="_blank" rel="noopener noreferrer">
-        <Button variant="ghost" size="sm" title="Preview not available — opens in a new tab">
-          <Eye className="h-4 w-4" />
-        </Button>
-      </a>
+      <Button
+        variant="ghost"
+        size="sm"
+        title="Preview not available — opens in a new tab"
+        onClick={handleOpenInTab}
+        disabled={loading}
+      >
+        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+      </Button>
     );
   }
 
@@ -44,9 +99,10 @@ export function DocumentViewerButton({ attachment }: { attachment: Attachment })
         variant="ghost"
         size="sm"
         title={`View ${attachment.fileName}`}
-        onClick={() => setOpen(true)}
+        onClick={handleOpen}
+        disabled={loading}
       >
-        <Eye className="h-4 w-4" />
+        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
       </Button>
       <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
@@ -57,29 +113,34 @@ export function DocumentViewerButton({ attachment }: { attachment: Attachment })
         </DialogHeader>
 
         <div className="flex min-h-0 items-center justify-center overflow-auto rounded-lg border bg-muted/30">
-          {isImage ? (
-            // eslint-disable-next-line @next/next/no-img-element -- local uploads with unknown dimensions
+          {url && isImage ? (
+            // eslint-disable-next-line @next/next/no-img-element -- uploads of unknown dimensions, served from blob storage
             <img
-              src={attachment.fileUrl}
+              src={url}
               alt={attachment.fileName}
               className="max-h-[70vh] w-auto max-w-full object-contain"
             />
-          ) : (
+          ) : url ? (
             <iframe
-              src={attachment.fileUrl}
+              src={url}
               title={attachment.fileName}
               className="h-[70vh] w-full rounded-lg"
             />
-          )}
+          ) : null}
         </div>
 
         <div className="flex justify-end">
-          <a href={toDownloadUrl(attachment.fileUrl)} download={attachment.fileName}>
-            <Button variant="outline" size="sm">
-              <Download className="mr-2 h-4 w-4" />
-              Download
-            </Button>
-          </a>
+          {/* A signed link already carries its own filename, and `download`
+              is ignored cross-origin anyway, so this simply opens it. */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleOpenInTab}
+            disabled={loading}
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Download
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

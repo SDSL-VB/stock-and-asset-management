@@ -92,7 +92,13 @@ export function FileUpload({ stockEntryId, attachmentTypes }: Props) {
       // 4.5 MB, and anything larger was rejected with a 413 before our code ran.
       // /api/upload is asked only for permission, and answers with a token.
       const blob = await upload(selectedFile.name, selectedFile, {
-        access: "public",
+        // PRIVATE, not public. Invoices carry vendor names, amounts and GST
+        // numbers, so a URL that anybody could fetch forever is the wrong
+        // trade. Reading one goes through getAttachmentViewUrl instead, which
+        // signs a link that expires. The store itself is private, and asking it
+        // for public access is refused with a 400 the browser can only describe
+        // as a CORS error.
+        access: "private",
         handleUploadUrl: "/api/upload",
         clientPayload: JSON.stringify({ stockEntryId, attachmentType }),
       });
