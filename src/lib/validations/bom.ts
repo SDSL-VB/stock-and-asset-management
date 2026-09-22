@@ -6,7 +6,7 @@ export const productKindSchema = z.object({
   unit: z.string().trim().min(1, "Unit is required").max(16, "Keep the unit short"),
 });
 
-export const bomLineSchema = z.object({
+const bomLineSchema = z.object({
   componentProductId: z.string().min(1, "Pick a component"),
   quantityPerUnit: z
     .number({ error: "Quantity must be a number" })
@@ -38,7 +38,11 @@ export const buildSchema = z.object({
 
 /** Why one person is being given a permission their role does not carry. */
 export const grantPermissionSchema = z.object({
-  permissionKey: z.string().min(1, "Pick a permission"),
+  // One or several, granted together with one reason and one end date
+  permissionKeys: z
+    .array(z.string().min(1))
+    .min(1, "Pick at least one permission")
+    .max(60, "Pick at most 60 at once"),
   reason: z
     .string()
     .trim()

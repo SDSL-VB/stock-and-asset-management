@@ -4,6 +4,8 @@ import { AppTopbar } from "@/components/layout/app-topbar";
 import { PageTransition } from "@/components/motion";
 import { LiveData } from "@/components/shared/live-data";
 import { auth } from "@/auth";
+import { after } from "next/server";
+import { runWatchChecks } from "@/lib/notifications/checks";
 
 export default async function DashboardLayout({
   children,
@@ -11,6 +13,10 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const session = await auth();
+  // Low stock and late orders are found by looking rather than by an event.
+  // After the page is sent, and at most every few minutes across all visitors
+  // — see src/lib/notifications/checks.ts.
+  after(() => runWatchChecks().catch((e) => console.error("Watch checks failed:", e)));
 
   return (
     <SidebarProvider>

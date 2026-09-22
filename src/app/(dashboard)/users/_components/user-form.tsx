@@ -20,6 +20,25 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, UserPlus } from "lucide-react";
 
+/**
+ * Creating a team member.
+ *
+ * Three fields, each doing more than it looks like:
+ *
+ *   role        the PRIMARY role. Further roles stack on top of it afterwards
+ *               from the person's own page, and permissions are the union of
+ *               all of them. The primary one is what the badge, the directory
+ *               filter and the hierarchy rules read.
+ *   department  where they work, and therefore their SITE — a person has no
+ *               location of their own. Leaving it empty means no site, and so
+ *               no narrowing by one.
+ *
+ * The password typed here is temporary by design. Creating an account sets
+ * `mustChangePassword`, so the new person is sent to /settings/password on first
+ * use and can reach nothing else until they have replaced it. The only person
+ * who ends up knowing their password is them.
+ */
+
 interface UserFormProps {
   roles: Array<{ id: string; name: string }>;
   departments: Array<{ id: string; name: string }>;

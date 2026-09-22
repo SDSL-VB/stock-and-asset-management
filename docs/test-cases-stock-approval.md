@@ -18,44 +18,8 @@ The breadth pass — all 105 permissions, every person, every module — is
 [`test-cases-permissions.md`](./test-cases-permissions.md). This file goes deep
 on one flow instead; where the two overlap, this one is the more detailed.
 
----
-
-## What was found while writing these (read first)
-
-**The reported symptom is real, but it is not a self-approval rule.** There is
-no "you raised it, so you cannot answer it" check anywhere in the stock flow —
-`SELF_APPROVAL_REFUSAL` (`src/lib/review-rules.ts`) is used by dispatch,
-fulfilment and bills of materials, and deliberately not by stock entries. A
-Super Admin approving an entry they created is allowed by the code as it stands.
-
-What actually blocks entry **SE-20260814-001** (the Hyderabad BLDC MOTOR entry)
-is that it sits in `SUBMITTED` with **zero rows in `stock_approvals`**:
-
-* `ApprovalActions` looks for the first `PENDING` step and returns `null` when
-  there is none — so the Approve / Reject card is never rendered, for anybody,
-  including the Super Admin. Nothing is greyed out; it simply is not there.
-* Calling `approveStockEntry` directly would return `"Approval step not found"`.
-* The entry cannot be edited (`updateStockEntry` allows only DRAFT/REJECTED),
-  cannot be resubmitted (`submitStockEntry` allows only DRAFT), and cannot be
-  rejected (same missing-step check). It is stuck permanently.
-
-Two further facts from the database that matter for the tests below:
-
-1. That entry has a `CREATED` activity log at `08:14:32` but **no `SUBMITTED`
-   log**, while its `updatedAt` moved at `08:15:04`. So its status was changed
-   outside the app (Prisma Studio or a script), which is why the snapshot of
-   approval steps was never written. Submitting through the app today does write
-   the step — verified against the live database with a throwaway entry.
-2. The entry arrived at **Hyderabad**, and no Hyderabad user holds
-   `stock.approve`. Kirubakaran is the only non-admin who holds it (via the
-   *Stock Approver* role) and he sits in Production, **Bengaluru**, so
-   `approvalRefusal` would answer *"Those goods arrived at another site"* even
-   if the step row existed. Today only the Super Admin can approve anything at
-   Hyderabad.
-
-So the test set below deliberately separates three questions that the single
-symptom mixed together: *may this person approve*, *is there a step to approve*,
-and *is anyone staffed to approve at that site*.
+The investigation these cases came out of — a stuck entry that nobody in the app
+could move — is in [`test-runs-2026-08.md`](./test-runs-2026-08.md).
 
 ---
 
@@ -361,7 +325,8 @@ can, and the draft sits there if its creator leaves.
 
 ### E1 — No active flow at all
 
-1. In `/configure` (or stock configuration), deactivate the Default Approval
+1. In the `approval_flow_configs` table (the `/configure` page is taken out for
+   now), deactivate the Default Approval
    Flow or remove its only step.
 2. As Super Admin, try to submit a new entry.
 
@@ -468,7 +433,8 @@ independently of everything else.
 
 ### G4 — Required documents block submission
 
-1. As Super Admin, mark an attachment type **required** in `/configure`.
+1. Mark an attachment type **required** in the `attachment_type_configs` table
+   (the `/configure` page is taken out for now).
 2. As **Spandana**, create a draft without it and press Submit.
 
 **Expected** — *"Required documents missing: …"*, the entry stays `DRAFT`, and no

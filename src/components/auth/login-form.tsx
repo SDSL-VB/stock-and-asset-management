@@ -1,14 +1,31 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { loginAction } from "@/lib/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertCircle, CheckCircle2, Loader2, LogIn } from "lucide-react";
+import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2, LogIn } from "lucide-react";
+
+/**
+ * The sign-in form.
+ *
+ * Rendered by `(auth)/login/page.tsx` inside the split-panel auth layout, which
+ * is why there is no Card around it — the layout is already the container.
+ *
+ * Submitting goes through `loginAction`, a server action, via `useActionState`:
+ * the form works before JavaScript has loaded and the pending state comes from
+ * React rather than from a flag this component has to keep in step.
+ *
+ * `passwordChanged` is set when somebody has just replaced their password and
+ * been signed out by it. Saying so here is the difference between "that worked,
+ * sign in again" and an unexplained trip back to the login page.
+ */
 
 export function LoginForm({ passwordChanged = false }: { passwordChanged?: boolean }) {
   const [state, formAction, isPending] = useActionState(loginAction, undefined);
+  // "Show" lets someone check what they typed before signing in
+  const [showPassword, setShowPassword] = useState(false);
 
   return (
     /* No Card here: the split-panel auth layout is already the container, and
@@ -68,15 +85,28 @@ export function LoginForm({ passwordChanged = false }: { passwordChanged?: boole
 
         <div className="space-y-2">
           <Label htmlFor="password">Password</Label>
-          <Input
-            id="password"
-            name="password"
-            type="password"
-            placeholder="Enter your password"
-            required
-            autoComplete="current-password"
-            disabled={isPending}
-          />
+          <div className="relative">
+            <Input
+              id="password"
+              name="password"
+              type={showPassword ? "text" : "password"}
+              placeholder="Enter your password"
+              required
+              autoComplete="current-password"
+              disabled={isPending}
+              className="pr-20"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((shown) => !shown)}
+              aria-pressed={showPassword}
+              aria-controls="password"
+              className="absolute inset-y-0 right-0 flex items-center gap-1 px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              {showPassword ? "Hide" : "Show"}
+            </button>
+          </div>
         </div>
 
         {/* Plain <Button>: --primary already *is* the brand green, so the

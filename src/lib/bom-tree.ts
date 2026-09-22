@@ -11,7 +11,7 @@ import type { Prisma } from "@prisma/client";
  */
 
 /** How deep a bill of materials may nest before we call it a mistake. */
-export const MAX_BOM_DEPTH = 12;
+const MAX_BOM_DEPTH = 12;
 
 /**
  * True when adding `componentId` to `parentProductId`'s bill of materials would create a

@@ -100,8 +100,9 @@ export const PERMISSIONS = {
 
   // Products (item code catalog) — each catalog action is its own permission
   PRODUCTS_VIEW: "products.view",
-  // Adding a raw material says "we buy this". Adding a finished or complete
-  // product says "we make this" — a different act, needing a bill of materials
+  // Adding something we BUY (a raw material, or ready goods like a TV) and adding
+  // something we MAKE (a finished product) are different acts — only the second
+  // needs a bill of materials
   // to mean anything, so it is a different grant.
   PRODUCTS_CREATE: "products.create",
   PRODUCTS_CREATE_MADE: "products.create.made",
@@ -153,9 +154,14 @@ export const PERMISSIONS = {
   STOCK_CONFIG_FLOWS: "stock.config.flows",
   // Who approves a bill of materials. One rule for the whole company.
   CONFIG_FLOWS_BOM: "config.flows.bom",
+  // How strict the catalog is: whether a product needs a subcategory, whether a
+  // subcategory needs a code, whether a product needs a description. Separate
+  // from the catalog-editing keys because tightening a rule for everybody is a
+  // different act from adding one product.
+  CONFIG_CATALOG: "config.catalog",
 
   // Stock visibility scope (IAM-style): how MUCH stock a role can see.
-  // The widest granted scope wins; without any, role-based legacy scoping applies.
+  // The widest granted scope wins; holding none gives `own`.
   // `all` is the cross-location key — it is the only scope that reaches past the
   // user's own location, which is inherited from their department.
   STOCK_SCOPE_ALL: "stock.scope.all",
@@ -174,6 +180,25 @@ export const PERMISSIONS = {
 
   // Monetary visibility: prices/values are hidden without this
   STOCK_VALUE_VIEW: "stock.value.view",
+
+  // Low stock. Being told a watched product is running out, and deciding what
+  // is watched (minimums per site, vendor lead times), are separate keys: the
+  // second changes an alert everybody else relies on.
+  STOCK_LOWSTOCK_VIEW: "stock.lowstock.view",
+  STOCK_LOWSTOCK_MANAGE: "stock.lowstock.manage",
+
+  // Wastage — stock that stopped being stock. Raising a write-off and agreeing
+  // to one are separate keys because they sit with different people: whoever
+  // finds the damage reports it, their manager decides. Raising one against
+  // central stock and against a department's own holding are separate again,
+  // for the same reason: they are different jobs held by different people.
+  STOCK_WRITEOFF_VIEW: "stock.writeoff.view",
+  STOCK_WRITEOFF_CREATE: "stock.writeoff.create",
+  STOCK_WRITEOFF_DEPARTMENT: "stock.writeoff.department",
+  STOCK_WRITEOFF_APPROVE: "stock.writeoff.approve",
+  // Undoing an approval that was itself the mistake. The record stays visible
+  // as reversed rather than being deleted.
+  STOCK_WRITEOFF_REVERSE: "stock.writeoff.reverse",
 
   // Dispatch — outgoing movement. Location-scoped: an operator sees their own
   // site's consignments both ways. None of these grant monetary visibility.
@@ -257,6 +282,17 @@ export const ASSET_PAGE_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.ASSETS_TRANSFER_APPROVE,
 ];
 
+/**
+ * Opening the Wastage page — its review queue or its history.
+ *
+ * Wider than stock.writeoff.view, because someone whose only job is to decide
+ * on write-offs still needs the way in. Keep `middleware.ts` in step with this.
+ */
+export const WASTAGE_PAGE_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.STOCK_WRITEOFF_VIEW,
+  PERMISSIONS.STOCK_WRITEOFF_APPROVE,
+];
+
 export const DISPATCH_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.DISPATCH_VIEW,
   PERMISSIONS.DISPATCH_CREATE,
@@ -274,15 +310,13 @@ export const BOM_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.BOM_BUILD,
 ];
 
-// Every tab on the Configuration page. Each is gated individually, so someone
-// with one config key sees one tab rather than five with four of them dead.
 export const RECYCLE_BIN_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.RECYCLEBIN_VIEW,
   PERMISSIONS.RECYCLEBIN_RESTORE,
   PERMISSIONS.RECYCLEBIN_PURGE,
 ];
 
-export const PROCUREMENT_PERMISSIONS: PermissionKey[] = [
+const PROCUREMENT_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.PROCUREMENT_INTENT_VIEW,
   PERMISSIONS.PROCUREMENT_INTENT_CREATE,
   PERMISSIONS.PROCUREMENT_INTENT_APPROVE,
@@ -291,19 +325,55 @@ export const PROCUREMENT_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.PROCUREMENT_PO_CLOSE,
 ];
 
-export const FULFILMENT_PERMISSIONS: PermissionKey[] = [
+/**
+ * Opening the Procurement page. Wider than the procurement keys because the
+ * low-stock alert lives there too — running low is a reason to buy. Keep
+ * `middleware.ts` in step with this.
+ */
+export const PROCUREMENT_PAGE_PERMISSIONS: PermissionKey[] = [
+  ...PROCUREMENT_PERMISSIONS,
+  PERMISSIONS.STOCK_LOWSTOCK_VIEW,
+];
+
+const FULFILMENT_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.FULFILMENT_VIEW,
   PERMISSIONS.FULFILMENT_REQUEST,
   PERMISSIONS.FULFILMENT_APPROVE,
 ];
 
 /**
- * Opening the Configuration page. Each card on it is gated separately, so
- * holding one key shows one card rather than four with three of them dead.
+ * Opening the Builds page — the runs themselves, or the "Plan" tab.
  *
- * The procurement key belongs here: middleware admitted anyone holding it and
- * the page then bounced them, because this list had not kept up when the
- * procurement flow card was added. Keep it in step with `middleware.ts`.
+ * The fulfilment planner ("can we meet this order, and from where?") lives here
+ * now, beside the builds it plans, so fulfilment.view opens the page too.
+ * Keep `middleware.ts` in step with this.
+ */
+export const BUILDS_PAGE_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.BOM_VIEW,
+  PERMISSIONS.BOM_BUILD,
+  PERMISSIONS.BOM_UNBUILD,
+  PERMISSIONS.FULFILMENT_VIEW,
+];
+
+/**
+ * Opening the Dispatch page — consignments, or site requests.
+ *
+ * Site requests moved here from the old Fulfilment page, because accepting one
+ * IS raising a consignment. The people who ask for stock (engineers, managers)
+ * hold no dispatch key, so the fulfilment keys open the page as well — they see
+ * only the Site requests tab, which is where they follow what they asked for.
+ * Keep `middleware.ts` in step with this.
+ */
+export const DISPATCH_PAGE_PERMISSIONS: PermissionKey[] = [
+  ...DISPATCH_PERMISSIONS,
+  ...FULFILMENT_PERMISSIONS,
+];
+
+/**
+ * The keys that change how the app is configured. Nothing uses this list while
+ * the Configuration page is taken out; it is kept, with the keys, so the page
+ * can return gated exactly as before. When it does, it needs this list in its
+ * page gate, a `/configure` route in `middleware.ts` and a nav item.
  */
 export const STOCK_CONFIG_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.STOCK_CONFIG_FIELDS,
@@ -311,31 +381,53 @@ export const STOCK_CONFIG_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.STOCK_CONFIG_FLOWS,
   PERMISSIONS.CONFIG_FLOWS_BOM,
   PERMISSIONS.PROCUREMENT_CONFIG,
+  PERMISSIONS.CONFIG_CATALOG,
 ];
 
+/**
+ * The three role names the code is allowed to mention by name.
+ *
+ * This is NOT how capabilities are decided — that is always a permission. These
+ * exist only for guards where the identity of the role really is the point:
+ * nobody but a Super Admin may edit the Super Admin, the two built-in roles
+ * cannot be deleted, and a department manager's view of the directory stops at
+ * their own department. Every one of those is about protecting a specific
+ * account, not about what somebody may do.
+ *
+ * Adding a name here is almost always the wrong move. If you are reaching for
+ * one to answer "may they?", add a permission instead.
+ *
+ * ("Staff" and "Stock Entry Operator" used to be listed and were referenced
+ * nowhere; Staff is a retired role. They were removed rather than left as an
+ * invitation to start branching on them.)
+ */
 export const ROLES = {
   SUPER_ADMIN: "Super Admin",
   ADMIN: "Admin",
   DEPARTMENT_MANAGER: "Department Manager",
-  STAFF: "Staff",
-  STOCK_ENTRY_OPERATOR: "Stock Entry Operator",
 } as const;
-
-export type RoleName = (typeof ROLES)[keyof typeof ROLES];
 
 export type StockScope = "all" | "location" | "department" | "own";
 
 /**
- * How much stock data a user may see, resolved from IAM-style scope
- * permissions (widest granted wins). Falls back to the legacy role-based
- * scoping for roles that predate the scope permissions. Pure function —
- * safe to use in both server actions and client components.
+ * How much stock data a user may see. Widest scope held wins.
  *
- *   all        every location — the cross-location key (Auditor, admins)
- *   location   every department plus central stock within the user's own
- *              location (Central Stock Manager, Dispatch Operator)
- *   department own department, plus the central stock of its location
- *   own        only entries the user created
+ *   all        every location — the only key that reaches past the user's site
+ *   location   every department plus central stock, within their own site
+ *   department their own department, plus their site's central stock
+ *   own        only entries they created
+ *
+ * Holding no scope key gives `own`, which is the safe end: a new role sees its
+ * own work and nothing else until somebody widens it deliberately.
+ *
+ * This used to fall back to matching `user.role` against the names "Admin",
+ * "Super Admin" and "Department Manager". That was the one place in the app
+ * where a role's NAME decided a capability, and it was a trap: roles are
+ * renamed live on the Roles page, and renaming Admin would have silently
+ * dropped it from every site to its own entries. Admin now carries
+ * `stock.scope.all` explicitly, which is the same answer arrived at honestly.
+ *
+ * Pure — safe in both server actions and client components.
  */
 export function resolveStockScope(user: {
   role: string;
@@ -344,15 +436,10 @@ export function resolveStockScope(user: {
   if (user.permissions.includes(PERMISSIONS.STOCK_SCOPE_ALL)) return "all";
   if (user.permissions.includes(PERMISSIONS.STOCK_SCOPE_LOCATION)) return "location";
   if (user.permissions.includes(PERMISSIONS.STOCK_SCOPE_DEPARTMENT)) return "department";
-  if (user.permissions.includes(PERMISSIONS.STOCK_SCOPE_OWN)) return "own";
-
-  // Legacy fallback by role name
-  if (user.role === ROLES.SUPER_ADMIN || user.role === ROLES.ADMIN) return "all";
-  if (user.role === ROLES.DEPARTMENT_MANAGER) return "department";
   return "own";
 }
 
-export type ActivityScope = "all" | "department" | "own";
+type ActivityScope = "all" | "department" | "own";
 
 /**
  * How far someone's view of the activity log reaches. Widest held wins.

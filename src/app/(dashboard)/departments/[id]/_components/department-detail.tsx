@@ -13,6 +13,18 @@ import { AddMemberDialog } from "./add-member-dialog";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 
+/**
+ * One department: who is in it, and what it holds.
+ *
+ * The holdings are StockIssues — stock that has moved out of central stock into
+ * this department — shown net of anything written off against them, which is
+ * `heldByIssue()` rather than the raw issued quantity.
+ *
+ * The members list is also the department's approval routing: a transfer request
+ * raised by anyone here goes to this department's manager, and a bill of
+ * materials written here is published by them.
+ */
+
 interface Department {
   id: string;
   name: string;
@@ -175,6 +187,7 @@ export function DepartmentDetail({
                       </Badge>
                       <Link href={`/users/${member.id}`} className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}>
                         <Eye className="h-3.5 w-3.5" />
+                        <span className="text-xs">Profile</span>
                       </Link>
                       {canManageMembers && (
                         <Button

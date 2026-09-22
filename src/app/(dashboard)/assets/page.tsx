@@ -98,7 +98,11 @@ export default async function AssetsPage() {
 
         {canSeeHoldings && (
           <TabsContent value="holdings">
-            <AssetList assets={assets} canSeeValue={has(PERMISSIONS.STOCK_VALUE_VIEW)} />
+            <AssetList
+              assets={assets}
+              canSeeValue={has(PERMISSIONS.STOCK_VALUE_VIEW)}
+              canWriteOff={has(PERMISSIONS.STOCK_WRITEOFF_DEPARTMENT)}
+            />
           </TabsContent>
         )}
 

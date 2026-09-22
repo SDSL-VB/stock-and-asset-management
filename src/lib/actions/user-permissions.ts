@@ -5,8 +5,9 @@ import { requirePermission } from "@/lib/rbac/check";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import { grantPermissionSchema } from "@/lib/validations/bom";
 import { missingDependencies, reasonFor } from "@/lib/rbac/permission-dependencies";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
+import { refusalOver } from "@/lib/rbac/authority";
 
 /**
  * A permission held by one person on top of their role.
@@ -95,24 +96,37 @@ export async function getUserPermissionDetail(userId: string) {
   };
 }
 
+/**
+ * Grant one or several extra permissions at once, with one reason and one end
+ * date shared by all of them.
+ *
+ * Anything a picked permission depends on (and the person does not already
+ * hold, and was not picked too) is reported back first as `needsLinked`; the
+ * granter answers the prompt and the call is repeated with `alsoGrant`, which
+ * adds those dependencies alongside, sharing the same end date.
+ *
+ * Saved in one transaction: either every permission is granted or none is.
+ * Upserts rather than inserts, because an EXPIRED grant of the same permission
+ * still occupies the row and is simply brought back to life.
+ */
 export async function grantPermission(userId: string, data: unknown) {
   const currentUser = await requirePermission(PERMISSIONS.USERS_PERMISSIONS_GRANT);
 
   const parsed = grantPermissionSchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
 
-  if (userId === currentUser.id) {
-    return { error: "You cannot grant a permission to yourself" };
-  }
+  const over = await refusalOver(currentUser, userId);
+  if (over) return { error: over };
 
-  const { permissionKey, reason, expiresAt } = parsed.data;
+  const { reason, expiresAt } = parsed.data;
+  const keys = [...new Set(parsed.data.permissionKeys)];
 
   // The ceiling: nobody hands out more than they hold
-  if (!currentUser.permissions.includes(permissionKey)) {
+  if (keys.some((key) => !currentUser.permissions.includes(key))) {
     return { error: "You can only grant permissions you hold yourself" };
   }
 
-  const [user, permission] = await Promise.all([
+  const [user, permissions] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -124,41 +138,45 @@ export async function grantPermission(userId: string, data: unknown) {
         },
       },
     }),
-    prisma.permission.findUnique({ where: { key: permissionKey } }),
+    prisma.permission.findMany({ where: { key: { in: keys } } }),
   ]);
 
   if (!user) return { error: "That person does not exist" };
   if (user.isSystem) return { error: "That is a system account and cannot be changed" };
-  if (!permission) return { error: "That permission does not exist" };
+  if (permissions.length !== keys.length) return { error: "One of those permissions does not exist" };
 
-  if (user.role.permissions.some((rp) => rp.permission.key === permissionKey)) {
-    return { error: `${user.role.name} already carries that permission` };
+  const fromRole = new Set(user.role.permissions.map((rp) => rp.permission.key));
+  const alreadyInRole = permissions.find((p) => fromRole.has(p.key));
+  if (alreadyInRole) {
+    return { error: `${user.role.name} already carries "${alreadyInRole.name}"` };
   }
 
   // Everything this person can already do — their role plus grants that have
-  // not expired — so a dependency they already hold is not asked about again.
+  // not expired — and everything picked now, so a dependency that is already
+  // held, or picked in the same go, is not asked about again.
   const now = new Date();
   const existingGrants = await prisma.userPermission.findMany({
     where: { userId, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
     select: { permission: { select: { key: true } } },
   });
-  const held = new Set([
-    ...user.role.permissions.map((rp) => rp.permission.key),
-    ...existingGrants.map((g) => g.permission.key),
-  ]);
+  const held = new Set([...fromRole, ...existingGrants.map((g) => g.permission.key), ...keys]);
 
   // A permission that cannot work alone is worth saying so before it is saved,
   // not after someone reports the button never appeared.
-  const missing = missingDependencies(permissionKey, held);
+  const missing = [...new Set(keys.flatMap((key) => missingDependencies(key, held)))];
   if (missing.length > 0 && !parsed.data.alsoGrant) {
     const names = await prisma.permission.findMany({
       where: { key: { in: missing } },
       select: { key: true, name: true },
     });
+    const needing = keys.filter((key) => missingDependencies(key, held).length > 0);
+    const single = needing.length === 1 ? permissions.find((p) => p.key === needing[0]) : null;
     return {
       needsLinked: true,
-      permissionName: permission.name,
-      reason: reasonFor(permissionKey) ?? "It depends on another permission.",
+      permissionName: single ? single.name : `${needing.length} of the permissions you picked`,
+      reason: single
+        ? reasonFor(single.key) ?? "It depends on another permission."
+        : "Each of them depends on another permission.",
       missing: names,
     };
   }
@@ -173,47 +191,39 @@ export async function grantPermission(userId: string, data: unknown) {
     expiry = parsedDate;
   }
 
-  // The dependencies go in alongside it, sharing the expiry — a permission that
+  // The dependencies go in alongside, sharing the expiry — a permission that
   // outlives the thing it exists to support would be the same silent dead end
   // in reverse.
   const linked =
-    missing.length > 0
-      ? await prisma.permission.findMany({ where: { key: { in: missing } } })
-      : [];
+    missing.length > 0 ? await prisma.permission.findMany({ where: { key: { in: missing } } }) : [];
+  // What comes along as a dependency is handed out too, so the same ceiling
+  // applies: nobody grants what they do not hold themselves
+  const beyond = linked.find((p) => !currentUser.permissions.includes(p.key));
+  if (beyond) return { error: `"${beyond.name}" is needed too, and you do not hold it yourself` };
+
+  const grantRow = (permissionId: string, why: string) =>
+    prisma.userPermission.upsert({
+      where: { userId_permissionId: { userId, permissionId } },
+      update: { reason: why, expiresAt: expiry, grantedById: currentUser.id },
+      create: { userId, permissionId, reason: why, expiresAt: expiry, grantedById: currentUser.id },
+    });
 
   await prisma.$transaction([
-    prisma.userPermission.create({
-      data: {
-        userId,
-        permissionId: permission.id,
-        reason: reason.trim(),
-        expiresAt: expiry,
-        grantedById: currentUser.id,
-      },
-    }),
-    ...linked.map((dep) =>
-      prisma.userPermission.create({
-        data: {
-          userId,
-          permissionId: dep.id,
-          reason: `Needed by "${permission.name}" — ${reason.trim()}`,
-          expiresAt: expiry,
-          grantedById: currentUser.id,
-        },
-      })
-    ),
+    ...permissions.map((p) => grantRow(p.id, reason.trim())),
+    ...linked.map((dep) => grantRow(dep.id, `Needed by another permission granted — ${reason.trim()}`)),
   ]);
 
+  const names = permissions.map((p) => `"${p.name}"`).join(", ");
   await logActivity(
     "UPDATED",
     "User",
     userId,
-    `Granted ${user.name} the extra permission "${permission.name}" (${permission.key})${linked.length > 0 ? ` plus ${linked.length} it depends on` : ""}${expiry ? `, expiring ${expiry.toLocaleDateString("en-IN")}` : ""} — ${reason.trim()}`
+    `Granted ${user.name} the extra permission${permissions.length === 1 ? "" : "s"} ${names}${linked.length > 0 ? ` plus ${linked.length} they depend on` : ""}${expiry ? `, expiring ${expiry.toLocaleDateString("en-IN")}` : ""} — ${reason.trim()}`
   );
 
   revalidatePath(`/users/${userId}`);
   revalidatePath("/roles");
-  return { success: true };
+  return { success: true, count: permissions.length + linked.length };
 }
 
 export async function revokePermission(grantId: string) {
@@ -227,9 +237,8 @@ export async function revokePermission(grantId: string) {
     },
   });
   if (!grant) return { error: "That grant no longer exists" };
-  if (grant.userId === currentUser.id) {
-    return { error: "You cannot change your own permissions" };
-  }
+  const over = await refusalOver(currentUser, grant.userId);
+  if (over) return { error: over };
 
   await prisma.userPermission.delete({ where: { id: grantId } });
 

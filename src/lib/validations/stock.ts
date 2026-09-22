@@ -1,4 +1,13 @@
 import { z } from "zod";
+import { RACK_PATTERN, RACK_HINT } from "@/lib/racks";
+
+/** Where the goods sit — "10.3". Empty means not recorded. */
+export const rackField = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .refine((v) => v === "" || RACK_PATTERN.test(v), RACK_HINT)
+  .optional();
 
 const stockEntryFields = {
   productId: z.string().min(1, "Please select a product from the catalog"),
@@ -16,6 +25,8 @@ const stockEntryFields = {
   locationId: z.string().optional(),
   /** The batch these goods belong to — a supplier lot, or a production run */
   batchNumber: z.string().trim().max(60, "Batch number is too long").optional(),
+  /** Where the goods are put away in the store — "rack.row" */
+  rackLocation: rackField,
   /** Default nature when this stock later moves into a department */
   isAsset: z.boolean().optional(),
   /** Ships directly to a client without reaching our warehouse */
@@ -23,7 +34,11 @@ const stockEntryFields = {
   clientId: z.string().optional(),
   clientName: z.string().optional(),
   clientLocation: z.string().optional(),
-  customFields: z.record(z.string(), z.unknown()).optional(),
+  // The configured extra fields: short keys, plain values, and not many of them
+  customFields: z
+    .record(z.string().max(60), z.union([z.string().max(1000), z.number(), z.boolean(), z.null()]))
+    .refine((r) => Object.keys(r).length <= 50, "Too many extra fields")
+    .optional(),
   /**
    * The purchase order line these goods arrived against. Absent on a fresh
    * entry — plenty of stock arrives without an order behind it.
@@ -51,15 +66,6 @@ function requireClientOrLocation(
 export const createStockEntrySchema = z.object(stockEntryFields).superRefine(requireClientOrLocation);
 
 export const updateStockEntrySchema = z.object(stockEntryFields).superRefine(requireClientOrLocation);
-
-export const approveStockEntrySchema = z.object({
-  comments: z.string().optional(),
-});
-
-export const rejectStockEntrySchema = z.object({
-  reason: z.string().min(1, "Rejection reason is required"),
-  comments: z.string().optional(),
-});
 
 // Warranty and registration, only validated when the box is ticked
 export const warrantySchema = z.object({

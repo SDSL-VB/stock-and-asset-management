@@ -27,6 +27,8 @@ import {
 } from "./entry-filters";
 import { KIND_LABEL } from "@/lib/vocabulary";
 import { heldQuantity } from "@/lib/stock-availability";
+import { formatMoney } from "@/lib/format";
+import { statusPill } from "@/lib/design/status";
 
 /**
  * How much of an entry is still standing where it says it is.
@@ -53,6 +55,7 @@ function uniqueOptions(
 type StockEntry = {
   id: string;
   entryNumber: string;
+  delivery?: { id: string; deliveryNumber: string } | null;
   itemCode: string | null;
   itemName: string;
   supplierName: string;
@@ -74,6 +77,7 @@ type StockEntry = {
   buildConsumptions: Array<{ quantity: number }>;
   invoiceNumber: string | null;
   batchNumber: string | null;
+  rackLocation?: string | null;
   isAsset: boolean;
   purchaseOrderLineId: string | null;
   product: {
@@ -130,15 +134,8 @@ const statusConfig = {
 
 function StatusBadge({ status }: { status: keyof typeof statusConfig }) {
   const config = statusConfig[status];
-  const colorClasses = {
-    DRAFT: "bg-gray-100 text-gray-700 border-gray-200",
-    SUBMITTED: "bg-amber-50 text-amber-700 border-amber-200",
-    APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    REJECTED: "bg-red-50 text-red-700 border-red-200",
-  };
-
   return (
-    <Badge variant="outline" className={colorClasses[status]}>
+    <Badge variant="outline" className={statusPill(status)}>
       {config.label}
     </Badge>
   );
@@ -153,9 +150,19 @@ function buildColumns(
     accessorKey: "entryNumber",
     header: "Entry #",
     cell: ({ row }) => (
-      <span className="font-mono text-sm font-medium">
-        {row.original.entryNumber}
-      </span>
+      <div>
+        <span className="font-mono text-sm font-medium">{row.original.entryNumber}</span>
+        {row.original.delivery && (
+          <Link
+            href={`/stock/delivery/${row.original.delivery.id}`}
+            onClick={(e) => e.stopPropagation()}
+            className="block font-mono text-micro text-muted-foreground hover:text-primary hover:underline"
+            title="Booked in with other items — open the whole delivery"
+          >
+            {row.original.delivery.deliveryNumber}
+          </Link>
+        )}
+      </div>
     ),
   },
   {
@@ -185,10 +192,14 @@ function buildColumns(
     id: "location",
     header: "Location",
     cell: ({ row }) => {
-      const labels = { HYDERABAD: "Hyderabad", BENGALURU: "Bengaluru", CLIENT: "Client" };
       return (
         <div>
           <p className="text-sm">{row.original.location?.name ?? "Unassigned"}</p>
+          {row.original.rackLocation && (
+            <p className="font-mono text-xs text-muted-foreground" title="Rack.row in the store">
+              Rack {row.original.rackLocation}
+            </p>
+          )}
           {row.original.clientName && (
             <p className="text-xs text-muted-foreground">{row.original.clientName}</p>
           )}
@@ -242,10 +253,7 @@ function buildColumns(
     accessorFn: (entry) => leftOf(entry) * entry.unitPrice,
     cell: ({ row }) => (
       <span className="font-medium">
-        {new Intl.NumberFormat("en-IN", {
-          style: "currency",
-          currency: "INR",
-        }).format(leftOf(row.original) * row.original.unitPrice)}
+        {formatMoney(leftOf(row.original) * row.original.unitPrice)}
       </span>
     ),
   },
@@ -317,6 +325,7 @@ function buildColumns(
         nativeButton={false}
       >
         <Eye className="h-4 w-4" />
+        <span className="text-xs">Open</span>
       </Button>
     ),
   },

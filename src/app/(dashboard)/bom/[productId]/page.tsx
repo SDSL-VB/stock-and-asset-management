@@ -43,6 +43,7 @@ export default async function BomDetailPage({
       canSetBatch={has(PERMISSIONS.STOCK_BATCH_EDIT)}
       canEditProduct={has(PERMISSIONS.PRODUCTS_EDIT)}
       canSeeValue={has(PERMISSIONS.STOCK_VALUE_VIEW)}
+      canSetCover={has(PERMISSIONS.BOM_EDIT) || has(PERMISSIONS.BOM_CREATE) || has(PERMISSIONS.STOCK_LOWSTOCK_MANAGE)}
     />
   );
 }

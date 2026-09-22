@@ -2,35 +2,38 @@
 
 import { prisma } from "@/lib/prisma";
 import { nextReference } from "@/lib/reference-numbers";
-import { requirePermission, requireAnyPermission } from "@/lib/rbac/check";
+import { requireAuth, requirePermission, requireAnyPermission } from "@/lib/rbac/check";
 import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
 import {
-  createIntentSchema,
   reviewIntentSchema,
   createPurchaseOrderSchema,
   closePurchaseOrderSchema,
-  procurementFlowSchema,
 } from "@/lib/validations/procurement";
 import { deliveredEntriesWhere } from "@/lib/procurement-delivery";
-import { logActivity } from "./activity";
+import { dueDate, lineTiming, suggestedLeadTime } from "@/lib/order-timing";
+import { needDecided } from "@/lib/notifications/events";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
+import { NO_SITE } from "@/lib/stock-visibility";
 
 /**
  * FLOW: purchase — a need, an order, deliveries, and a close.
  *
- *   1. createIntent            anyone with the key says what they need. It
- *                              records the department asking automatically.
+ *   1. (a need is raised)      through the "What do you need?" dialog — see
+ *                              requestNeeds() in needs.ts. It records the
+ *                              department asking automatically.
  *   2. approveIntent           a buyer verifies it is worth ordering → APPROVED.
- *                              (Switchable off entirely in Configuration.)
+ *                              (Can be switched off in procurement_flow_config.)
  *      rejectIntent/cancel     or declines it, or the asker withdraws it.
  *   3. createPurchaseOrder     one or more verified needs become an order to a
  *                              single vendor, with agreed prices. The needs flip
  *                              to ORDERED so nothing is ordered twice.
  *   4. (a stock entry arrives) see stock.ts — booking goods against a line is
  *                              what "delivered" means.
- *   5. syncPurchaseOrderFromEntry
- *                              closes the order when the last unit is booked in,
- *                              and re-opens it if that delivery is rejected.
+ *   5. (the order closes itself) syncPurchaseOrderFromEntry, in
+ *                              src/lib/procurement-delivery.ts, closes it when
+ *                              the last unit is booked in and re-opens it if
+ *                              that delivery is rejected.
  *      closePurchaseOrder      or someone closes it short, which is a decision
  *                              and is never undone automatically.
  */
@@ -48,8 +51,13 @@ import { revalidatePath } from "next/cache";
 /* The configurable step                                                     */
 /* ------------------------------------------------------------------------- */
 
-/** One rule for the company, like the bill-of-materials flow. */
+/**
+ * One rule for the company, like the bill-of-materials flow: must a need be
+ * verified before it is ordered? Stored in `procurement_flow_config`; nothing
+ * changes it while the Configuration page is taken out.
+ */
 export async function getProcurementFlow() {
+  await requireAuth();
   const config = await prisma.procurementFlowConfig.findUnique({
     where: { id: "singleton" },
     include: { approverRole: { select: { id: true, name: true } } },
@@ -62,84 +70,9 @@ export async function getProcurementFlow() {
   };
 }
 
-export async function updateProcurementFlow(data: unknown) {
-  const user = await requirePermission(PERMISSIONS.PROCUREMENT_CONFIG);
-
-  const parsed = procurementFlowSchema.safeParse(data);
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
-
-  const { requiresApproval, approverRoleId } = parsed.data;
-
-  await prisma.procurementFlowConfig.upsert({
-    where: { id: "singleton" },
-    update: { requiresApproval, approverRoleId: approverRoleId || null, updatedById: user.id },
-    create: {
-      id: "singleton",
-      requiresApproval,
-      approverRoleId: approverRoleId || null,
-      updatedById: user.id,
-    },
-  });
-
-  await logActivity(
-    "UPDATED",
-    "ProcurementFlowConfig",
-    "singleton",
-    requiresApproval
-      ? "Needs must now be verified before an order can be raised"
-      : "Orders can now be raised without verifying the need first"
-  );
-
-  revalidatePath("/configure");
-  revalidatePath("/procurement");
-  return { success: true };
-}
-
 /* ------------------------------------------------------------------------- */
 /* Intents — "we need this"                                                  */
 /* ------------------------------------------------------------------------- */
-
-export async function createIntent(data: unknown) {
-  const user = await requirePermission(PERMISSIONS.PROCUREMENT_INTENT_CREATE);
-
-  const parsed = createIntentSchema.safeParse(data);
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
-
-  const { productId, quantity, vendorId, locationId, neededBy, notes } = parsed.data;
-
-  const product = await prisma.product.findUnique({
-    where: { id: productId },
-    select: { name: true, isActive: true },
-  });
-  if (!product || !product.isActive) {
-    return { error: "That product is not in the catalog" };
-  }
-
-  const intent = await prisma.purchaseIntent.create({
-    data: {
-      intentNumber: await nextReference("PI"),
-      productId,
-      quantity,
-      vendorId: vendorId || null,
-      // Who needs it is who asked, not something they choose
-      departmentId: user.departmentId ?? null,
-      locationId: locationId || user.locationId || null,
-      neededBy: neededBy ? new Date(neededBy) : null,
-      notes: notes?.trim() || null,
-      requestedById: user.id,
-    },
-  });
-
-  await logActivity(
-    "CREATED",
-    "PurchaseIntent",
-    intent.id,
-    `Raised ${intent.intentNumber} — needs ${quantity} × ${product.name}`
-  );
-
-  revalidatePath("/procurement");
-  return { success: true, intent };
-}
 
 /** Intents the caller may see: their own, their department's, or all. */
 export async function getIntents() {
@@ -168,6 +101,8 @@ export async function getIntents() {
       location: { select: { name: true } },
       requestedBy: { select: { name: true } },
       reviewedBy: { select: { name: true } },
+      // Raised as part of a list — the Needs table opens it from here
+      needList: { select: { id: true, listNumber: true } },
       orderLines: {
         select: { purchaseOrder: { select: { id: true, poNumber: true, status: true } } },
       },
@@ -195,6 +130,8 @@ export async function approveIntent(id: string, data: unknown = {}) {
   if (intent.status !== "PENDING") {
     return { error: `This has already been ${intent.status.toLowerCase()}` };
   }
+  // Nobody signs off their own request
+  if (intent.requestedById === user.id) return { error: "You raised this need, so someone else has to review it" };
 
   await prisma.purchaseIntent.update({
     where: { id },
@@ -213,6 +150,11 @@ export async function approveIntent(id: string, data: unknown = {}) {
     `Verified ${intent.intentNumber} — ${intent.quantity} × ${intent.product.name} can be ordered`
   );
 
+  await needDecided(
+    { intentNumber: intent.intentNumber, productName: intent.product.name, requestedById: intent.requestedById },
+    "verified",
+    parsed.data.reviewNote?.trim() || undefined
+  );
   revalidatePath("/procurement");
   return { success: true };
 }
@@ -231,6 +173,8 @@ export async function rejectIntent(id: string, data: unknown) {
   if (intent.status !== "PENDING") {
     return { error: `This has already been ${intent.status.toLowerCase()}` };
   }
+  // Nobody signs off their own request
+  if (intent.requestedById === user.id) return { error: "You raised this need, so someone else has to review it" };
 
   await prisma.purchaseIntent.update({
     where: { id },
@@ -249,6 +193,11 @@ export async function rejectIntent(id: string, data: unknown) {
     `Declined ${intent.intentNumber} for ${intent.quantity} × ${intent.product.name}`
   );
 
+  await needDecided(
+    { intentNumber: intent.intentNumber, productName: intent.product.name, requestedById: intent.requestedById },
+    "declined",
+    parsed.data.reviewNote?.trim() || undefined
+  );
   revalidatePath("/procurement");
   return { success: true };
 }
@@ -350,20 +299,38 @@ export async function createPurchaseOrder(data: unknown) {
   // A need can only be ordered once — otherwise two orders quietly cover the
   // same request and twice the goods arrive.
   const intentIds = lines.map((l) => l.intentId).filter((v): v is string => Boolean(v));
-  if (intentIds.length > 0) {
-    const alreadyOrdered = await prisma.purchaseIntent.findMany({
-      where: { id: { in: intentIds }, status: { in: ["ORDERED", "REJECTED", "CANCELLED"] } },
-      select: { intentNumber: true, status: true },
-    });
-    if (alreadyOrdered.length > 0) {
-      const first = alreadyOrdered[0];
+  if (new Set(intentIds).size !== intentIds.length) return { error: "The same need is on the order twice" };
+  // With verification on, only verified needs can be ordered; with it off, a
+  // waiting one can too. Each line must be for the product its need asked for.
+  const { requiresApproval } = await getProcurementFlow();
+  const orderable: ("PENDING" | "APPROVED")[] = requiresApproval ? ["APPROVED"] : ["PENDING", "APPROVED"];
+  const intents = intentIds.length
+    ? await prisma.purchaseIntent.findMany({
+        where: { id: { in: intentIds } },
+        select: { id: true, intentNumber: true, status: true, productId: true, requestedById: true, product: { select: { name: true } } },
+      })
+    : [];
+  for (const line of lines) {
+    if (!line.intentId) continue;
+    const intent = intents.find((i) => i.id === line.intentId);
+    if (!intent) return { error: "One of those needs no longer exists — refresh and try again" };
+    if (!(orderable as string[]).includes(intent.status)) {
       return {
-        error: `${first.intentNumber} is already ${first.status.toLowerCase()} — refresh and try again`,
+        error: intent.status === "PENDING"
+          ? `${intent.intentNumber} has not been verified yet`
+          : `${intent.intentNumber} is already ${intent.status.toLowerCase()} — refresh and try again`,
       };
     }
+    if (intent.productId !== line.productId) return { error: `${intent.intentNumber} is for a different product` };
   }
 
   const poNumber = await nextReference("PO");
+
+  // Each line is due its own lead time after today. The order as a whole is
+  // expected when its last line is — unless a date was given for the order.
+  const orderedAt = new Date();
+  const lineDue = lines.map((l) => (l.leadTimeDays !== undefined ? dueDate(orderedAt, l.leadTimeDays) : null));
+  const lastDue = lineDue.reduce<Date | null>((latest, d) => (d && (!latest || d > latest) ? d : latest), null);
 
   const order = await prisma.$transaction(async (tx) => {
     const created = await tx.purchaseOrder.create({
@@ -371,30 +338,44 @@ export async function createPurchaseOrder(data: unknown) {
         poNumber,
         vendorId,
         locationId,
-        expectedDate: expectedDate ? new Date(expectedDate) : null,
+        createdAt: orderedAt,
+        expectedDate: expectedDate ? new Date(expectedDate) : lastDue,
         notes: notes?.trim() || null,
         createdById: user.id,
         lines: {
-          create: lines.map((l) => ({
+          create: lines.map((l, i) => ({
             productId: l.productId,
             quantity: l.quantity,
             unitPrice: l.unitPrice,
             intentId: l.intentId || null,
             notes: l.notes?.trim() || null,
+            leadTimeDays: l.leadTimeDays ?? null,
+            expectedBy: lineDue[i],
           })),
         },
       },
     });
 
     if (intentIds.length > 0) {
-      await tx.purchaseIntent.updateMany({
-        where: { id: { in: intentIds } },
+      // Conditional, so two orders placed at the same moment cannot both take
+      // the same need: the second finds it no longer orderable and rolls back
+      const taken = await tx.purchaseIntent.updateMany({
+        where: { id: { in: intentIds }, status: { in: orderable } },
         data: { status: "ORDERED" },
       });
+      if (taken.count !== intentIds.length) throw new Error("NEED_TAKEN");
     }
 
     return created;
+  }).catch((e: Error) => {
+    if (e.message === "NEED_TAKEN") return null;
+    throw e;
   });
+  if (!order) return { error: "One of those needs was ordered by someone else just now — refresh and try again" };
+
+  for (const intent of intents) {
+    await needDecided({ intentNumber: intent.intentNumber, productName: intent.product.name, requestedById: intent.requestedById }, "ordered", `on ${order.poNumber}`);
+  }
 
   const total = lines.reduce((sum, l) => sum + l.quantity * l.unitPrice, 0);
   await logActivity(
@@ -429,16 +410,33 @@ function shapeOrder(
       quantity: number;
       unitPrice: number;
       notes: string | null;
+      leadTimeDays: number | null;
+      expectedBy: Date | null;
       product: { id: string; code: string; name: string; unit: string };
       intent: { intentNumber: string } | null;
-      stockEntries: { quantity: number }[];
+      stockEntries: { quantity: number; createdAt: Date }[];
     }[];
   },
-  canSeeValue: boolean
+  canSeeValue: boolean,
+  /** Lead time on record per "productId|vendorId", to spot one that needs updating */
+  recordedLeadTimes: Map<string, number> = new Map()
 ) {
   const lines = order.lines.map((l) => {
     const delivered = l.stockEntries.reduce((sum, e) => sum + e.quantity, 0);
+    const timing = lineTiming({
+      quantity: l.quantity,
+      expectedBy: l.expectedBy,
+      orderedAt: order.createdAt,
+      deliveries: l.stockEntries.map((e) => ({ quantity: e.quantity, at: e.createdAt })),
+    });
+    const recorded = recordedLeadTimes.get(`${l.product.id}|${order.vendor.id}`) ?? null;
     return {
+      leadTimeDays: l.leadTimeDays,
+      expectedBy: l.expectedBy,
+      timing,
+      recordedLeadTime: recorded,
+      /** Set when this vendor took clearly longer than their recorded lead time */
+      suggestedLeadTime: suggestedLeadTime(recorded, timing.tookDays),
       id: l.id,
       productId: l.product.id,
       productCode: l.product.code,
@@ -494,7 +492,7 @@ const orderInclude = {
     include: {
       product: { select: { id: true, code: true, name: true, unit: true } },
       intent: { select: { intentNumber: true } },
-      stockEntries: { where: deliveredEntriesWhere, select: { quantity: true } },
+      stockEntries: { where: deliveredEntriesWhere, select: { quantity: true, createdAt: true } },
     },
   },
 } as const;
@@ -511,12 +509,22 @@ export async function getPurchaseOrders() {
 
   const seesEverySite = resolveStockScope(user) === "all";
   const orders = await prisma.purchaseOrder.findMany({
-    where: seesEverySite || !user.locationId ? {} : { locationId: user.locationId },
+    // With no site on record, someone limited to their site sees none
+    where: seesEverySite ? {} : { locationId: user.locationId ?? NO_SITE },
     include: orderInclude,
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
   });
 
-  return orders.map((order) => shapeOrder(order, canSeeValue));
+  // Recorded lead times for every product–vendor pair on these orders
+  const pairs = await prisma.productVendor.findMany({
+    where: {
+      OR: orders.flatMap((o) => o.lines.map((l) => ({ productId: l.product.id, vendorId: o.vendor.id }))),
+    },
+    select: { productId: true, vendorId: true, leadTimeDays: true },
+  });
+  const recorded = new Map(pairs.map((p) => [`${p.productId}|${p.vendorId}`, p.leadTimeDays]));
+
+  return orders.map((order) => shapeOrder(order, canSeeValue, recorded));
 }
 
 /**
@@ -536,7 +544,7 @@ export async function getOpenOrderLines() {
   const orders = await prisma.purchaseOrder.findMany({
     where: {
       status: "OPEN",
-      ...(seesAll || !user.locationId ? {} : { locationId: user.locationId }),
+      ...(seesAll ? {} : { locationId: user.locationId ?? NO_SITE }),
     },
     include: {
       vendor: { select: { id: true, name: true } },
@@ -610,6 +618,10 @@ export async function closePurchaseOrder(id: string, data: unknown = {}) {
   if (order.status !== "OPEN") {
     return { error: `This order is already ${order.status.toLowerCase()}` };
   }
+  // Closed by the site it is coming to, like everything else about it
+  if (resolveStockScope(user) !== "all" && order.locationId !== user.locationId) {
+    return { error: "That order is for another site" };
+  }
 
   const shaped = shapeOrder(order, true);
 
@@ -650,6 +662,10 @@ export async function cancelPurchaseOrder(id: string, data: unknown = {}) {
   if (!order) return { error: "That order no longer exists" };
   if (order.status !== "OPEN") {
     return { error: `This order is already ${order.status.toLowerCase()}` };
+  }
+  // Closed by the site it is coming to, like everything else about it
+  if (resolveStockScope(user) !== "all" && order.locationId !== user.locationId) {
+    return { error: "That order is for another site" };
   }
 
   const shaped = shapeOrder(order, true);
@@ -695,121 +711,13 @@ export async function cancelPurchaseOrder(id: string, data: unknown = {}) {
 }
 
 /**
- * Whether a line can take this many more units, or why not.
- *
- * Returns an error message, or null when the delivery fits. Called from every
- * point where the booked quantity can change — creating an entry, editing one,
- * and submitting it — because outstanding is DERIVED, and a check at only one
- * of those three leaves the other two as ways round it.
- *
- * `excludeEntryId` skips an entry's own contribution, so editing a submitted
- * delivery is measured against everything except itself.
+ * Vendors and sites for the order form, and every recorded lead time so each
+ * line can start with what that vendor usually takes for that product.
  */
-export async function checkOrderLineCapacity(
-  purchaseOrderLineId: string,
-  productId: string,
-  quantity: number,
-  excludeEntryId?: string
-): Promise<string | null> {
-  const line = await prisma.purchaseOrderLine.findUnique({
-    where: { id: purchaseOrderLineId },
-    include: {
-      purchaseOrder: { select: { poNumber: true, status: true } },
-      stockEntries: {
-        where: {
-          ...deliveredEntriesWhere,
-          ...(excludeEntryId ? { id: { not: excludeEntryId } } : {}),
-        },
-        select: { quantity: true },
-      },
-    },
-  });
-
-  if (!line) return "That purchase order line no longer exists";
-  if (line.purchaseOrder.status !== "OPEN") {
-    return `${line.purchaseOrder.poNumber} is already ${line.purchaseOrder.status.toLowerCase()}`;
-  }
-  if (line.productId !== productId) {
-    return "That order line is for a different product";
-  }
-
-  const delivered = line.stockEntries.reduce((sum, e) => sum + e.quantity, 0);
-  const outstanding = line.quantity - delivered;
-  if (quantity > outstanding) {
-    return `${line.purchaseOrder.poNumber} is only owed ${outstanding} more — enter ${outstanding} or less, or raise a separate entry`;
-  }
-
-  return null;
-}
-
-/**
- * Bring an order's status back in line with what has actually arrived.
- *
- * Called whenever a delivery against it changes: created, submitted, approved
- * or rejected. Two directions:
- *
- *   fully delivered and open   → close it, and say so on the record
- *   not fully delivered and
- *   closed AUTOMATICALLY       → open it again
- *
- * `closedById` is what tells the two kinds of closure apart. A person closing
- * an order short has made a decision and it stands, even if a late delivery
- * turns up; an automatic close is only ever a statement about arithmetic, so
- * when the arithmetic changes it has to be withdrawn. Without that second
- * direction, submitting a delivery closed the order and rejecting the same
- * delivery left it closed with nothing delivered against it.
- */
-export async function syncPurchaseOrderFromEntry(purchaseOrderLineId: string) {
-  const line = await prisma.purchaseOrderLine.findUnique({
-    where: { id: purchaseOrderLineId },
-    select: { purchaseOrderId: true },
-  });
-  if (!line) return;
-
-  const order = await prisma.purchaseOrder.findUnique({
-    where: { id: line.purchaseOrderId },
-    include: orderInclude,
-  });
-  if (!order) return;
-
-  const shaped = shapeOrder(order, true);
-
-  if (order.status === "OPEN" && shaped.fullyDelivered) {
-    await prisma.purchaseOrder.update({
-      where: { id: order.id },
-      data: { status: "CLOSED", closedAt: new Date() },
-    });
-    await logActivity(
-      "UPDATED",
-      "PurchaseOrder",
-      order.id,
-      `${order.poNumber} closed automatically — everything ordered has arrived`
-    );
-    revalidatePath("/procurement");
-    return;
-  }
-
-  const closedAutomatically = order.status === "CLOSED" && order.closedById === null;
-  if (closedAutomatically && !shaped.fullyDelivered) {
-    await prisma.purchaseOrder.update({
-      where: { id: order.id },
-      data: { status: "OPEN", closedAt: null, closeReason: null },
-    });
-    await logActivity(
-      "UPDATED",
-      "PurchaseOrder",
-      order.id,
-      `${order.poNumber} re-opened — ${shaped.outstanding} unit${shaped.outstanding === 1 ? "" : "s"} still owed after a delivery was withdrawn`
-    );
-    revalidatePath("/procurement");
-  }
-}
-
-/** Vendors and sites for the order form. */
 export async function getPurchaseOrderFormData() {
   await requirePermission(PERMISSIONS.PROCUREMENT_PO_CREATE);
 
-  const [vendors, locations] = await Promise.all([
+  const [vendors, locations, leadTimes] = await Promise.all([
     prisma.vendor.findMany({
       where: { isActive: true },
       select: { id: true, name: true },
@@ -820,9 +728,10 @@ export async function getPurchaseOrderFormData() {
       select: { id: true, name: true },
       orderBy: { name: "asc" },
     }),
+    prisma.productVendor.findMany({ select: { productId: true, vendorId: true, leadTimeDays: true } }),
   ]);
 
-  return { vendors, locations };
+  return { vendors, locations, leadTimes };
 }
 
 /** Catalog for stating a need — raw materials are what gets bought in. */
@@ -836,9 +745,13 @@ export async function getIntentFormData() {
         id: true,
         code: true,
         name: true,
+        description: true,
         unit: true,
         kind: true,
         category: { select: { name: true } },
+        subcategory: { select: { name: true } },
+        // So the dialog can pre-pick the preferred vendor and show lead times
+        vendors: { select: { vendorId: true, leadTimeDays: true, isPreferred: true } },
       },
       orderBy: [{ category: { name: "asc" } }, { code: "asc" }],
     }),
@@ -859,9 +772,12 @@ export async function getIntentFormData() {
       id: p.id,
       code: p.code,
       name: p.name,
+      description: p.description,
       unit: p.unit,
       kind: p.kind,
-      categoryName: p.category.name,
+      category: p.category,
+      subcategory: p.subcategory,
+      suppliers: p.vendors,
     })),
     vendors,
     locations,

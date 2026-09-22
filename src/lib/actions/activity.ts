@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { getCurrentUser, requireAuth } from "@/lib/rbac/check";
+import { requireAuth } from "@/lib/rbac/check";
 import { resolveActivityScope } from "@/lib/rbac/permissions";
 import {
   ACTIVITY_CATEGORIES,
@@ -15,8 +15,8 @@ import type { Prisma } from "@prisma/client";
 /**
  * The activity log: writing to it, and reading it back.
  *
- * Called by: every other action calls `logActivity` after it changes something,
- * and the Activity page calls `getActivityLogs`.
+ * Called by: the Activity page (`getActivityLogs`). Writing to the log is
+ * src/lib/activity-log.ts, which every action calls after it changes something.
  *
  * Owns two rules that are deliberately separate. WHAT you may read is decided
  * by the six `activity.view.*` category keys; WHOSE actions you may read is
@@ -24,29 +24,6 @@ import type { Prisma } from "@prisma/client";
  * company's catalog history and none of its passwords, or with their own
  * department's everything.
  */
-
-export async function logActivity(
-  action: string,
-  entity: string,
-  entityId?: string,
-  details?: string
-) {
-  const user = await getCurrentUser();
-  if (!user) return;
-
-  await prisma.activityLog.create({
-    data: {
-      action,
-      entity,
-      entityId: entityId ?? undefined,
-      details: details ?? undefined,
-      userId: user.id,
-      // Snapshotted so that deleting a person leaves their history searchable
-      // by name rather than erasing what they did
-      actorName: user.name,
-    },
-  });
-}
 
 /**
  * A `where` matching exactly the categories given.
@@ -98,8 +75,9 @@ export async function getActivityLogs(options?: {
   search?: string;
 }) {
   const currentUser = await requireAuth();
-  const page = options?.page ?? 1;
-  const limit = options?.limit ?? 20;
+  // Whole numbers in a sensible range, whatever the caller sends
+  const page = Math.max(1, Math.floor(Number(options?.page) || 1));
+  const limit = Math.min(100, Math.max(1, Math.floor(Number(options?.limit) || 20)));
   const skip = (page - 1) * limit;
 
   const clauses: Record<string, unknown>[] = [];

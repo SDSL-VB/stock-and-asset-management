@@ -25,7 +25,12 @@ import { useRouter } from "next/navigation";
 import { Loader2, MailQuestion } from "lucide-react";
 
 interface Props {
-  categories: { id: string; name: string }[];
+  categories: {
+    id: string;
+    name: string;
+    /** Offered as a suggestion; the reviewer decides. Absent on older callers. */
+    subcategories?: { id: string; name: string; code: string | null }[];
+  }[];
   /** Preselect this category for product requests (e.g. from the entry form) */
   defaultCategoryId?: string;
   /** Lock the dialog to one request type and hide the type selector */
@@ -47,7 +52,15 @@ export function RequestProductDialog({ categories, defaultCategoryId, fixedType,
   const [type, setType] = useState<"PRODUCT" | "CATEGORY">(fixedType ?? "PRODUCT");
   const [name, setName] = useState("");
   const [categoryId, setCategoryId] = useState(defaultCategoryId ?? "");
+  // Both are suggestions. Whoever reviews the request is the one the catalog
+  // rules are enforced against, so neither is ever required here — an operator
+  // who does not know which subcategory it belongs to can still ask.
+  const [subcategoryId, setSubcategoryId] = useState("");
+  const [description, setDescription] = useState("");
   const [notes, setNotes] = useState("");
+
+  const subcategories =
+    categories.find((c) => c.id === categoryId)?.subcategories ?? [];
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -57,6 +70,8 @@ export function RequestProductDialog({ categories, defaultCategoryId, fixedType,
         type,
         name: name.trim(),
         categoryId: type === "PRODUCT" ? categoryId : undefined,
+        subcategoryId: type === "PRODUCT" ? subcategoryId || undefined : undefined,
+        description: type === "PRODUCT" ? description.trim() || undefined : undefined,
         notes: notes.trim() || undefined,
       });
       if ("error" in result) {
@@ -143,7 +158,10 @@ export function RequestProductDialog({ categories, defaultCategoryId, fixedType,
               <Select
                 value={categoryId}
                 items={categories.map((c) => ({ value: c.id, label: c.name }))}
-                onValueChange={(v) => setCategoryId(v ?? "")}
+                onValueChange={(v) => {
+                  setCategoryId(v ?? "");
+                  setSubcategoryId("");
+                }}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select category" />
@@ -162,6 +180,35 @@ export function RequestProductDialog({ categories, defaultCategoryId, fixedType,
             </div>
           )}
 
+          {type === "PRODUCT" && subcategories.length > 0 && (
+            <div className="space-y-2">
+              <Label>Subcategory (optional)</Label>
+              <Select
+                value={subcategoryId}
+                items={[
+                  { value: "", label: "Not sure" },
+                  ...subcategories.map((sub) => ({ value: sub.id, label: sub.name })),
+                ]}
+                onValueChange={(v) => setSubcategoryId(v ?? "")}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Not sure" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">Not sure</SelectItem>
+                  {subcategories.map((sub) => (
+                    <SelectItem key={sub.id} value={sub.id}>
+                      {sub.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                A suggestion — whoever reviews this decides where it is filed.
+              </p>
+            </div>
+          )}
+
           <div className="space-y-2">
             <Label htmlFor="request-name">
               {type === "PRODUCT" ? "Product Name *" : "Category Name *"}
@@ -171,11 +218,29 @@ export function RequestProductDialog({ categories, defaultCategoryId, fixedType,
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={
-                type === "PRODUCT" ? "e.g. Bowling Machine - Pro" : "e.g. Training Equipment"
+                type === "PRODUCT" ? "e.g. 3W_Control_Board" : "e.g. Training Equipment"
               }
               required
             />
           </div>
+
+          {type === "PRODUCT" && (
+            <div className="space-y-2">
+              <Label htmlFor="request-description">Description (optional)</Label>
+              <Textarea
+                id="request-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. BLDC Control board"
+                rows={2}
+                maxLength={300}
+              />
+              <p className="text-xs text-muted-foreground">
+                What it actually is, in words — it helps whoever reviews this
+                recognise the part.
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="request-notes">Notes (optional)</Label>

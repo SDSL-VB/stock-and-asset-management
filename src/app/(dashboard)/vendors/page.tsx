@@ -41,6 +41,9 @@ export default async function VendorsPage() {
         canEdit={has(PERMISSIONS.VENDORS_EDIT)}
         canDelete={has(PERMISSIONS.VENDORS_DELETE)}
         canExport={has(PERMISSIONS.VENDORS_EXPORT)}
+        canEditSuppliers={
+          has(PERMISSIONS.VENDORS_EDIT) || has(PERMISSIONS.PRODUCTS_EDIT) || has(PERMISSIONS.STOCK_LOWSTOCK_MANAGE)
+        }
       />
     </div>
   );

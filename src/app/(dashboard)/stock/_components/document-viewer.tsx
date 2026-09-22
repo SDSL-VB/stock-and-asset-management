@@ -89,6 +89,7 @@ export function DocumentViewerButton({ attachment }: { attachment: Attachment })
         disabled={loading}
       >
         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+        <span className="text-xs">Open</span>
       </Button>
     );
   }
@@ -103,6 +104,7 @@ export function DocumentViewerButton({ attachment }: { attachment: Attachment })
         disabled={loading}
       >
         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+        <span className="text-xs">View</span>
       </Button>
       <DialogContent className="sm:max-w-4xl">
         <DialogHeader>

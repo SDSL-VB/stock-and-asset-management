@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StockEntryList } from "./_components/stock-entry-list";
 import { Button } from "@/components/ui/button";
 import { HowTo } from "@/components/shared/how-to";
-import { Plus } from "lucide-react";
+import { PackageOpen, Plus } from "lucide-react";
 import Link from "next/link";
 import { hasPermission } from "@/lib/rbac/check";
 
@@ -61,6 +61,14 @@ export default async function StockPage({
             <Button>
               <Plus className="mr-2 h-4 w-4" />
               New Stock Entry
+            </Button>
+          </Link>
+        )}
+        {canCreate && (
+          <Link href="/stock/new?mode=delivery">
+            <Button variant="outline">
+              <PackageOpen className="mr-2 h-4 w-4" />
+              New Delivery (several items)
             </Button>
           </Link>
         )}

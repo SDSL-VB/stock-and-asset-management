@@ -1,9 +1,12 @@
 import { requireAuth } from "@/lib/rbac/check";
 import { PageHeader } from "@/components/shared/page-header";
 import { ProfileForm } from "./_components/profile-form";
+import { MailSettings } from "./_components/mail-settings";
+import { getMyMailSettings } from "@/lib/actions/notifications";
 
 export default async function ProfilePage() {
   const user = await requireAuth();
+  const mail = await getMyMailSettings();
 
   return (
     <div className="space-y-6">
@@ -18,6 +21,7 @@ export default async function ProfilePage() {
           role: user.role,
         }}
       />
+      <MailSettings email={mail.email} instant={mail.mailInstantKinds} digest={mail.mailDigest} mailOn={mail.mailOn} />
     </div>
   );
 }

@@ -14,7 +14,7 @@ import { prisma } from "@/lib/prisma";
 import { requireSignedIn } from "@/lib/rbac/check";
 import { changeOwnPasswordSchema } from "@/lib/validations/user";
 import { encryptPassword } from "@/lib/crypto";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { signOut } from "@/auth";
 import bcrypt from "bcryptjs";
 

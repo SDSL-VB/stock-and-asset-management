@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { HelpCircle } from "lucide-react";
 
-export interface HowToSection {
+interface HowToSection {
   heading?: string;
   steps: Array<{ title: string; description?: string }>;
 }

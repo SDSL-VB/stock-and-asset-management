@@ -47,6 +47,9 @@ export default async function UserDetailPage({
   const canAssignRoles =
     currentUser.permissions.includes(PERMISSIONS.USERS_EDIT) && currentUser.id !== id;
 
+  // The two cards are built here and rendered among UserProfile's children.
+  // React checks keys on server-built elements placed that way, so each
+  // carries one — without it, every visit logs a "unique key" warning.
   return (
     <UserProfile
       user={user}
@@ -59,6 +62,7 @@ export default async function UserDetailPage({
       additionalRoles={
         canAssignRoles ? (
           <AdditionalRolesCard
+            key="additional-roles"
             userId={id}
             userName={user.name}
             primaryRoleName={user.role.name}
@@ -70,6 +74,7 @@ export default async function UserDetailPage({
       extraPermissions={
         permissionDetail && !permissionDetail.isSystem ? (
           <ExtraPermissionsCard
+            key="extra-permissions"
             userId={id}
             userName={permissionDetail.user.name}
             roleName={permissionDetail.user.roleName}

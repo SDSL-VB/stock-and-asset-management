@@ -20,7 +20,6 @@ export const updateUserSchema = z.object({
   roleId: z.string().min(1, "Please select a role"),
   departmentId: z.string().optional(),
   phone: z.string().optional(),
-  isActive: z.boolean().optional(),
 });
 
 export const changePasswordSchema = z

@@ -1,17 +1,26 @@
 /**
  * Status colour — the single source of truth.
  *
- * Before this file, the same four stock-entry statuses were re-declared with
- * different colours in four separate places (stock-entry-list, stock-reports,
- * how-to-guide, user-card-grid), so DRAFT looked like one thing on the list
- * page and another on the report. Everything now reads from here, and the
- * actual colour values live as tokens in globals.css so both themes resolve
- * from one definition.
+ * Every status badge in the app resolves through `statusPill()` here. That
+ * matters for two reasons beyond consistency.
  *
- * Note the greens: brand green (#00E676) is a fill colour, not a text colour —
- * it measures ~1.7:1 on white and fails WCAG AA badly. `--status-approved` is a
+ * **Dark mode.** The colour values live as tokens in `globals.css`, which
+ * defines each one twice — once for each theme. A badge written as
+ * `bg-amber-50 text-amber-800` has no dark variant, so it stays a pale amber
+ * card with dark text on a dark page. Ten components were doing exactly that.
+ *
+ * **Contrast.** Brand green (#00E676) is a fill colour, not a text colour: it
+ * measures ~1.7:1 on white and fails WCAG AA badly. `--status-approved` is a
  * darker green that passes, so approved *text* and approved *fills* are
- * deliberately different values.
+ * deliberately different values. Hand-picked palette colours lose that.
+ *
+ * Five tones carry every status in the system. The point of so few is that a
+ * reader learns the vocabulary once: amber is waiting on somebody, green is
+ * settled, red was refused, grey is inert, blue is moving.
+ *
+ * This covers STATUS. Decorative tints — the module colours in the role editor,
+ * the amber callout panels in the how-to guide — are not statuses and are
+ * deliberately left alone.
  */
 
 export type StatusTone =
@@ -21,27 +30,47 @@ export type StatusTone =
   | "rejected"
   | "info";
 
-/** Maps every status string the app uses onto one of the five tones. */
-const TONE_BY_KEY: Record<string, StatusTone> = {
-  // StockEntryStatus
-  DRAFT: "draft",
+/**
+ * Every status string the app can render, mapped onto a tone.
+ *
+ * The keys are the values of the status enums in `schema.prisma`. Where two
+ * enums share a word they share a tone on purpose: a PENDING write-off and a
+ * PENDING transfer are both "somebody has to decide", and should not look like
+ * two different kinds of thing.
+ *
+ * An unknown key falls through to `draft`, so a new enum value renders as inert
+ * grey rather than throwing — but add it here, or it will read as inert
+ * forever.
+ */
+const TONE_BY_STATUS: Record<string, StatusTone> = {
+  // Waiting on a person — StockEntry, ApprovalStep, WriteOff, Request,
+  // Transfer, Dispatch, PurchaseIntent, SiteRequest, Bom, Build, PurchaseOrder
   SUBMITTED: "pending",
-  APPROVED: "approved",
-  REJECTED: "rejected",
-  // ApprovalStepStatus
   PENDING: "pending",
-  SKIPPED: "draft",
-  // AssetStatus
-  AVAILABLE: "approved",
-  ASSIGNED: "info",
-  MAINTENANCE: "pending",
-  RETIRED: "draft",
-  LOST: "rejected",
-  // TransferStatus
+  IN_PROGRESS: "pending",
+  OPEN: "pending",
+
+  // Settled, and settled well
+  APPROVED: "approved",
+  PUBLISHED: "approved",
+  RECEIVED: "approved",
   COMPLETED: "approved",
-  CANCELLED: "draft",
-  // Generic
+  ACCEPTED: "approved",
   ACTIVE: "approved",
+
+  // Refused by somebody
+  REJECTED: "rejected",
+
+  // On the move, or otherwise mid-flight and not yet an outcome
+  IN_TRANSIT: "info",
+  ORDERED: "info",
+  REVERSED: "info",
+
+  // Inert: not started, withdrawn, or finished with
+  DRAFT: "draft",
+  CANCELLED: "draft",
+  CLOSED: "draft",
+  SKIPPED: "draft",
   INACTIVE: "draft",
 };
 
@@ -106,5 +135,22 @@ const STYLES: Record<StatusTone, ToneStyles> = {
 /** Styles for a tone you already know. */
 export function toneStyles(tone: StatusTone): ToneStyles {
   return STYLES[tone];
+}
+
+/** The tone a status string carries. Unknown statuses read as inert grey. */
+function toneOf(status: string): StatusTone {
+  return TONE_BY_STATUS[status] ?? "draft";
+}
+
+/**
+ * Badge classes for a status — what nearly every caller wants.
+ *
+ *   <Badge variant="outline" className={statusPill(entry.status)}>
+ *
+ * Returns background, text and border together, because a pill needs all three
+ * and splitting them is how they drift apart.
+ */
+export function statusPill(status: string): string {
+  return STYLES[toneOf(status)].pill;
 }
 

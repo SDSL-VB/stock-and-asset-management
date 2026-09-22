@@ -49,6 +49,24 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+/**
+ * Editing what one role can do.
+ *
+ * Every capability in the system is a checkbox here, grouped by module, and the
+ * role is nothing but the set that is ticked. There is no hidden behaviour
+ * attached to a role's name.
+ *
+ * The part worth understanding is the LINKED PERMISSION prompt. Some keys are
+ * useless on their own — approving a bill of materials without being able to
+ * see one gives somebody a capability they can never reach, and nothing on this
+ * screen would tell them. `src/lib/rbac/permission-dependencies.ts` declares
+ * those pairs with a plain-English reason, and ticking such a box raises the
+ * prompt at that moment rather than letting a silently worthless grant be saved.
+ *
+ * Read / write / build marks: building is neither reading nor writing — it
+ * draws stock down and books new stock in — so it is marked separately.
+ */
+
 interface Permission {
   id: string;
   key: string;
@@ -121,7 +139,7 @@ const MODULE_CONFIG: Record<string, { label: string; icon: LucideIcon; descripti
     color: "text-rose-600 bg-rose-50",
   },
   reports: {
-    label: "Reports & Analytics",
+    label: "Stock & Analytics",
     icon: BarChart3,
     description: "View and export stock reports",
     color: "text-amber-600 bg-amber-50",

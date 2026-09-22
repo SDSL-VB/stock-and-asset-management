@@ -5,7 +5,7 @@ import { nextReference } from "@/lib/reference-numbers";
 import {
   requireAnyPermission,
   requirePermission,
-  requireSignedIn,
+  requireAuth,
   resolveStockScope,
 } from "@/lib/rbac/check";
 import { stockCandidatesWhere, isStockVisible } from "@/lib/stock-visibility";
@@ -14,6 +14,7 @@ import {
   availabilityInclude,
   committingDispatchItemsWhere,
   committingBuildConsumptionsWhere,
+  centralWriteOffsWhere,
 } from "@/lib/stock-availability";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import {
@@ -22,11 +23,18 @@ import {
   moveStockToDepartmentSchema,
 } from "@/lib/validations/stock";
 import { raiseClientDispatchForEntry } from "./client-dispatch";
-import { checkOrderLineCapacity, syncPurchaseOrderFromEntry } from "./procurement";
-import { logActivity } from "./activity";
-import { isBlobUrl, isLegacyLocalUpload, blobPathnameOf } from "@/lib/blob-urls";
+import { checkOrderLineCapacity, syncPurchaseOrderFromEntry } from "@/lib/procurement-delivery";
+import { logActivity } from "@/lib/activity-log";
+import { isBlobUrl, isLegacyLocalUpload, blobPathnameOf, canonicalBlobUrl } from "@/lib/blob-urls";
+import { attachRefusal, typeLimits } from "@/lib/attachment-rules";
 import { issueSignedToken, presignUrl } from "@vercel/blob";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
+import { syncBomWatches } from "@/lib/low-stock-bom";
+import { normalizeRack } from "@/lib/racks";
+import { lockEntries } from "@/lib/stock-locks";
+import { hideMoney } from "@/lib/hide-money";
+import { entryDecided, entrySubmitted } from "@/lib/notifications/events";
 
 /**
  * FLOW: goods arriving — booked in, submitted, approved, then moved.
@@ -97,13 +105,20 @@ export async function getStockEntries() {
       transferRequests: { where: { status: "PENDING" }, select: { quantity: true } },
       dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
       buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
+      // The fifth drawdown. Central write-offs only — a department's losses
+      // come off its own holding, never off the entry as well.
+      writeOffs: { where: centralWriteOffsWhere, select: { quantity: true, status: true } },
       attachments: { select: { id: true, fileName: true, fileUrl: true, mimeType: true, attachmentType: true }, orderBy: { createdAt: "asc" } },
+      // Booked in with other items on one invoice — the list links to it
+      delivery: { select: { id: true, deliveryNumber: true } },
       _count: { select: { attachments: true, approvals: true } },
     },
     orderBy: { createdAt: "desc" },
   });
 
-  return entries.filter((entry) => isStockVisible(entry, user, scope));
+  const visible = entries.filter((entry) => isStockVisible(entry, user, scope));
+  // Prices leave the server only for those allowed to see them
+  return user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW) ? visible : hideMoney(visible);
 }
 
 export async function getStockEntryById(id: string) {
@@ -139,6 +154,15 @@ export async function getStockEntryById(id: string) {
       // dispatched still offered them to be moved again.
       dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
       buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
+      // The fifth drawdown: stock written off as damaged or lost. Only central
+      // write-offs (stockIssueId null) touch this entry's figures — a
+      // department's losses come off its own holding. Fetched in full here
+      // because the detail page lists them, not just counts them.
+      writeOffs: {
+        where: centralWriteOffsWhere,
+        include: { raisedBy: { select: { id: true, name: true } } },
+        orderBy: { createdAt: "desc" },
+      },
       transferRequests: {
         include: {
           department: { select: { id: true, name: true } },
@@ -147,6 +171,7 @@ export async function getStockEntryById(id: string) {
         },
         orderBy: { createdAt: "desc" },
       },
+      delivery: { select: { id: true, deliveryNumber: true } },
       // Set only on stock that arrived from another site, so the entry can say
       // which consignment brought it rather than looking like a fresh purchase.
       sourceDispatchItem: {
@@ -169,7 +194,8 @@ export async function getStockEntryById(id: string) {
 
   // Not visible is reported as not existing, so the detail page cannot be used
   // to confirm that an entry exists at another site.
-  return isStockVisible(entry, user, resolveStockScope(user)) ? entry : null;
+  if (!isStockVisible(entry, user, resolveStockScope(user))) return null;
+  return user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW) ? entry : hideMoney(entry);
 }
 
 export async function createStockEntry(data: unknown) {
@@ -189,6 +215,7 @@ export async function createStockEntry(data: unknown) {
     clientId,
     vendorId,
     batchNumber,
+    rackLocation,
     supplierName: _sn,
     clientName: _cn,
     clientLocation: _cl,
@@ -201,6 +228,11 @@ export async function createStockEntry(data: unknown) {
   const effectiveLocationId = isDirectToClient
     ? locationId || (await getCallerLocationId(user))
     : locationId ?? null;
+
+  // Goods are booked in at your own site, unless you see every site
+  if (resolveStockScope(user) !== "all" && effectiveLocationId !== user.locationId) {
+    return { error: "You can only book goods in at your own site" };
+  }
 
   // The batch is only accepted from someone allowed to set one
   const canSetBatch = user.permissions.includes(PERMISSIONS.STOCK_BATCH_EDIT);
@@ -254,6 +286,7 @@ export async function createStockEntry(data: unknown) {
       totalPrice,
       locationId: effectiveLocationId,
       ...(effectiveBatch !== undefined ? { batchNumber: effectiveBatch } : {}),
+      rackLocation: normalizeRack(rackLocation),
       vendorId: vendor.id,
       supplierName: vendor.name,
       clientId: client?.id ?? null,
@@ -308,6 +341,7 @@ export async function updateStockEntry(id: string, data: unknown) {
     clientId,
     vendorId,
     batchNumber,
+    rackLocation,
     supplierName: _sn,
     clientName: _cn,
     clientLocation: _cl,
@@ -373,6 +407,7 @@ export async function updateStockEntry(id: string, data: unknown) {
       totalPrice,
       locationId: effectiveLocationId,
       ...(effectiveBatch !== undefined ? { batchNumber: effectiveBatch } : {}),
+      rackLocation: normalizeRack(rackLocation),
       vendorId: vendor.id,
       supplierName: vendor.name,
       clientId: client?.id ?? null,
@@ -514,6 +549,8 @@ export async function submitStockEntry(id: string) {
     await syncPurchaseOrderFromEntry(entry.purchaseOrderLineId);
   }
 
+  await entrySubmitted(entry);
+
   revalidatePath("/stock");
   revalidatePath(`/stock/${id}`);
   return { success: true };
@@ -564,10 +601,16 @@ export async function approveStockEntry(id: string, stepOrder: number, comments?
 
   const refusal = approvalRefusal(entry, user);
   if (refusal) return { error: refusal };
+  // Four eyes: whoever booked the goods in cannot also sign them off
+  if (entry.createdById === user.id) return { error: "You booked this in, so someone else has to approve it" };
 
   const approval = entry.approvals.find((a) => a.stepOrder === stepOrder);
   if (!approval) return { error: "Approval step not found" };
   if (approval.status !== "PENDING") return { error: "This step has already been processed" };
+  // Steps are signed off in order — a later step cannot jump an earlier one
+  if (entry.approvals.some((a) => a.stepOrder < stepOrder && a.status !== "APPROVED")) {
+    return { error: "An earlier approval step is still waiting" };
+  }
 
   await prisma.stockApproval.update({
     where: { id: approval.id },
@@ -595,6 +638,7 @@ export async function approveStockEntry(id: string, stepOrder: number, comments?
     // Goods bought to go straight to a customer book in here and must then
     // leave again — without this they sit in stock and appear nowhere outgoing.
     await raiseClientDispatchForEntry(id, user.id);
+    await entryDecided(entry, true);
   }
 
   await logActivity(
@@ -610,6 +654,10 @@ export async function approveStockEntry(id: string, stepOrder: number, comments?
   if (entry.purchaseOrderLineId) {
     await syncPurchaseOrderFromEntry(entry.purchaseOrderLineId);
   }
+
+  // Approved stock of a BOM component means this site uses it — watch it here.
+  // After the response, so approving is not held up by it.
+  after(() => syncBomWatches().catch((e) => console.error("Low-stock BOM sync failed:", e)));
 
   revalidatePath("/stock");
   revalidatePath(`/stock/${id}`);
@@ -687,8 +735,13 @@ export async function rejectStockEntry(id: string, stepOrder: number, reason: st
   if (!entry) return { error: "Stock entry not found" };
   if (entry.status !== "SUBMITTED") return { error: "Entry is not pending approval" };
 
+  // Whoever books the entry back in has to know what to fix. The form asks for
+  // one, but a server action is a real endpoint that can be called without it.
+  if (!reason.trim()) return { error: "Rejection reason is required" };
+
   const refusal = approvalRefusal(entry, user);
   if (refusal) return { error: refusal };
+  if (entry.createdById === user.id) return { error: "You booked this in, so someone else has to review it" };
 
   const approval = entry.approvals.find((a) => a.stepOrder === stepOrder);
   if (!approval) return { error: "Approval step not found" };
@@ -725,6 +778,8 @@ export async function rejectStockEntry(id: string, stepOrder: number, reason: st
   if (entry.purchaseOrderLineId) {
     await syncPurchaseOrderFromEntry(entry.purchaseOrderLineId);
   }
+
+  await entryDecided(entry, false, reason);
 
   revalidatePath("/stock");
   revalidatePath(`/stock/${id}`);
@@ -869,43 +924,26 @@ export async function checkAttachmentUpload(input: {
   fileSize: number;
   mimeType: string;
 }): Promise<{ error: string } | { ok: true }> {
-  const user = await requireSignedIn();
-
-  const canUpload =
-    user.permissions?.includes(PERMISSIONS.STOCK_CREATE) ||
-    user.permissions?.includes(PERMISSIONS.STOCK_EDIT);
-  if (!canUpload) return { error: "You do not have permission to add attachments" };
+  const user = await requireAuth();
 
   // Configuration, not the user's fault — so say so plainly rather than letting
   // it surface as a mysterious storage error a minute later.
   const storageProblem = describeStorageProblem();
   if (storageProblem) return { error: storageProblem };
 
-  const entry = await prisma.stockEntry.findUnique({
-    where: { id: input.stockEntryId },
-    select: { status: true },
-  });
-  if (!entry) return { error: "Stock entry not found" };
-  if (entry.status !== "DRAFT" && entry.status !== "REJECTED") {
-    return { error: "Cannot upload to submitted or approved entries" };
-  }
+  const refusal = await attachRefusal(user, input.stockEntryId);
+  if (refusal) return { error: refusal };
 
-  const config = await prisma.attachmentTypeConfig.findUnique({
-    where: { name: input.attachmentType },
-  });
-  if (config) {
-    if (input.fileSize > config.maxSizeBytes) {
-      const mb = Math.round(config.maxSizeBytes / 1024 / 1024);
-      return { error: `That file is larger than the ${mb}MB limit for ${input.attachmentType}` };
-    }
-    const allowed = Array.isArray(config.allowedMimeTypes)
-      ? (config.allowedMimeTypes as string[])
-      : [];
-    if (allowed.length > 0 && !allowed.includes(input.mimeType)) {
-      return {
-        error: `${input.attachmentType} accepts ${allowed.join(", ")} — not ${input.mimeType || "that file type"}`,
-      };
-    }
+  const limits = await typeLimits(input.attachmentType);
+  if ("error" in limits) return limits;
+  if (input.fileSize > limits.maxSizeBytes) {
+    const mb = Math.round(limits.maxSizeBytes / 1024 / 1024);
+    return { error: `That file is larger than the ${mb}MB limit for ${input.attachmentType}` };
+  }
+  if (limits.allowed.length > 0 && !limits.allowed.includes(input.mimeType)) {
+    return {
+      error: `${input.attachmentType} accepts ${limits.allowed.join(", ")} — not ${input.mimeType || "that file type"}`,
+    };
   }
 
   return { ok: true };
@@ -942,19 +980,18 @@ export async function recordStockAttachment(input: {
     return { error: "That file did not come from our storage" };
   }
 
-  const entry = await prisma.stockEntry.findUnique({
+  const refusal = await attachRefusal(user, input.stockEntryId);
+  if (refusal) return { error: refusal };
+  if ("error" in (await typeLimits(input.attachmentType))) return { error: "That is not one of the document types" };
+  const entry = await prisma.stockEntry.findUniqueOrThrow({
     where: { id: input.stockEntryId },
-    select: { status: true, entryNumber: true },
+    select: { entryNumber: true },
   });
-  if (!entry) return { error: "Stock entry not found" };
-  if (entry.status !== "DRAFT" && entry.status !== "REJECTED") {
-    return { error: "Cannot upload to submitted or approved entries" };
-  }
 
   const attachment = await prisma.stockEntryAttachment.create({
     data: {
       fileName: input.fileName,
-      fileUrl: input.fileUrl,
+      fileUrl: canonicalBlobUrl(input.fileUrl),
       fileSize: input.fileSize,
       mimeType: input.mimeType,
       attachmentType: input.attachmentType,
@@ -996,7 +1033,12 @@ export async function deleteAttachment(attachmentId: string) {
   // Remove the stored file. Entries created before uploads moved to blob
   // storage still hold a "/uploads/..." path pointing at a local file that no
   // longer exists on a serverless host; there is nothing to delete for those.
-  if (attachment.fileUrl.startsWith("http")) {
+  // A file uploaded once for a whole delivery is shared by every line, so it
+  // stays while any other line still points at it.
+  const sharedWith = await prisma.stockEntryAttachment.count({
+    where: { fileUrl: attachment.fileUrl, id: { not: attachmentId } },
+  });
+  if (attachment.fileUrl.startsWith("http") && sharedWith === 0) {
     const { del } = await import("@vercel/blob");
     try {
       await del(attachment.fileUrl);
@@ -1070,9 +1112,14 @@ export async function moveStockToDepartment(stockEntryId: string, data: unknown)
     // This copy used to leave out pending transfer requests, so moving stock
     // directly could take units somebody had already asked for and was waiting
     // on. The shared include counts all four drawdowns.
-    include: availabilityInclude,
+    include: {
+      ...availabilityInclude,
+      // The visibility rule also needs which department each issue went to
+      issues: { select: { quantity: true, departmentId: true } },
+    },
   });
-  if (!entry) return { error: "Stock entry not found" };
+  // Only stock you can see can be moved — as on the stock list
+  if (!entry || !isStockVisible(entry, user, resolveStockScope(user))) return { error: "Stock entry not found" };
 
   if (entry.status !== "APPROVED") {
     return { error: "Only approved stock can be moved to a department" };
@@ -1083,6 +1130,11 @@ export async function moveStockToDepartment(stockEntryId: string, data: unknown)
   });
   if (!department || !department.isActive) {
     return { error: "Department not found or inactive" };
+  }
+  // Central stock moves into a department at its own site; another site's
+  // stock travels by dispatch
+  if (entry.locationId && department.locationId && entry.locationId !== department.locationId) {
+    return { error: "That department is at another site — send the stock by dispatch instead" };
   }
 
   // Dispatched quantity has left the building too — it is not movable
@@ -1095,18 +1147,26 @@ export async function moveStockToDepartment(stockEntryId: string, data: unknown)
 
   const issueNumber = await nextReference("SI");
 
-  const issue = await prisma.stockIssue.create({
-    data: {
-      issueNumber,
-      stockEntryId,
-      departmentId: parsed.data.departmentId,
-      quantity: parsed.data.quantity,
-      isAsset: parsed.data.isAsset ?? entry.isAsset,
-      notes: parsed.data.notes?.trim() || null,
-      issuedById: user.id,
-    },
-    include: { department: { select: { name: true } } },
+  // The check above gives a quick answer; the real one is here, with the entry
+  // locked, so two moves at the same moment cannot both take the last units
+  const issue = await prisma.$transaction(async (tx) => {
+    await lockEntries(tx, [stockEntryId]);
+    const fresh = await tx.stockEntry.findUniqueOrThrow({ where: { id: stockEntryId }, include: availabilityInclude });
+    if (parsed.data.quantity > availableQuantity(fresh)) return null;
+    return tx.stockIssue.create({
+      data: {
+        issueNumber,
+        stockEntryId,
+        departmentId: parsed.data.departmentId,
+        quantity: parsed.data.quantity,
+        isAsset: parsed.data.isAsset ?? entry.isAsset,
+        notes: parsed.data.notes?.trim() || null,
+        issuedById: user.id,
+      },
+      include: { department: { select: { name: true } } },
+    });
   });
+  if (!issue) return { error: "Someone else has just taken some of that stock — check what is left and try again" };
 
   await logActivity(
     "ISSUED",
@@ -1122,6 +1182,7 @@ export async function moveStockToDepartment(stockEntryId: string, data: unknown)
 }
 
 export async function getFieldConfigs() {
+  await requireAuth();
   return prisma.stockEntryFieldConfig.findMany({
     where: { isActive: true },
     orderBy: { displayOrder: "asc" },
@@ -1129,6 +1190,7 @@ export async function getFieldConfigs() {
 }
 
 export async function getAttachmentTypeConfigs() {
+  await requireAuth();
   return prisma.attachmentTypeConfig.findMany({
     where: { isActive: true },
     orderBy: { name: "asc" },

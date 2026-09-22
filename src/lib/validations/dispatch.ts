@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const dispatchItemSchema = z.object({
+const dispatchItemSchema = z.object({
   stockEntryId: z.string().min(1, "Pick a stock item"),
   quantity: z.number().int().positive("Quantity must be a positive number"),
   isAsset: z.boolean().optional(),

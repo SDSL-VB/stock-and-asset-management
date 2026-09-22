@@ -30,9 +30,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { approveProductRequest, rejectProductRequest } from "@/lib/actions/products";
-import { codePrefixOf, CODE_PREFIX_PATTERN } from "@/lib/product-codes";
+import { codeLeaderOf, CODE_PREFIX_PATTERN } from "@/lib/product-codes";
 import { toast } from "sonner";
 import { Check, Loader2, X } from "lucide-react";
+import { statusPill } from "@/lib/design/status";
 
 /**
  * The request queue on the Catalog page.
@@ -42,27 +43,32 @@ import { Check, Loader2, X } from "lucide-react";
  * CREATES the product — there is no separate step afterwards.
  *
  * Everyone sees their own requests. Reviewers additionally see everyone's, for
- * the types they can review.
+ * the types they can review — and the ones waiting on THEM are tinted, so a
+ * new request stands out from the history around it.
  */
 
-export type CatalogRequest = {
+type CatalogRequest = {
   id: string;
   type: "PRODUCT" | "CATEGORY";
   name: string;
+  /** What the asker suggested. The reviewer may change both. */
+  description: string | null;
   notes: string | null;
   status: "PENDING" | "APPROVED" | "REJECTED";
   reviewNote: string | null;
   createdAt: Date;
   category: { id: string; name: string } | null;
+  subcategory: { id: string; name: string; code: string | null } | null;
   requestedBy: { id: string; name: string };
   reviewedBy: { id: string; name: string } | null;
 };
 
-export type ReviewCategory = {
+type ReviewCategory = {
   id: string;
   name: string;
   codePrefix: string | null;
   nextSequence: number;
+  subcategories: { id: string; name: string; code: string | null }[];
 };
 
 interface Props {
@@ -72,17 +78,18 @@ interface Props {
   canReviewCategories: boolean;
   canOverrideCode: boolean;
   viewerId: string;
+  /**
+   * What the catalog insists on. The REVIEWER has to satisfy these, not the
+   * asker — approving is what creates the product, so this is the form the
+   * rules are enforced against.
+   */
+  rules: { requireSubcategory: boolean; requireDescription: boolean };
 }
 
 function StatusBadge({ status }: { status: CatalogRequest["status"] }) {
-  const classes = {
-    PENDING: "bg-amber-50 text-amber-700 border-amber-200",
-    APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    REJECTED: "bg-red-50 text-red-700 border-red-200",
-  };
   const labels = { PENDING: "Pending", APPROVED: "Approved", REJECTED: "Rejected" };
   return (
-    <Badge variant="outline" className={classes[status]}>
+    <Badge variant="outline" className={statusPill(status)}>
       {labels[status]}
     </Badge>
   );
@@ -95,6 +102,7 @@ export function CatalogRequests({
   canReviewCategories,
   canOverrideCode,
   viewerId,
+  rules,
 }: Props) {
   return (
     <Card>
@@ -104,8 +112,7 @@ export function CatalogRequests({
             <TableHeader>
               <TableRow>
                 <TableHead>Asked for</TableHead>
-                <TableHead>Kind</TableHead>
-                <TableHead>Category</TableHead>
+                <TableHead>What</TableHead>
                 <TableHead>Asked by</TableHead>
                 <TableHead>Date</TableHead>
                 <TableHead>Status</TableHead>
@@ -115,9 +122,9 @@ export function CatalogRequests({
             <TableBody>
               {requests.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
-                    Nothing has been asked for. Requests raised from the stock entry form
-                    appear here.
+                  <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                    Nothing has been asked for. Requests raised here or from the stock
+                    entry form appear here.
                   </TableCell>
                 </TableRow>
               ) : (
@@ -128,7 +135,7 @@ export function CatalogRequests({
                     (request.type === "PRODUCT" ? canReviewProducts : canReviewCategories);
 
                   return (
-                    <TableRow key={request.id}>
+                    <TableRow key={request.id} className={canReview ? "bg-status-pending-bg/60" : undefined}>
                       <TableCell>
                         <p className="font-medium">{request.name}</p>
                         {request.notes && (
@@ -136,11 +143,15 @@ export function CatalogRequests({
                         )}
                       </TableCell>
                       <TableCell>
+                        {/* A category request has no category of its own, so
+                            the category is only shown for a product */}
                         <Badge variant="outline">
-                          {request.type === "PRODUCT" ? "Product" : "Category"}
+                          {request.type === "PRODUCT" ? "Product" : "New category"}
                         </Badge>
+                        {request.type === "PRODUCT" && request.category && (
+                          <span className="ml-1.5 text-xs text-muted-foreground">in {request.category.name}</span>
+                        )}
                       </TableCell>
-                      <TableCell>{request.category?.name ?? "—"}</TableCell>
                       <TableCell>
                         {request.requestedBy.name}
                         {isMine && (
@@ -164,6 +175,7 @@ export function CatalogRequests({
                             request={request}
                             categories={categories}
                             canOverrideCode={canOverrideCode}
+                            rules={rules}
                           />
                         )}
                       </TableCell>
@@ -182,11 +194,13 @@ export function CatalogRequests({
 function ReviewActions({
   request,
   categories,
-  canOverrideCode: _canOverrideCode,
+  rules,
 }: {
   request: CatalogRequest;
   categories: ReviewCategory[];
+  /** Unused here: the reviewer types the code either way. Kept for the caller. */
   canOverrideCode: boolean;
+  rules: { requireSubcategory: boolean; requireDescription: boolean };
 }) {
   const router = useRouter();
   const [approveOpen, setApproveOpen] = useState(false);
@@ -199,12 +213,20 @@ function ReviewActions({
   const [categoryCode, setCategoryCode] = useState("");
   const [name, setName] = useState(request.name);
   const [categoryId, setCategoryId] = useState(request.category?.id ?? "");
+  // Pre-filled with what the asker suggested, so a reviewer who agrees does not
+  // have to re-enter it.
+  const [subcategoryId, setSubcategoryId] = useState(request.subcategory?.id ?? "");
+  const [description, setDescription] = useState(request.description ?? "");
   const [reason, setReason] = useState("");
 
   const isProduct = request.type === "PRODUCT";
-  // The prefix belongs to the category and is never typed — the reviewer only
-  // supplies the half after it.
-  const prefix = codePrefixOf(categories.find((c) => c.id === categoryId));
+  const category = categories.find((c) => c.id === categoryId);
+  const subcategories = category?.subcategories ?? [];
+  const subcategory = subcategories.find((sub) => sub.id === subcategoryId);
+  // The leading parts belong to the category and its subcategory and are never
+  // typed — the reviewer supplies only what comes after them.
+  const leader = codeLeaderOf(category, subcategory);
+  const subcategoryRequired = rules.requireSubcategory && subcategories.length > 0;
 
   async function handleApprove(e: React.FormEvent) {
     e.preventDefault();
@@ -214,6 +236,8 @@ function ReviewActions({
         code: isProduct ? code.trim() : undefined,
         name: name.trim(),
         categoryId: isProduct ? categoryId : undefined,
+        subcategoryId: isProduct ? subcategoryId || undefined : undefined,
+        description: isProduct ? description.trim() || undefined : undefined,
         codePrefix: isProduct ? undefined : categoryCode.trim(),
       });
       if ("error" in result) {
@@ -280,7 +304,10 @@ function ReviewActions({
                   <Select
                     value={categoryId}
                     items={categories.map((c) => ({ value: c.id, label: c.name }))}
-                    onValueChange={(v) => setCategoryId((v as string) ?? "")}
+                    onValueChange={(v) => {
+                      setCategoryId((v as string) ?? "");
+                      setSubcategoryId("");
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select category" />
@@ -295,11 +322,46 @@ function ReviewActions({
                   </Select>
                 </div>
 
+                {subcategories.length > 0 && (
+                  <div className="space-y-2">
+                    <Label>Subcategory {subcategoryRequired ? "*" : ""}</Label>
+                    <Select
+                      value={subcategoryId}
+                      items={[
+                        ...(subcategoryRequired ? [] : [{ value: "", label: "None" }]),
+                        ...subcategories.map((sub) => ({
+                          value: sub.id,
+                          label: sub.code ? `${sub.name} (${sub.code})` : sub.name,
+                        })),
+                      ]}
+                      onValueChange={(v) => setSubcategoryId((v as string) ?? "")}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select subcategory" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {!subcategoryRequired && <SelectItem value="">None</SelectItem>}
+                        {subcategories.map((sub) => (
+                          <SelectItem key={sub.id} value={sub.id}>
+                            {sub.name}
+                            {sub.code ? ` (${sub.code})` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {request.subcategory && (
+                      <p className="text-xs text-muted-foreground">
+                        {request.requestedBy.name} suggested {request.subcategory.name}.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   <Label htmlFor={`code-${request.id}`}>Product code *</Label>
                   <div className="flex items-stretch rounded-md border focus-within:ring-2 focus-within:ring-ring">
                     <span className="flex select-none items-center rounded-l-md border-r bg-muted px-3 font-mono text-sm font-semibold text-muted-foreground">
-                      {prefix ?? "—"}
+                      {leader ?? "—"}
                     </span>
                     <Input
                       id={`code-${request.id}`}
@@ -312,9 +374,24 @@ function ReviewActions({
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {categoryId
-                      ? `The code will be ${prefix ?? ""}${code || "…"}`
+                      ? `The code will be ${leader ?? ""}${code || "…"}`
                       : "Choose a category and its code prefix fills in here."}
                   </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor={`desc-${request.id}`}>
+                    Description {rules.requireDescription ? "*" : ""}
+                  </Label>
+                  <Textarea
+                    id={`desc-${request.id}`}
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="e.g. BLDC Control board"
+                    rows={2}
+                    maxLength={300}
+                    required={rules.requireDescription}
+                  />
                 </div>
               </>
             )}

@@ -12,33 +12,33 @@ datasource db {
 // ============================================
 
 model User {
-  id           String    @id @default(cuid())
-  name         String
-  email        String    @unique
-  password     String
+  id                 String    @id @default(cuid())
+  name               String
+  email              String    @unique
+  password           String
   // Reversible (AES-256-GCM) mirror of the password so holders of
   // users.password.view can read it back. Written only when a password is set
   // through the app; `password` (bcrypt) stays the source of truth for login.
   // Null for accounts whose password predates this feature.
-  passwordEnc   String?
-  passwordSetAt DateTime?
-  passwordSetBy String?
+  passwordEnc        String?
+  passwordSetAt      DateTime?
+  passwordSetBy      String?
   // Set when an admin picks someone's password for them (a new account, or a
   // reset). requireAuth() sends the person to /settings/password and lets them
   // go nowhere else until they have replaced it with one only they know. Always
   // read from the database, never from the session cookie — see
   // src/lib/rbac/check.ts for why that distinction matters.
-  mustChangePassword Boolean @default(false)
-  avatar       String?
-  phone        String?
-  isActive     Boolean   @default(true)
+  mustChangePassword Boolean   @default(false)
+  avatar             String?
+  phone              String?
+  isActive           Boolean   @default(true)
   // A single system account that inherits the records of deleted people. It is
   // hidden from every list and cannot log in.
-  isSystem     Boolean   @default(false)
-  roleId       String
-  departmentId String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  isSystem           Boolean   @default(false)
+  roleId             String
+  departmentId       String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   role       Role        @relation(fields: [roleId], references: [id])
   department Department? @relation(fields: [departmentId], references: [id])
@@ -51,12 +51,20 @@ model User {
   additionalRoles UserRole[] @relation("UserAdditionalRoles")
   rolesAssigned   UserRole[] @relation("UserRoleAssigner")
 
-  activityLogs         ActivityLog[]
-  stockEntriesCreated  StockEntry[]          @relation("StockEntryCreator")
-  stockEntriesApproved StockEntry[]          @relation("StockEntryApprover")
-  attachmentsUploaded  StockEntryAttachment[] @relation("AttachmentUploader")
-  approvalsGiven       StockApproval[]
-  stockIssuesCreated   StockIssue[]          @relation("StockIssueCreator")
+  activityLogs             ActivityLog[]
+  stockEntriesCreated      StockEntry[]           @relation("StockEntryCreator")
+  notifications            Notification[]
+  // Which kinds of notification this person also wants by mail as they happen,
+  // and whether they want one summary mail each morning. In-app is always on.
+  mailInstantKinds         NotificationKind[]     @default([ACTION, DECIDED])
+  mailDigest               Boolean                @default(false)
+  stockEntriesApproved     StockEntry[]           @relation("StockEntryApprover")
+  attachmentsUploaded      StockEntryAttachment[] @relation("AttachmentUploader")
+  approvalsGiven           StockApproval[]
+  stockIssuesCreated       StockIssue[]           @relation("StockIssueCreator")
+  writeOffsRaised          StockWriteOff[]        @relation("WriteOffRaiser")
+  writeOffsReviewed        StockWriteOff[]        @relation("WriteOffReviewer")
+  writeOffsReversed        StockWriteOff[]        @relation("WriteOffReverser")
   productRequestsMade      ProductRequest[]       @relation("ProductRequester")
   productRequestsReviewed  ProductRequest[]       @relation("ProductRequestReviewer")
   transferRequestsMade     StockTransferRequest[] @relation("TransferRequester")
@@ -78,6 +86,7 @@ model User {
   purchaseIntentsReviewed  PurchaseIntent[]       @relation("IntentReviewer")
   purchaseOrdersRaised     PurchaseOrder[]        @relation("PoCreator")
   purchaseOrdersClosed     PurchaseOrder[]        @relation("PoCloser")
+  needListsRaised          NeedList[]             @relation("NeedListCreator")
 
   @@map("users")
 }
@@ -91,11 +100,11 @@ model Role {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  users         User[]
-  heldAsAdditional UserRole[]
-  permissions   RolePermission[]
-  approvalSteps ApprovalFlowStep[]
-  bomFlowConfigs BomFlowConfig[] @relation("BomApproverRole")
+  users                  User[]
+  heldAsAdditional       UserRole[]
+  permissions            RolePermission[]
+  approvalSteps          ApprovalFlowStep[]
+  bomFlowConfigs         BomFlowConfig[]         @relation("BomApproverRole")
   procurementFlowConfigs ProcurementFlowConfig[] @relation("IntentApproverRole")
 
   @@map("roles")
@@ -109,14 +118,14 @@ model Role {
 // Permissions union across all of them; the hierarchy level is the strongest
 // (lowest) one held.
 model UserRole {
-  id         String   @id @default(cuid())
-  userId     String
-  roleId     String
+  id          String   @id @default(cuid())
+  userId      String
+  roleId      String
   // Who added it and why, for the same reason a per-person grant records it:
   // "why can this person do that?" should always have an answer.
-  reason     String?
+  reason      String?
   grantedById String?
-  createdAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   user      User  @relation("UserAdditionalRoles", fields: [userId], references: [id], onDelete: Cascade)
   role      Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
@@ -190,37 +199,40 @@ model Location {
 
   departments       Department[]
   stockEntries      StockEntry[]
-  dispatchesOut     Dispatch[]   @relation("DispatchOrigin")
-  dispatchesIn      Dispatch[]   @relation("DispatchDestination")
+  dispatchesOut     Dispatch[]       @relation("DispatchOrigin")
+  dispatchesIn      Dispatch[]       @relation("DispatchDestination")
   builds            Build[]
-  siteRequestsAsked SiteRequest[] @relation("SiteRequestFrom")
-  siteRequestsMade  SiteRequest[] @relation("SiteRequestTo")
+  siteRequestsAsked SiteRequest[]    @relation("SiteRequestFrom")
+  siteRequestsMade  SiteRequest[]    @relation("SiteRequestTo")
   purchaseIntents   PurchaseIntent[]
   purchaseOrders    PurchaseOrder[]
+  needLists         NeedList[]
+  stockLevels       StockLevel[]
 
   @@map("locations")
 }
 
 model Department {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  description String?
-  locationId  String?
+  id             String   @id @default(cuid())
+  name           String   @unique
+  description    String?
+  locationId     String?
   // The central stock department of its location. Stock entry operators and
   // central stock managers belong here; it is how they acquire a location.
-  isCentralStock Boolean @default(false)
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isCentralStock Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  location         Location? @relation(fields: [locationId], references: [id])
+  location         Location?              @relation(fields: [locationId], references: [id])
   users            User[]
   stockEntries     StockEntry[]
   stockIssues      StockIssue[]
+  writeOffs        StockWriteOff[]
   transferRequests StockTransferRequest[]
   approvalFlow     ApprovalFlowConfig?
   purchaseIntents  PurchaseIntent[]
-  bomsAuthored     BillOfMaterials[] @relation("BomAuthorDepartment")
+  bomsAuthored     BillOfMaterials[]      @relation("BomAuthorDepartment")
 
   @@index([locationId])
   @@map("departments")
@@ -259,6 +271,7 @@ model Vendor {
   stockEntries    StockEntry[]
   purchaseIntents PurchaseIntent[]
   purchaseOrders  PurchaseOrder[]
+  products        ProductVendor[]
 
   @@map("vendors")
 }
@@ -336,53 +349,106 @@ enum TransferStatus {
 // ============================================
 
 model ProductCategory {
-  id        String   @id @default(cuid())
-  name      String   @unique
+  id           String   @id @default(cuid())
+  name         String   @unique
   // Fixed 4-digit prefix every product code in this category starts with
   // (Electronics 1001 → 1001-0001). Auto-assigned on creation; editable only
   // with categories.prefix.edit. Nullable so pre-existing categories can be
   // backfilled without a destructive migration.
-  codePrefix   String? @unique
+  codePrefix   String?  @unique
   // Next sequence number to hand out within this category
-  nextSequence Int     @default(1)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  nextSequence Int      @default(1)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   products        Product[]
+  subcategories   ProductSubcategory[]
   productRequests ProductRequest[]
 
   @@map("product_categories")
 }
 
-enum ProductKind {
-  RAW       // bought in and consumed by a production run
-  FINISHED  // made by a run, or bought whole
-  KIT       // never stocked — a recipe of finished goods, assembled at dispatch
-}
-
-model Product {
-  id         String      @id @default(cuid())
-  code       String      @unique
+// The second level of the catalog: Electronics → PCB, Resistor, Capacitor.
+//
+// A subcategory belongs to exactly one category, which is why its name is
+// unique per category rather than globally — "Bracket" under Mechanical and
+// "Bracket" under Fabrication are different things and both are allowed.
+//
+// `code` is OPTIONAL and, when set, becomes the middle segment of every product
+// code in it:
+//
+//   Electronics (1004) + PCB + "3W_CONTROL_BOARD" → 1004-PCB-3W_CONTROL_BOARD
+//   Electronics (1004) + (no code) + "TV55"       → 1004-TV55
+//
+// The second shape is what every product code looked like before subcategories
+// existed, so leaving the code empty keeps the old format and nothing has to be
+// renumbered. Whether a code is required at all is a setting — see CatalogConfig.
+model ProductSubcategory {
+  id         String   @id @default(cuid())
   name       String
   categoryId String
-  kind       ProductKind @default(RAW)
-  // Pieces, metres, kilograms… a recipe line is meaningless without it
-  unit       String      @default("pcs")
-  isActive   Boolean     @default(true)
+  // Typed by whoever creates it, never generated, exactly like a category's
+  // code. Null means this subcategory adds nothing to a product code.
+  code       String?
+  isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  category     ProductCategory @relation(fields: [categoryId], references: [id])
-  stockEntries StockEntry[]
-  siteRequests SiteRequest[]
+  category        ProductCategory  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  products        Product[]
+  productRequests ProductRequest[]
+
+  // Unique WITHIN a category, not globally — see the note above.
+  @@unique([categoryId, name])
+  @@unique([categoryId, code])
+  @@index([categoryId])
+  @@map("product_subcategories")
+}
+
+enum ProductKind {
+  RAW // bought in and consumed by a production run
+  FINISHED // made by a run, or bought whole
+  KIT // "Ready goods": bought whole, used or sold as it is. Never made here, never has a BOM
+}
+
+model Product {
+  id            String      @id @default(cuid())
+  code          String      @unique
+  name          String
+  // What it actually is, in words — "BLDC Control board" for 3W_CONTROL_BOARD.
+  // The name is a handle people type; this is the sentence that tells somebody
+  // picking from a list whether they have the right thing.
+  description   String?
+  categoryId    String
+  // Null for products that predate subcategories, and for categories that have
+  // none. Whether a new product must have one is a setting — see CatalogConfig.
+  subcategoryId String?
+  kind          ProductKind @default(RAW)
+  // Pieces, metres, kilograms… a recipe line is meaningless without it
+  unit          String      @default("pcs")
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  category           ProductCategory     @relation(fields: [categoryId], references: [id])
+  // Restrict, not the default SetNull: deleting a subcategory that products are
+  // filed under must fail loudly rather than quietly unfiling them. The action
+  // refuses first with a readable message; this is the backstop behind it.
+  subcategory        ProductSubcategory? @relation(fields: [subcategoryId], references: [id], onDelete: Restrict)
+  stockEntries       StockEntry[]
+  siteRequests       SiteRequest[]
   purchaseIntents    PurchaseIntent[]
   purchaseOrderLines PurchaseOrderLine[]
-  billsOfMaterials BillOfMaterials[] @relation("BomProduct")
-  usedInBomLines   BomLine[]         @relation("BomComponent")
-  builds           Build[]           @relation("BuiltProduct")
+  needLists          NeedList[]
+  vendors            ProductVendor[]
+  stockLevels        StockLevel[]
+  billsOfMaterials   BillOfMaterials[]   @relation("BomProduct")
+  usedInBomLines     BomLine[]           @relation("BomComponent")
+  builds             Build[]             @relation("BuiltProduct")
 
   @@index([categoryId])
+  @@index([subcategoryId])
   @@index([name])
   @@index([kind])
   @@map("products")
@@ -402,19 +468,23 @@ enum BomStatus {
 }
 
 model BillOfMaterials {
-  id          String    @id @default(cuid())
-  productId   String
-  version     Int       @default(1)
-  status      BomStatus @default(PUBLISHED)
+  id                 String    @id @default(cuid())
+  productId          String
+  version            Int       @default(1)
+  status             BomStatus @default(PUBLISHED)
   // Set when a manager sends one back, so the author knows what to fix
-  rejectionReason String?
-  submittedAt     DateTime?
-  approvedById    String?
-  approvedAt      DateTime?
+  rejectionReason    String?
+  submittedAt        DateTime?
+  approvedById       String?
+  approvedAt         DateTime?
   // Exactly one version per product is the one new work is built to
-  isActive    Boolean  @default(true)
-  notes       String?
-  createdById String
+  isActive           Boolean   @default(true)
+  notes              String?
+  // Low-stock cover: every component is watched at the sites that build this
+  // product, with a minimum of what N units need (quantity per unit × N).
+  // Carried to each new version. See src/lib/low-stock-bom.ts.
+  lowStockBuilds     Int       @default(1)
+  createdById        String
   // The department the author belonged to when they submitted it. A product
   // belongs to no department, so this is what routes approval to the right
   // manager: R&D's work goes to R&D's manager, Production's to Production's.
@@ -422,15 +492,15 @@ model BillOfMaterials {
   // stays approvable by anyone holding the key — otherwise an admin's
   // correction could never be signed off.
   authorDepartmentId String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  product    Product   @relation("BomProduct", fields: [productId], references: [id], onDelete: Cascade)
-  createdBy  User      @relation("BomAuthor", fields: [createdById], references: [id])
-  approvedBy User?     @relation("BomApprover", fields: [approvedById], references: [id])
+  product          Product     @relation("BomProduct", fields: [productId], references: [id], onDelete: Cascade)
+  createdBy        User        @relation("BomAuthor", fields: [createdById], references: [id])
+  approvedBy       User?       @relation("BomApprover", fields: [approvedById], references: [id])
   authorDepartment Department? @relation("BomAuthorDepartment", fields: [authorDepartmentId], references: [id])
-  lines      BomLine[]
-  builds     Build[]
+  lines            BomLine[]
+  builds           Build[]
 
   @@unique([productId, version])
   @@index([productId])
@@ -475,27 +545,27 @@ enum BuildStatus {
 }
 
 model Build {
-  id          String      @id @default(cuid())
-  buildNumber String      @unique
-  productId   String
+  id                String      @id @default(cuid())
+  buildNumber       String      @unique
+  productId         String
   // The exact BOM version this was built to, so a later revision never rewrites
   // what was already made
-  bomId       String
+  bomId             String
   // How many were STARTED. How many are finished is the sum of the entries
   // this build produced — derived, never stored, so the two can never disagree.
-  quantity    Int
-  locationId  String
-  status      BuildStatus @default(COMPLETED)
-  notes       String?
-  builtById   String
-  reversedAt  DateTime?
-  completedAt DateTime?
+  quantity          Int
+  locationId        String
+  status            BuildStatus @default(COMPLETED)
+  notes             String?
+  builtById         String
+  reversedAt        DateTime?
+  completedAt       DateTime?
   // Set when a run is closed with less finished than started. The components
   // for the shortfall stay consumed — they are in scrap or half-built units,
   // not back on the shelf.
   closedShortReason String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 
   product      Product            @relation("BuiltProduct", fields: [productId], references: [id])
   bom          BillOfMaterials    @relation(fields: [bomId], references: [id])
@@ -547,6 +617,10 @@ model ProductRequest {
   type          ProductRequestType
   name          String
   categoryId    String?
+  // What the asker suggested. The reviewer can change both when approving —
+  // they are the one who has to satisfy whatever the catalog rules require.
+  subcategoryId String?
+  description   String?
   notes         String?
   status        RequestStatus      @default(PENDING)
   reviewNote    String?
@@ -555,9 +629,13 @@ model ProductRequest {
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
-  category    ProductCategory? @relation(fields: [categoryId], references: [id])
-  requestedBy User             @relation("ProductRequester", fields: [requestedById], references: [id])
-  reviewedBy  User?            @relation("ProductRequestReviewer", fields: [reviewedById], references: [id])
+  category    ProductCategory?    @relation(fields: [categoryId], references: [id])
+  // Restrict, not the default SetNull: deleting a subcategory that products are
+  // filed under must fail loudly rather than quietly unfiling them. The action
+  // refuses first with a readable message; this is the backstop behind it.
+  subcategory ProductSubcategory? @relation(fields: [subcategoryId], references: [id])
+  requestedBy User                @relation("ProductRequester", fields: [requestedById], references: [id])
+  reviewedBy  User?               @relation("ProductRequestReviewer", fields: [reviewedById], references: [id])
 
   @@index([status])
   @@index([requestedById])
@@ -626,72 +704,81 @@ enum StockSource {
 }
 
 model StockEntry {
-  id              String           @id @default(cuid())
-  entryNumber     String           @unique
-  source          StockSource      @default(PURCHASED)
+  id                   String           @id @default(cuid())
+  entryNumber          String           @unique
+  source               StockSource      @default(PURCHASED)
   // Set only on entries a build produced. Not unique — a run finished in two
   // goes produces two entries, each with its own batch.
-  buildId         String?
+  buildId              String?
   // Set when these goods arrived against a purchase order line. This is what
   // makes the outstanding quantity derivable rather than stored.
-  purchaseOrderLineId String?
+  purchaseOrderLineId  String?
+  // Set when this entry is one line of a delivery booked in together — several
+  // products (any categories) that arrived at once on one invoice.
+  deliveryId           String?
   // Set only on entries a received consignment produced — the line of the
   // dispatch these goods arrived on. Without it a transferred entry looks like
   // a fresh purchase from the original vendor at a site that never bought it.
   sourceDispatchItemId String?
-  productId       String?
-  itemCode        String?
-  itemName        String
+  productId            String?
+  itemCode             String?
+  itemName             String
   // Snapshotted from the vendor at entry time so a later rename never rewrites
   // history, and so pre-vendor-master entries keep their typed value.
-  vendorId        String?
-  supplierName    String
-  quantity        Int
-  unitPrice       Float
-  totalPrice      Float
-  invoiceNumber   String?
+  vendorId             String?
+  supplierName         String
+  quantity             Int
+  unitPrice            Float
+  totalPrice           Float
+  invoiceNumber        String?
   // Where this stock is held. Null only on entries that predate locations.
-  locationId      String?
+  locationId           String?
   // The batch these goods belong to. Typed by the production team on a run
   // (phase 7) or by hand for a supplier lot. A dispatch line inherits it rather
   // than anyone retyping it, so two shipments of one batch always agree.
-  batchNumber     String?
+  batchNumber          String?
+  // Where these goods sit in the store: "rack.row", e.g. "10.3" — rack 10, row
+  // 3. Set when booked in, changed when the goods are moved along the shelves.
+  // See src/lib/racks.ts.
+  rackLocation         String?
   // Set when the goods ship straight from the vendor to a client without
   // reaching our warehouse — it still books in here, then leaves as a dispatch.
-  clientId        String?
+  clientId             String?
   // Name/city snapshotted at entry time so renaming a client never rewrites
   // history, and so pre-client-master entries keep their typed values.
-  clientName      String?
-  clientLocation  String?
+  clientName           String?
+  clientLocation       String?
   // Default nature of this stock when it moves into a department. Everything
   // sits in central stock as plain stock; the movement decides what it becomes.
-  isAsset         Boolean          @default(false)
-  status          StockEntryStatus @default(DRAFT)
-  rejectionReason String?
-  customFields    Json?
-  departmentId    String?
-  createdById     String
-  approvedById    String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  isAsset              Boolean          @default(false)
+  status               StockEntryStatus @default(DRAFT)
+  rejectionReason      String?
+  customFields         Json?
+  departmentId         String?
+  createdById          String
+  approvedById         String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
-  product     Product?               @relation(fields: [productId], references: [id])
-  location    Location?              @relation(fields: [locationId], references: [id])
-  client      Client?                @relation(fields: [clientId], references: [id])
-  vendor      Vendor?                @relation(fields: [vendorId], references: [id])
-  department  Department?            @relation(fields: [departmentId], references: [id])
-  createdBy   User                   @relation("StockEntryCreator", fields: [createdById], references: [id])
-  approvedBy  User?                  @relation("StockEntryApprover", fields: [approvedById], references: [id])
-  warranty         StockEntryWarranty?
-  attachments      StockEntryAttachment[]
-  approvals        StockApproval[]
-  issues           StockIssue[]
-  transferRequests StockTransferRequest[]
-  dispatchItems    DispatchItem[]
-  build            Build?             @relation("BuildOutput", fields: [buildId], references: [id])
-  buildConsumptions BuildConsumption[]
-  purchaseOrderLine PurchaseOrderLine? @relation(fields: [purchaseOrderLineId], references: [id])
-  sourceDispatchItem DispatchItem?    @relation("TransferredIn", fields: [sourceDispatchItemId], references: [id])
+  product            Product?               @relation(fields: [productId], references: [id])
+  location           Location?              @relation(fields: [locationId], references: [id])
+  client             Client?                @relation(fields: [clientId], references: [id])
+  vendor             Vendor?                @relation(fields: [vendorId], references: [id])
+  department         Department?            @relation(fields: [departmentId], references: [id])
+  createdBy          User                   @relation("StockEntryCreator", fields: [createdById], references: [id])
+  approvedBy         User?                  @relation("StockEntryApprover", fields: [approvedById], references: [id])
+  warranty           StockEntryWarranty?
+  attachments        StockEntryAttachment[]
+  approvals          StockApproval[]
+  issues             StockIssue[]
+  writeOffs          StockWriteOff[]
+  transferRequests   StockTransferRequest[]
+  dispatchItems      DispatchItem[]
+  build              Build?                 @relation("BuildOutput", fields: [buildId], references: [id])
+  buildConsumptions  BuildConsumption[]
+  purchaseOrderLine  PurchaseOrderLine?     @relation(fields: [purchaseOrderLineId], references: [id])
+  delivery           Delivery?              @relation(fields: [deliveryId], references: [id])
+  sourceDispatchItem DispatchItem?          @relation("TransferredIn", fields: [sourceDispatchItemId], references: [id])
 
   @@index([status])
   @@index([departmentId])
@@ -703,7 +790,109 @@ model StockEntry {
   @@index([batchNumber])
   @@index([purchaseOrderLineId])
   @@index([sourceDispatchItemId])
+  @@index([deliveryId])
+  @@index([rackLocation])
   @@map("stock_entries")
+}
+
+// Several stock entries that arrived together — one box, one invoice, many
+// products, possibly from different categories. Only a number and a date:
+// vendor, invoice number, site and creator stay on each entry exactly as they
+// are for a single entry, so every report, move, build and order that reads an
+// entry keeps working without knowing deliveries exist. It groups them for
+// booking in, attaching documents once, submitting and approving together.
+model Delivery {
+  id             String       @id @default(cuid())
+  deliveryNumber String       @unique
+  createdAt      DateTime     @default(now())
+  entries        StockEntry[]
+
+  @@map("deliveries")
+}
+
+// Why stock stopped being stock. Free text still carries the detail; this is
+// what the wastage report groups and totals by.
+enum WriteOffReason {
+  DAMAGED // broke, got wet, was dropped
+  LOST // not there at a stock count, and nobody knows where it went
+  EXPIRED // shelf life ran out — adhesives, batteries
+  DEFECTIVE // arrived unusable, or failed on first use
+  OBSOLETE // still fine, but nothing we make uses it any more
+  OTHER // the notes explain it
+}
+
+// A write-off destroys value on paper, so a manager signs it off. The states
+// mirror StockEntryStatus deliberately — one review vocabulary for the app.
+enum WriteOffStatus {
+  PENDING // raised, waiting for a manager
+  APPROVED // signed off; the stock is gone
+  REJECTED // declined; the stock is released back
+  REVERSED // was approved, then undone — a mistake, corrected in the open
+}
+
+// Stock marked unusable: damaged, lost, expired, obsolete.
+//
+// This is the FIFTH drawdown on a stock entry, alongside issues, pending
+// transfers, dispatches and builds — see src/lib/stock-availability.ts, which
+// is the one place all five are subtracted. Adding it there is what makes the
+// stock list, dispatch picker, fulfilment plan, transfers and reports agree
+// about wastage without any of them knowing it exists.
+//
+// WHERE the loss lands is decided by `stockIssueId`, and getting this backwards
+// would count every loss twice:
+//
+//   stockIssueId null   the goods were in central stock. Comes off the entry.
+//   stockIssueId set    the goods were already in a department. Comes off that
+//                       department's holding ONLY — never off the entry too,
+//                       because the entry already had the whole issued
+//                       quantity subtracted when the stock moved.
+//
+// A PENDING write-off does not reduce what is HELD (the goods are still on the
+// shelf) but does reduce what is AVAILABLE (nobody may promise them away).
+// That is exactly how a pending StockTransferRequest already behaves.
+model StockWriteOff {
+  id              String         @id @default(cuid())
+  writeOffNumber  String         @unique
+  stockEntryId    String
+  // Set when what was written off was sitting in a department rather than in
+  // central stock. See the header above — this field decides the arithmetic.
+  stockIssueId    String?
+  // Snapshotted alongside the issue so the wastage report can group by
+  // department without walking back through the issue on every row.
+  departmentId    String?
+  // Float, not Int: 3.5 metres of damaged cable is a real write-off, and
+  // BuildConsumption already stores quantities this way for the same reason.
+  quantity        Float
+  reason          WriteOffReason
+  // Required, and never blank — "why" is the entire point of the record.
+  notes           String
+  status          WriteOffStatus @default(PENDING)
+  // Why a manager declined it, readable by whoever raised it.
+  rejectionReason String?
+  // Why an approved write-off was undone. The record stays visible as REVERSED
+  // rather than being deleted, so history is corrected in the open.
+  reversalReason  String?
+  reversedAt      DateTime?
+  reversedById    String?
+  raisedById      String
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  stockEntry StockEntry  @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  stockIssue StockIssue? @relation(fields: [stockIssueId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id])
+  raisedBy   User        @relation("WriteOffRaiser", fields: [raisedById], references: [id])
+  reviewedBy User?       @relation("WriteOffReviewer", fields: [reviewedById], references: [id])
+  reversedBy User?       @relation("WriteOffReverser", fields: [reversedById], references: [id])
+
+  @@index([stockEntryId])
+  @@index([stockIssueId])
+  @@index([departmentId])
+  @@index([status])
+  @@index([raisedById])
+  @@map("stock_write_offs")
 }
 
 // Movement of approved stock from central stock into a department
@@ -720,9 +909,12 @@ model StockIssue {
   issuedById   String
   createdAt    DateTime @default(now())
 
-  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
-  department Department @relation(fields: [departmentId], references: [id])
-  issuedBy   User       @relation("StockIssueCreator", fields: [issuedById], references: [id])
+  stockEntry StockEntry      @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  department Department      @relation(fields: [departmentId], references: [id])
+  issuedBy   User            @relation("StockIssueCreator", fields: [issuedById], references: [id])
+  // Losses charged against this department's holding specifically, rather than
+  // against central stock. See StockWriteOff for why that distinction matters.
+  writeOffs  StockWriteOff[]
 
   @@index([stockEntryId])
   @@index([departmentId])
@@ -730,11 +922,11 @@ model StockIssue {
 }
 
 enum DispatchStatus {
-  PENDING      // raised, waiting for the destination location to accept
-  IN_TRANSIT   // accepted and on the way (client dispatches start here)
-  RECEIVED     // arrived and confirmed
-  REJECTED     // the destination refused it
-  CANCELLED    // the origin withdrew it
+  PENDING // raised, waiting for the destination location to accept
+  IN_TRANSIT // accepted and on the way (client dispatches start here)
+  RECEIVED // arrived and confirmed
+  REJECTED // the destination refused it
+  CANCELLED // the origin withdrew it
 }
 
 enum DispatchDestination {
@@ -764,12 +956,12 @@ model Dispatch {
   acceptedAt       DateTime?
   receivedAt       DateTime?
 
-  originLocation Location  @relation("DispatchOrigin", fields: [originLocationId], references: [id])
-  toLocation     Location? @relation("DispatchDestination", fields: [toLocationId], references: [id])
-  client         Client?   @relation(fields: [clientId], references: [id])
-  createdBy      User      @relation("DispatchCreator", fields: [createdById], references: [id])
-  acceptedBy     User?     @relation("DispatchAcceptor", fields: [acceptedById], references: [id])
-  receivedBy     User?     @relation("DispatchReceiver", fields: [receivedById], references: [id])
+  originLocation Location       @relation("DispatchOrigin", fields: [originLocationId], references: [id])
+  toLocation     Location?      @relation("DispatchDestination", fields: [toLocationId], references: [id])
+  client         Client?        @relation(fields: [clientId], references: [id])
+  createdBy      User           @relation("DispatchCreator", fields: [createdById], references: [id])
+  acceptedBy     User?          @relation("DispatchAcceptor", fields: [acceptedById], references: [id])
+  receivedBy     User?          @relation("DispatchReceiver", fields: [receivedById], references: [id])
   items          DispatchItem[]
   // Set when this consignment exists because another site asked for it
   siteRequest    SiteRequest?
@@ -793,8 +985,8 @@ model DispatchItem {
   // before a batch was known; not unique, because one batch ships many times.
   batchNumber  String?
 
-  dispatch   Dispatch   @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
-  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id])
+  dispatch   Dispatch     @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  stockEntry StockEntry   @relation(fields: [stockEntryId], references: [id])
   // The entry this line produced at the destination, once delivery was
   // confirmed. A line books in once, so this holds at most one.
   receivedAs StockEntry[] @relation("TransferredIn")
@@ -810,17 +1002,17 @@ model DispatchItem {
 // ============================================
 
 enum PurchaseIntentStatus {
-  PENDING    // raised, waiting for procurement to verify it
-  APPROVED   // verified, ready to be put on an order
-  ORDERED    // a purchase order now carries it
-  REJECTED   // procurement said no
-  CANCELLED  // the asker withdrew it
+  PENDING // raised, waiting for procurement to verify it
+  APPROVED // verified, ready to be put on an order
+  ORDERED // a purchase order now carries it
+  REJECTED // procurement said no
+  CANCELLED // the asker withdrew it
 }
 
 enum PurchaseOrderStatus {
-  OPEN       // placed with the vendor, not fully delivered
-  CLOSED     // everything arrived, or closed short deliberately
-  CANCELLED  // never going ahead
+  OPEN // placed with the vendor, not fully delivered
+  CLOSED // everything arrived, or closed short deliberately
+  CANCELLED // never going ahead
 }
 
 // "We need 40 bearings from Acme."
@@ -842,6 +1034,9 @@ model PurchaseIntent {
   neededBy      DateTime?
   notes         String?
   status        PurchaseIntentStatus @default(PENDING)
+  // Set when this need was raised as one line of a list — everything a build
+  // was short of, or a low-stock alert. Null for a need somebody typed in.
+  needListId    String?
   reviewNote    String?
   requestedById String
   reviewedById  String?
@@ -855,13 +1050,108 @@ model PurchaseIntent {
   location    Location?           @relation(fields: [locationId], references: [id])
   requestedBy User                @relation("IntentRequester", fields: [requestedById], references: [id])
   reviewedBy  User?               @relation("IntentReviewer", fields: [reviewedById], references: [id])
+  needList    NeedList?           @relation(fields: [needListId], references: [id])
   orderLines  PurchaseOrderLine[]
 
   @@index([status])
   @@index([productId])
   @@index([vendorId])
   @@index([departmentId])
+  @@index([needListId])
   @@map("purchase_intents")
+}
+
+// Who we can buy a product from, and how long they take.
+//
+// Lead time lives on the PAIR, not on the product or the vendor alone: the same
+// bearing can take two days from a Bengaluru stockist and three weeks from the
+// manufacturer. It is what turns "we are low" into "order today" — see the
+// low-stock alert in src/lib/low-stock.ts.
+model ProductVendor {
+  id           String   @id @default(cuid())
+  productId    String
+  vendorId     String
+  // Calendar days from ordering to the goods arriving
+  leadTimeDays Int
+  // The one to order from when stock runs low. At most one per product is
+  // treated as preferred; the alert falls back to the quickest otherwise.
+  isPreferred  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  vendor  Vendor  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, vendorId])
+  @@index([vendorId])
+  @@map("product_vendors")
+}
+
+// The least of a product a site should ever be holding.
+//
+// Setting one is what puts a product under watch: the low-stock alert looks
+// only at products with a minimum at that site. Per site, because Bengaluru and
+// Hyderabad use things at different rates and restock from different places.
+model StockLevel {
+  id          String   @id @default(cuid())
+  productId   String
+  locationId  String
+  // Float, like every quantity that can be cut: 50 metres of cable is a minimum
+  minimum     Float
+  // Added and kept up to date from published bills of materials. Becomes false
+  // the moment someone sets the minimum by hand, and is then never touched
+  // automatically again.
+  fromBom     Boolean  @default(false)
+  // Someone stopped watching it. Kept (not deleted) so the BOM sync does not
+  // add it straight back; watching it again by hand clears it.
+  stopped     Boolean  @default(false)
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, locationId])
+  @@index([locationId])
+  @@map("stock_levels")
+}
+
+// Why a list of needs was raised in one go.
+enum NeedSource {
+  BUILD_SHORTAGE // a build could not go ahead: these components were short
+  LOW_STOCK // stock fell to its reorder point
+}
+
+// Several needs raised together, and the reason they belong together.
+//
+// A build that is short of five components used to leave the builder to type
+// five separate needs by hand — and the buyer then saw five unrelated lines,
+// with nothing saying they were one problem. A list keeps them together: one
+// number, one reason ("short for 5 × BLDC_Controller at Bengaluru"), and one
+// document the buyer can download and send on.
+//
+// The needs inside are ordinary PurchaseIntents, so verifying and ordering them
+// works exactly as it always has. The list adds grouping and nothing else.
+model NeedList {
+  id          String     @id @default(cuid())
+  listNumber  String     @unique
+  source      NeedSource
+  // For a build shortage: what was being built, how many, and where. For a
+  // low-stock alert: the site whose stock ran low.
+  productId   String?
+  quantity    Int?
+  locationId  String?
+  notes       String?
+  createdById String
+  createdAt   DateTime   @default(now())
+
+  product   Product?         @relation(fields: [productId], references: [id])
+  location  Location?        @relation(fields: [locationId], references: [id])
+  createdBy User             @relation("NeedListCreator", fields: [createdById], references: [id])
+  needs     PurchaseIntent[]
+
+  @@index([createdAt])
+  @@map("need_lists")
 }
 
 // The order actually placed with a vendor.
@@ -907,6 +1197,11 @@ model PurchaseOrderLine {
   // The need this line was raised to satisfy, when it came from one
   intentId        String?
   notes           String?
+  // What the vendor promised for this line, in days, and the date that makes it
+  // due. Pre-filled from the vendor's recorded lead time for the product; what
+  // actually arrived is compared against it. See src/lib/order-timing.ts.
+  leadTimeDays    Int?
+  expectedBy      DateTime?
 
   purchaseOrder PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   product       Product         @relation(fields: [productId], references: [id])
@@ -936,10 +1231,10 @@ model ProcurementFlowConfig {
 }
 
 enum SiteRequestStatus {
-  PENDING    // raised, waiting for the holding site to answer
-  ACCEPTED   // agreed, and a dispatch has been raised to carry it
-  REJECTED   // the holding site declined
-  CANCELLED  // the asking site withdrew it
+  PENDING // raised, waiting for the holding site to answer
+  ACCEPTED // agreed, and a dispatch has been raised to carry it
+  REJECTED // the holding site declined
+  CANCELLED // the asking site withdrew it
 }
 
 // One site asking another for stock it does not have.
@@ -986,16 +1281,16 @@ model SiteRequest {
 // on the entry. Its own table so StockEntry stays lean and "has warranty
 // details" is a simple existence check.
 model StockEntryWarranty {
-  id            String    @id @default(cuid())
-  stockEntryId  String    @unique
-  purchaseDate  DateTime
-  modelNumber   String
-  serialNumber  String
-  modelName     String?
-  warrantyTill  DateTime
-  notes         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id           String   @id @default(cuid())
+  stockEntryId String   @unique
+  purchaseDate DateTime
+  modelNumber  String
+  serialNumber String
+  modelName    String?
+  warrantyTill DateTime
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   stockEntry StockEntry @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
 
@@ -1053,6 +1348,28 @@ model AttachmentTypeConfig {
 // product, and a product does not belong to a department.
 //
 // A single row — the id is fixed so there can only ever be one.
+// How strict the catalog is. One row, like the other flow configs.
+//
+// Subcategories and descriptions both ship OPTIONAL, because turning them on
+// against a catalog that has neither would block every product form until
+// somebody backfilled forty rows. An admin tightens each one when the catalog
+// is ready for it, and the same three booleans drive the form's validation and
+// the server's, so the two cannot disagree about what is required.
+model CatalogConfig {
+  id                     String   @id @default("singleton")
+  // Must a product be filed under a subcategory?
+  requireSubcategory     Boolean  @default(false)
+  // Must a subcategory carry a code? A subcategory without one contributes
+  // nothing to a product code, which is the pre-subcategory format.
+  requireSubcategoryCode Boolean  @default(false)
+  // Must a product say, in words, what it is?
+  requireDescription     Boolean  @default(false)
+  updatedById            String?
+  updatedAt              DateTime @updatedAt
+
+  @@map("catalog_config")
+}
+
 model BomFlowConfig {
   id               String   @id @default("singleton")
   // Turn this off and anyone who can write a bill of materials publishes it
@@ -1113,4 +1430,61 @@ model StockApproval {
   @@unique([stockEntryId, stepOrder])
   @@index([stockEntryId])
   @@map("stock_approvals")
+}
+
+// What a notification is about, which is also what someone chooses to receive
+// by mail. See src/lib/notify.ts.
+enum NotificationKind {
+  // Something is waiting for this person to approve, verify or answer
+  ACTION
+  // Something this person raised was decided: approved, sent back, ordered…
+  DECIDED
+  // A watched product needs ordering at a site
+  LOW_STOCK
+  // A purchase order line is past its expected date
+  ORDER_LATE
+}
+
+// One message to one person. Shown in the bell for everyone; mailed as well if
+// they chose that kind, or gathered into their morning summary.
+model Notification {
+  id         String           @id @default(cuid())
+  userId     String
+  kind       NotificationKind
+  title      String
+  body       String?
+  // Where pressing it takes them
+  href       String?
+  // Stops one condition being announced twice — "low:<product>:<site>:<since>"
+  dedupeKey  String?
+  readAt     DateTime?
+  emailedAt  DateTime?
+  digestedAt DateTime?
+  createdAt  DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// Housekeeping the app keeps for itself: when the low-stock and late-order
+// checks last ran, so page loads trigger them at most every few minutes.
+model SystemState {
+  id            String    @id @default("singleton")
+  watchChecksAt DateTime?
+
+  @@map("system_state")
+}
+
+// Failed sign-ins, counted where every server instance can see them — one row
+// per "email|address" and one per address. See src/lib/login-throttle.ts.
+model LoginFailure {
+  key     String   @id
+  count   Int
+  firstAt DateTime
+
+  @@map("login_failures")
 }

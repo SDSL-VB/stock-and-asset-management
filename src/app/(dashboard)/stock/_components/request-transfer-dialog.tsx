@@ -25,6 +25,22 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { Loader2, SendHorizonal } from "lucide-react";
 
+/**
+ * Asking for central stock to be moved into a department.
+ *
+ * The "ask" half of journey 3, for somebody who holds
+ * `assets.transfer.request` but not `stock.move`. Their department's manager
+ * approves it, and **approving IS the movement** — there is no second step
+ * afterwards.
+ *
+ * The quantity offered is `availableQuantity()`, which unlike the "take" dialog
+ * also subtracts OTHER pending requests. Two people asking for the same five
+ * bearings should not both be told they can have them.
+ *
+ * A pending request does not reduce what is physically here — nothing has moved,
+ * somebody has only asked — which is why the two figures differ at all.
+ */
+
 interface Props {
   entryId: string;
   itemName: string;

@@ -30,8 +30,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files. The filled-in ones never get committed; the template always does,
+# because a fresh clone has no other way to learn which variables exist.
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -40,5 +42,13 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Uploaded documents. These go to Vercel Blob now (src/app/api/upload/route.ts);
+# the folder only holds what the local-filesystem era left behind. Ignoring the
+# WHOLE of /public, as this once did, also hid the logo and the icons, so the
+# rule names just the upload folder.
+/public/uploads
 
-/public
+# Prisma query-probe output, written next to the app when profiling.
+*probe.log
+# Database dumps: contain password hashes, never commit
+backups/

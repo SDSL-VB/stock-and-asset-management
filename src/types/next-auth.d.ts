@@ -23,6 +23,8 @@ declare module "next-auth" {
     hierarchyLevel: number;
     /** True until the person replaces a password an admin chose for them. */
     mustChangePassword?: boolean;
+    /** When the password was last set, as a number — see src/auth.ts */
+    credentialStamp?: number;
   }
 
   interface Session {
@@ -51,5 +53,6 @@ declare module "next-auth/jwt" {
     inCentralStock?: boolean;
     hierarchyLevel: number;
     mustChangePassword?: boolean;
+    credentialStamp?: number;
   }
 }

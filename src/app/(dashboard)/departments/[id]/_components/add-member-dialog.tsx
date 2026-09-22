@@ -26,6 +26,22 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Loader2, Search, UserPlus } from "lucide-react";
 
+/**
+ * Putting somebody into a department — an existing person, or a new account.
+ *
+ * Searching first and offering to create only when nobody is found is deliberate:
+ * a second account for someone who already has one splits their history in two
+ * and is tedious to undo.
+ *
+ * Creating an account here sets `mustChangePassword`, exactly as creating one on
+ * the Users page does. Whoever is added is sent to /settings/password on first
+ * use and can reach nothing else until they have replaced the password somebody
+ * else chose for them.
+ *
+ * Moving a person into this department also gives them its SITE, because that is
+ * where a person's location comes from.
+ */
+
 interface Candidate {
   id: string;
   name: string;

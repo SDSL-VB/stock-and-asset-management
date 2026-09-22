@@ -21,12 +21,50 @@
  * so plainly instead of failing in a confusing way.
  */
 
-/** Any URL served by our own blob store, private or public. */
-const BLOB_HOST = /^https:\/\/[a-z0-9-]+\.(private|public)\.blob\.vercel-storage\.com\//i;
+/**
+ * Our own store's id, which is also its host name ("store_vABc…" is served at
+ * https://vabc….private.blob.vercel-storage.com). From BLOB_STORE_ID, or from
+ * the read-write token ("vercel_blob_rw_<id>_<secret>"). Null when neither is
+ * set, as on a copy with no file storage.
+ */
+function ownStoreHost(): string | null {
+  const id =
+    process.env.BLOB_STORE_ID?.replace(/^store_/, "") ??
+    process.env.BLOB_READ_WRITE_TOKEN?.match(/^vercel_blob_rw_([A-Za-z0-9]+)_/)?.[1];
+  return id ? id.toLowerCase() : null;
+}
 
-/** True when this came from our blob store and not from somewhere on the web. */
+/**
+ * True only for a file in OUR blob store — not another Vercel store, and not
+ * anywhere else on the web. Without the store pinned, anyone could record an
+ * attachment pointing at a file of their choosing.
+ */
 export function isBlobUrl(fileUrl: string): boolean {
-  return BLOB_HOST.test(fileUrl);
+  let url: URL;
+  try {
+    url = new URL(fileUrl);
+  } catch {
+    return false;
+  }
+  const match = url.protocol === "https:" && url.hostname.match(/^([a-z0-9-]+)\.(private|public)\.blob\.vercel-storage\.com$/i);
+  if (!match) return false;
+  const own = ownStoreHost();
+  return own === null || match[1].toLowerCase() === own;
+}
+
+/**
+ * The same file however its address was written: scheme, host and path only,
+ * with any "?…" or "#…" dropped. Attachments are compared by this, so a copy
+ * recorded with an extra query string cannot pass for a different file — or
+ * be used to delete someone else's.
+ */
+export function canonicalBlobUrl(fileUrl: string): string {
+  try {
+    const url = new URL(fileUrl);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return fileUrl;
+  }
 }
 
 /** True for an attachment saved back when files were written to local disk. */

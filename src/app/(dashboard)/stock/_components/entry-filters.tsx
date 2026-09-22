@@ -22,7 +22,7 @@ import { KIND_LABEL, type ProductKind } from "@/lib/vocabulary";
  */
 
 /** How a batch of goods came to be here. Narrower than the `source` column. */
-export type SourceFilter = "ALL" | "FRESH" | "ORDER" | "BUILT" | "TRANSFERRED";
+type SourceFilter = "ALL" | "FRESH" | "ORDER" | "BUILT" | "TRANSFERRED";
 
 export const SOURCE_LABEL: Record<Exclude<SourceFilter, "ALL">, string> = {
   FRESH: "Fresh stock",
@@ -39,7 +39,7 @@ export type Filters = {
   holding: "ALL" | "STOCK" | "ASSET";
 };
 
-export const NO_FILTERS: Filters = {
+const NO_FILTERS: Filters = {
   source: "ALL",
   kind: "ALL",
   category: "ALL",

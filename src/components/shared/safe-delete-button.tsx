@@ -15,7 +15,7 @@ import { Trash2 } from "lucide-react";
  * { force: true } to insist. `blocked` is for the rare case where deleting
  * would genuinely corrupt something else and no amount of insisting helps.
  */
-export type SafeDeleteResult = {
+type SafeDeleteResult = {
   error?: string;
   blocked?: boolean;
   needsConfirmation?: boolean;

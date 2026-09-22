@@ -42,13 +42,6 @@ const KIND_ICONS: Record<string, typeof Package> = {
   KIT: Boxes,
 };
 
-const KIND_FILTER_ITEMS = [
-  { value: "all", label: "Any kind" },
-  { value: "RAW", label: "Raw materials" },
-  { value: "FINISHED", label: "Finished products" },
-  { value: "KIT", label: "Kits" },
-];
-
 const STATE_FILTER_ITEMS = [
   { value: "all", label: "All products" },
   { value: "has", label: "Has a bill of materials" },
@@ -62,13 +55,11 @@ const STATE_FILTER_ITEMS = [
  */
 export function BomCatalog({ products, canEdit, canCreate, canApprove }: Props) {
   const [search, setSearch] = useState("");
-  const [kindFilter, setKindFilter] = useState("all");
   const [stateFilter, setStateFilter] = useState("all");
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return products.filter((p) => {
-      if (kindFilter !== "all" && p.kind !== kindFilter) return false;
       if (stateFilter === "has" && !p.bom) return false;
       if (stateFilter === "pending" && !p.pendingVersion) return false;
       if (stateFilter === "none" && (p.bom || p.pendingVersion)) return false;
@@ -79,7 +70,7 @@ export function BomCatalog({ products, canEdit, canCreate, canApprove }: Props) 
         p.category.name.toLowerCase().includes(q)
       );
     });
-  }, [products, search, kindFilter, stateFilter]);
+  }, [products, search, stateFilter]);
 
   const groups = useMemo(() => {
     const byCategory = new Map<string, { name: string; items: CatalogProduct[] }>();
@@ -106,22 +97,8 @@ export function BomCatalog({ products, canEdit, canCreate, canApprove }: Props) 
             className="pl-9"
           />
         </div>
-        <Select
-          value={kindFilter}
-          items={KIND_FILTER_ITEMS}
-          onValueChange={(v) => setKindFilter((v as string) ?? "all")}
-        >
-          <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="Any kind" />
-          </SelectTrigger>
-          <SelectContent>
-            {KIND_FILTER_ITEMS.map((i) => (
-              <SelectItem key={i.value} value={i.value}>
-                {i.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* No kind filter: only products made here have a bill of materials,
+            so every row here is the same kind */}
         <Select
           value={stateFilter}
           items={STATE_FILTER_ITEMS}

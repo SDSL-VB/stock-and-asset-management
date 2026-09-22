@@ -12,9 +12,10 @@ import {
   type Relink,
   type RecycleEntity,
 } from "@/lib/recycle-bin";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 import type { Prisma } from "@prisma/client";
+import { refusalToAssign } from "@/lib/rbac/authority";
 
 /**
  * Restoring is per-entity because only the entity knows its own shape: which
@@ -169,6 +170,13 @@ export async function restoreRecord(recordId: string) {
 
   const snapshot = record.snapshot as Record<string, unknown>;
   const relinks = (record.relinks as unknown as Relink[]) ?? [];
+
+  // Bringing a person back hands out their role again, so the same rule as
+  // giving someone a role applies — nobody restores an account senior to them
+  if (record.entity === "User" && typeof snapshot.roleId === "string") {
+    const refusal = await refusalToAssign(user, snapshot.roleId);
+    if (refusal) return { error: `You cannot restore this account: ${refusal.charAt(0).toLowerCase()}${refusal.slice(1)}` };
+  }
 
   try {
     await prisma.$transaction(async (tx) => {

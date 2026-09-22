@@ -25,6 +25,7 @@ import {
 import { approveTransferRequest, rejectTransferRequest } from "@/lib/actions/assets";
 import { toast } from "sonner";
 import { Check, Loader2, X } from "lucide-react";
+import { statusPill } from "@/lib/design/status";
 
 /**
  * The transfer queue on the Assets page.
@@ -37,7 +38,7 @@ import { Check, Loader2, X } from "lucide-react";
  * their own department's, and never one they raised themselves.
  */
 
-export type TransferRequest = {
+type TransferRequest = {
   id: string;
   requestNumber: string;
   quantity: number;
@@ -68,14 +69,9 @@ interface Props {
 }
 
 function StatusBadge({ status }: { status: TransferRequest["status"] }) {
-  const classes = {
-    PENDING: "bg-amber-50 text-amber-700 border-amber-200",
-    APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    REJECTED: "bg-red-50 text-red-700 border-red-200",
-  };
   const labels = { PENDING: "Pending", APPROVED: "Approved", REJECTED: "Rejected" };
   return (
-    <Badge variant="outline" className={classes[status]}>
+    <Badge variant="outline" className={statusPill(status)}>
       {labels[status]}
     </Badge>
   );

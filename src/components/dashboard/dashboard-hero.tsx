@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ChevronDown } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 interface DashboardHeroProps {
@@ -13,6 +14,11 @@ interface DashboardHeroProps {
     urgent?: boolean;
     /** Makes the pill a link — e.g. straight to the one item awaiting review. */
     href?: string;
+    /**
+     * Several things waiting: the pill opens a list of them instead, each
+     * linking to where it is dealt with. Takes precedence over `href`.
+     */
+    items?: { id: string; title: string; subtitle: string; href: string }[];
   };
   action?: {
     label: string;
@@ -65,6 +71,33 @@ export function DashboardHero({
               );
               const pillClass =
                 "mt-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-caption font-semibold text-white/90 backdrop-blur-sm";
+              if (highlight.items && highlight.items.length > 0) {
+                return (
+                  <Popover>
+                    <PopoverTrigger
+                      className={cn(
+                        pillClass,
+                        "cursor-pointer transition-colors duration-200 hover:border-white/30 hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none"
+                      )}
+                    >
+                      {pill}
+                      <ChevronDown className="size-3.5" />
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-80 gap-0 p-0">
+                      <ul className="max-h-80 divide-y overflow-y-auto">
+                        {highlight.items.map((item) => (
+                          <li key={item.id}>
+                            <Link href={item.href} className="block px-3 py-2 hover:bg-muted">
+                              <span className="block truncate text-sm font-medium">{item.title}</span>
+                              <span className="block truncate text-micro text-muted-foreground">{item.subtitle}</span>
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    </PopoverContent>
+                  </Popover>
+                );
+              }
               return highlight.href ? (
                 <Link
                   href={highlight.href}

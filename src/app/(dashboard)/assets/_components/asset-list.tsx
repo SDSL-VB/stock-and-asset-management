@@ -21,6 +21,23 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Search, MapPin, Package } from "lucide-react";
+import { WriteOffDialog } from "../../stock/_components/write-off-dialog";
+
+/**
+ * What each department is holding.
+ *
+ * "Asset" is not a separate register in this system: every row here is a
+ * StockIssue, the record of stock having MOVED out of central stock into a
+ * department. The `isAsset` flag on that movement is all the word means.
+ *
+ * Quantities shown are net of write-offs — a department that has written its
+ * damaged stock off is not still holding it. That arithmetic is `heldByIssue()`
+ * in `src/lib/stock-availability.ts`, never `issue.quantity` raw.
+ *
+ * Two permissions shape what is drawn: `canSeeValue` (stock.value.view) hides
+ * the money columns, and `canWriteOff` (stock.writeoff.department) is what puts
+ * the "Report loss" action on a row.
+ */
 
 type Asset = {
   id: string;
@@ -39,14 +56,20 @@ type Asset = {
   issuedByName: string;
   unitPrice: number | null;
   value: number | null;
+  /** How much of this holding is still free to report as unusable */
+  availableToWriteOff: number;
+  /** How much of it has already been written off, if any */
+  writtenOff: number;
 };
 
 interface Props {
   assets: Asset[];
   canSeeValue?: boolean;
+  /** Without this key the write-off column is not rendered at all */
+  canWriteOff?: boolean;
 }
 
-export function AssetList({ assets, canSeeValue = false }: Props) {
+export function AssetList({ assets, canSeeValue = false, canWriteOff = false }: Props) {
   const [search, setSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("all");
 
@@ -149,13 +172,15 @@ export function AssetList({ assets, canSeeValue = false }: Props) {
                   {canSeeValue && <TableHead className="text-right">Value</TableHead>}
                   <TableHead>Received</TableHead>
                   <TableHead>Entry</TableHead>
+                  {/* Not rendered at all without the key — never a dead button */}
+                  {canWriteOff && <TableHead className="text-right">Report</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filtered.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={canSeeValue ? 7 : 6}
+                      colSpan={(canSeeValue ? 7 : 6) + (canWriteOff ? 1 : 0)}
                       className="h-24 text-center text-muted-foreground"
                     >
                       {assets.length === 0
@@ -187,7 +212,16 @@ export function AssetList({ assets, canSeeValue = false }: Props) {
                           {a.locationName ?? "—"}
                         </span>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">{a.quantity}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {a.quantity}
+                        {/* Says why the number dropped, so a holding that
+                            shrank does not just look wrong. */}
+                        {a.writtenOff > 0 && (
+                          <span className="block text-micro font-normal text-status-rejected">
+                            {a.writtenOff} written off
+                          </span>
+                        )}
+                      </TableCell>
                       {canSeeValue && (
                         <TableCell className="text-right tabular-nums">
                           ₹{(a.value ?? 0).toLocaleString("en-IN")}
@@ -204,6 +238,22 @@ export function AssetList({ assets, canSeeValue = false }: Props) {
                           {a.entryNumber}
                         </Link>
                       </TableCell>
+                      {canWriteOff && (
+                        <TableCell className="text-right">
+                          {a.availableToWriteOff > 0 && (
+                            <WriteOffDialog
+                              compact
+                              target={{
+                                kind: "issue",
+                                stockIssueId: a.id,
+                                departmentName: a.departmentName,
+                              }}
+                              itemName={a.itemName}
+                              available={a.availableToWriteOff}
+                            />
+                          )}
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))
                 )}

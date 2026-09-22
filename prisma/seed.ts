@@ -123,7 +123,7 @@ async function main() {
 
   // The roles, the people, and the stock approval flow — one definition,
   // shared with the script that updates a live database.
-  await applyRolesAndPeople(prisma, { log: (line: string) => console.log(`  ${line}`) });
+  await applyRolesAndPeople(prisma, { log: (line: string) => console.log(`  ${line}`), knownPasswords: true });
 
   await prisma.attachmentTypeConfig.createMany({
     data: ATTACHMENT_TYPES.map((type) => ({

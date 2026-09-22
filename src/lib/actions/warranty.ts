@@ -2,9 +2,10 @@
 
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/rbac/check";
-import { PERMISSIONS } from "@/lib/rbac/permissions";
+import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
+import { isStockVisible } from "@/lib/stock-visibility";
 import { warrantySchema } from "@/lib/validations/stock";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 
 /**
@@ -12,18 +13,27 @@ import { revalidatePath } from "next/cache";
  * separate grants: a department manager can see what is still under warranty
  * without being able to alter the record.
  */
+/** The entry, if this person may see it — warranty follows stock visibility. */
+async function visibleEntry(
+  user: Parameters<typeof isStockVisible>[1] & Parameters<typeof resolveStockScope>[0],
+  stockEntryId: string
+) {
+  const entry = await prisma.stockEntry.findUnique({
+    where: { id: stockEntryId },
+    include: { issues: { select: { quantity: true, departmentId: true } } },
+  });
+  return entry && isStockVisible(entry, user, resolveStockScope(user)) ? entry : null;
+}
+
 export async function saveWarrantyDetails(stockEntryId: string, data: unknown) {
-  await requirePermission(PERMISSIONS.STOCK_WARRANTY_EDIT);
+  const user = await requirePermission(PERMISSIONS.STOCK_WARRANTY_EDIT);
 
   const parsed = warrantySchema.safeParse(data);
   if (!parsed.success) {
     return { error: parsed.error.issues[0].message };
   }
 
-  const entry = await prisma.stockEntry.findUnique({
-    where: { id: stockEntryId },
-    select: { id: true, entryNumber: true },
-  });
+  const entry = await visibleEntry(user, stockEntryId);
   if (!entry) return { error: "Stock entry not found" };
 
   const purchaseDate = new Date(parsed.data.purchaseDate);
@@ -63,7 +73,8 @@ export async function saveWarrantyDetails(stockEntryId: string, data: unknown) {
 }
 
 export async function removeWarrantyDetails(stockEntryId: string) {
-  await requirePermission(PERMISSIONS.STOCK_WARRANTY_EDIT);
+  const user = await requirePermission(PERMISSIONS.STOCK_WARRANTY_EDIT);
+  if (!(await visibleEntry(user, stockEntryId))) return { error: "Stock entry not found" };
 
   const existing = await prisma.stockEntryWarranty.findUnique({
     where: { stockEntryId },

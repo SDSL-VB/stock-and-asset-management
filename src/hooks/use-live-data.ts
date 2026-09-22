@@ -27,8 +27,18 @@ import { useRouter } from "next/navigation";
  * tab costs nothing.
  */
 
-/** Long enough to be cheap, short enough that nobody reaches for F5. */
-const DEFAULT_INTERVAL_MS = 30_000;
+/**
+ * Long enough to be cheap, short enough that nobody reaches for F5.
+ *
+ * Raised from 30 seconds to two minutes. A refresh is a FULL server re-render —
+ * every query the page makes, run again — so at 30 seconds an idle open tab was
+ * re-running the whole reports page twice a minute against a database 220ms
+ * away. Two minutes keeps a wall display current without that cost.
+ *
+ * The other trigger matters more anyway: coming back to the tab refreshes
+ * immediately, which is the case people actually notice.
+ */
+const DEFAULT_INTERVAL_MS = 120_000;
 
 export function useLiveData(options?: {
   /** Milliseconds between refreshes while the tab is visible */

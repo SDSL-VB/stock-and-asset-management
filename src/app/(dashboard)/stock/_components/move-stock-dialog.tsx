@@ -25,6 +25,23 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { ArrowRightLeft, Loader2 } from "lucide-react";
 
+/**
+ * Moving approved central stock into a department directly.
+ *
+ * The "take" half of journey 3 — for somebody holding `stock.move`, who does not
+ * have to ask. The "ask" half is `request-transfer-dialog.tsx`, where a member
+ * raises a request and their manager approves it. Both paths end at the same
+ * StockIssue; there is no difference in the record they produce.
+ *
+ * The quantity offered is what is still standing on this entry, with issues,
+ * consignments, builds and write-offs already taken off — never the raw
+ * `quantity`, which counts goods at the site they left and the site they arrived
+ * at simultaneously.
+ *
+ * Ticking "as an asset" is the entire meaning of the word in this system: there
+ * is no separate asset register, only stock that moved into a department as one.
+ */
+
 interface Props {
   entryId: string;
   itemName: string;

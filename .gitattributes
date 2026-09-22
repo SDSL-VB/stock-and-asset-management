@@ -1,0 +1,29 @@
+# Line endings are normalised to LF in the repository.
+#
+# Without this, editing on Windows rewrites a whole file to CRLF and git reports
+# every line as changed: one feature branch showed 12,700 changed lines where
+# ~1,400 were real, which makes a diff unreviewable. `text=auto` stores LF and
+# checks out whatever the platform wants; the explicit `eol=lf` entries below
+# are files that must stay LF even on Windows because something other than git
+# reads them.
+* text=auto
+
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.md   text eol=lf
+*.sql  text eol=lf
+*.prisma text eol=lf
+*.yml  text eol=lf
+Dockerfile text eol=lf
+
+# Generated. Collapsing it in a diff keeps a lockfile bump from burying review.
+package-lock.json linguist-generated=true -diff
+
+*.png binary
+*.svg text eol=lf
+*.pdf binary
+*.xlsx binary

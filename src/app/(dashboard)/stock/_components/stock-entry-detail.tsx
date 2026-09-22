@@ -23,9 +23,16 @@ import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
 import { deleteAttachment, getAttachmentViewUrl } from "@/lib/actions/stock";
 import { MoveStockDialog } from "./move-stock-dialog";
 import { RequestTransferDialog } from "./request-transfer-dialog";
+import { WriteOffDialog } from "./write-off-dialog";
+import { heldQuantity, availableQuantity } from "@/lib/stock-availability";
+import { cn } from "@/lib/utils";
+import { WRITE_OFF_REASON_LABEL } from "@/lib/validations/write-off";
 import { DocumentViewerButton } from "./document-viewer";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+import { formatMoney } from "@/lib/format";
+import { statusPill } from "@/lib/design/status";
+import { RackEditor } from "./rack-editor";
 
 type Entry = {
   id: string;
@@ -36,9 +43,27 @@ type Entry = {
   /** How these goods came to be here: bought, built, or sent from another site */
   source: "PURCHASED" | "BUILT" | "TRANSFERRED";
   batchNumber: string | null;
+  /** Where it sits in the store — "10.3" */
+  rackLocation?: string | null;
   /** Consignments this entry's goods left on, and builds that ate them */
   dispatchItems: Array<{ quantity: number }>;
   buildConsumptions: Array<{ quantity: number }>;
+  /**
+   * Central-stock write-offs against this entry. A department's own losses are
+   * NOT here — they come off that department's holding, not off the entry.
+   */
+  writeOffs: Array<{
+    id: string;
+    writeOffNumber: string;
+    quantity: number;
+    reason: string;
+    notes: string;
+    status: string;
+    createdAt: Date;
+    raisedBy: { id: string; name: string };
+  }>;
+  /** Set when booked in with other items as one delivery */
+  delivery?: { id: string; deliveryNumber: string } | null;
   sourceDispatchItem: {
     id: string;
     dispatch: {
@@ -125,25 +150,20 @@ interface Props {
   departments: { id: string; name: string }[];
 }
 
+// Wording and icon only — the colour comes from statusPill(), so this badge
+// matches the one on the stock list without the two being able to disagree.
 const statusConfig = {
-  DRAFT: { label: "Draft", color: "bg-gray-100 text-gray-700 border-gray-200", icon: FileText },
-  SUBMITTED: { label: "Pending Approval", color: "bg-amber-50 text-amber-700 border-amber-200", icon: Clock },
-  APPROVED: { label: "Approved", color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: CheckCircle },
-  REJECTED: { label: "Rejected", color: "bg-red-50 text-red-700 border-red-200", icon: XCircle },
+  DRAFT: { label: "Draft", icon: FileText },
+  SUBMITTED: { label: "Pending Approval", icon: Clock },
+  APPROVED: { label: "Approved", icon: CheckCircle },
+  REJECTED: { label: "Rejected", icon: XCircle },
 };
 
 const approvalStepStatusIcon = {
-  PENDING: <Clock className="h-4 w-4 text-amber-500" />,
-  APPROVED: <CheckCircle className="h-4 w-4 text-emerald-500" />,
-  REJECTED: <XCircle className="h-4 w-4 text-red-500" />,
+  PENDING: <Clock className="h-4 w-4 text-status-pending" />,
+  APPROVED: <CheckCircle className="h-4 w-4 text-status-approved" />,
+  REJECTED: <XCircle className="h-4 w-4 text-status-rejected" />,
 };
-
-function formatCurrency(amount: number) {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-  }).format(amount);
-}
 
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -162,21 +182,31 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
   const canSeeValue = hasPermission(userPermissions, PERMISSIONS.STOCK_VALUE_VIEW);
 
   const issuedQuantity = entry.issues.reduce((sum, i) => sum + i.quantity, 0);
-  const pendingRequestedQuantity = entry.transferRequests
-    .filter((r) => r.status === "PENDING")
-    .reduce((sum, r) => sum + r.quantity, 0);
-  const dispatchedQuantity = entry.dispatchItems.reduce((sum, d) => sum + d.quantity, 0);
-  const consumedQuantity = entry.buildConsumptions.reduce((sum, c) => sum + c.quantity, 0);
+  const writtenOffQuantity = entry.writeOffs
+    .filter((w) => w.status === "APPROVED")
+    .reduce((sum, w) => sum + w.quantity, 0);
 
-  // Everything that has a claim on this entry, in one number — see
-  // `availableQuantity`. This used to subtract issues alone, so goods already
-  // dispatched to another site could be offered for moving a second time.
-  const remainingQuantity =
-    entry.quantity - issuedQuantity - dispatchedQuantity - consumedQuantity;
+  /*
+    Both figures come from the shared functions rather than being re-derived
+    here. This page used to add the drawdowns up by hand, which meant every new
+    kind of claim on stock — dispatches, then builds, now write-offs — had to be
+    remembered in two places, and was not.
 
-  // `availableQuantity` already nets off pending requests, so the two must not
-  // both subtract them.
-  const availableToRequest = remainingQuantity - pendingRequestedQuantity;
+    remaining  what is physically standing in central stock
+    available  what may still be PROMISED: the above, less anything already
+               asked for and not yet answered (pending transfers and pending
+               write-offs alike)
+  */
+  const drawdowns = {
+    quantity: entry.quantity,
+    issues: entry.issues,
+    transferRequests: entry.transferRequests.filter((r) => r.status === "PENDING"),
+    dispatchItems: entry.dispatchItems,
+    buildConsumptions: entry.buildConsumptions,
+    writeOffs: entry.writeOffs,
+  };
+  const remainingQuantity = heldQuantity(drawdowns);
+  const availableToRequest = availableQuantity(drawdowns);
 
   // stock.move holders move stock directly; transfer requesters raise a
   // request that the receiving department's approver reviews
@@ -190,6 +220,18 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
     availableToRequest > 0 &&
     !canMoveStock &&
     hasPermission(userPermissions, PERMISSIONS.ASSETS_TRANSFER_REQUEST);
+
+  // Reporting damage needs stock actually standing here to report on. Offered
+  // on `availableToRequest` rather than `remainingQuantity` so the button
+  // disappears once everything left is already awaiting a decision.
+  const canWriteOff =
+    entry.status === "APPROVED" &&
+    availableToRequest > 0 &&
+    hasPermission(userPermissions, PERMISSIONS.STOCK_WRITEOFF_CREATE);
+
+  const canSeeWriteOffs =
+    entry.writeOffs.length > 0 &&
+    hasPermission(userPermissions, PERMISSIONS.STOCK_WRITEOFF_VIEW);
 
   const canEdit =
     (entry.status === "DRAFT" || entry.status === "REJECTED") &&
@@ -224,6 +266,13 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
         description={`${entry.itemName} from ${entry.supplierName}`}
       >
         <div className="flex items-center gap-2">
+          {entry.delivery && (
+            <Link href={`/stock/delivery/${entry.delivery.id}`}>
+              <Button variant="outline" size="sm">
+                Part of delivery {entry.delivery.deliveryNumber}
+              </Button>
+            </Link>
+          )}
           <Link href="/stock">
             <Button variant="outline" size="sm">
               <ArrowLeft className="mr-2 h-4 w-4" />
@@ -243,7 +292,7 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
 
       {/* Status and Rejection Reason */}
       <div className="flex items-center gap-3">
-        <Badge variant="outline" className={`${status.color} text-sm px-3 py-1`}>
+        <Badge variant="outline" className={`${statusPill(entry.status)} text-sm px-3 py-1`}>
           <StatusIcon className="mr-1 h-3.5 w-3.5" />
           {status.label}
         </Badge>
@@ -337,16 +386,31 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
                   <>
                     <div>
                       <dt className="text-sm text-muted-foreground">Unit Price</dt>
-                      <dd className="font-medium">{formatCurrency(entry.unitPrice)}</dd>
+                      <dd className="font-medium">{formatMoney(entry.unitPrice)}</dd>
                     </div>
                     <div>
                       <dt className="text-sm text-muted-foreground">Total Price</dt>
                       <dd className="text-lg font-bold text-brand-green">
-                        {formatCurrency(entry.totalPrice)}
+                        {formatMoney(entry.totalPrice)}
                       </dd>
                     </div>
                   </>
                 )}
+                <div>
+                  <dt className="text-sm text-muted-foreground">Rack</dt>
+                  <dd className="mt-0.5">
+                    <RackEditor
+                      entryId={entry.id}
+                      rack={entry.rackLocation ?? null}
+                      canChange={[
+                        PERMISSIONS.STOCK_CREATE,
+                        PERMISSIONS.STOCK_EDIT,
+                        PERMISSIONS.STOCK_MOVE,
+                        PERMISSIONS.STOCK_APPROVE,
+                      ].some((p) => hasPermission(userPermissions, p))}
+                    />
+                  </dd>
+                </div>
                 <div>
                   <dt className="text-sm text-muted-foreground">Stock Location</dt>
                   <dd className="font-medium">
@@ -440,10 +504,22 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
                       departments={departments}
                     />
                   )}
+                  {canWriteOff && (
+                    <WriteOffDialog
+                      target={{ kind: "entry", stockEntryId: entry.id }}
+                      itemName={entry.itemName}
+                      available={availableToRequest}
+                    />
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-3">
+                <div
+                  className={cn(
+                    "grid gap-3 sm:grid-cols-3",
+                    writtenOffQuantity > 0 && "sm:grid-cols-4"
+                  )}
+                >
                   <div className="rounded-lg border p-3">
                     <p className="text-xs text-muted-foreground">Received</p>
                     <p className="text-lg font-bold">{entry.quantity}</p>
@@ -452,11 +528,64 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
                     <p className="text-xs text-muted-foreground">Moved to Departments</p>
                     <p className="text-lg font-bold">{issuedQuantity}</p>
                   </div>
+                  {/* Only shown once there is something to show — an entry with
+                      no losses should not carry a permanent zero. */}
+                  {writtenOffQuantity > 0 && (
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs text-muted-foreground">Written Off</p>
+                      <p className="text-lg font-bold text-status-rejected">
+                        {writtenOffQuantity}
+                      </p>
+                    </div>
+                  )}
                   <div className="rounded-lg border p-3">
                     <p className="text-xs text-muted-foreground">Remaining in Stock</p>
                     <p className="text-lg font-bold text-brand-green">{remainingQuantity}</p>
                   </div>
                 </div>
+
+                {/* What has been reported unusable out of central stock. A
+                    department's own losses are not here — they belong to that
+                    department's holding, on the Assets page. */}
+                {canSeeWriteOffs && (
+                  <div className="space-y-2">
+                    <p className="text-caption font-semibold text-muted-foreground">
+                      Write-offs
+                    </p>
+                    {entry.writeOffs.map((writeOff) => (
+                      <div
+                        key={writeOff.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-status-rejected/20 bg-status-rejected-bg/40 p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">
+                            {writeOff.quantity} unit{writeOff.quantity === 1 ? "" : "s"} —{" "}
+                            {WRITE_OFF_REASON_LABEL[
+                              writeOff.reason as keyof typeof WRITE_OFF_REASON_LABEL
+                            ] ?? writeOff.reason}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {writeOff.writeOffNumber} &middot; by {writeOff.raisedBy.name} &middot;{" "}
+                            {writeOff.notes}
+                          </p>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-micro",
+                            writeOff.status === "APPROVED"
+                              ? "border-status-rejected/30 bg-status-rejected-bg text-status-rejected"
+                              : "border-status-pending/30 bg-status-pending-bg text-status-pending"
+                          )}
+                        >
+                          {writeOff.status === "APPROVED"
+                            ? "Written off"
+                            : "Waiting on a manager"}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {entry.issues.length === 0 ? (
                   <p className="text-sm text-muted-foreground">

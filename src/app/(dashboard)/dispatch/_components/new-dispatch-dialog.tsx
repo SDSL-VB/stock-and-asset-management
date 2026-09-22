@@ -26,6 +26,23 @@ import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, Loader2, Trash2, Search } from "lucide-react";
 
+/**
+ * Raising a consignment.
+ *
+ * Search-and-tick rather than a dropdown per line: a consignment of fifteen
+ * items used to take fifteen separate selections.
+ *
+ * The origin site is the pivot, and getting it right matters. Only stock
+ * standing at the chosen origin may go on the consignment — filtering on the
+ * origin rather than on "was the person asked to choose one" is what stops
+ * somebody who has a site AND sees every site being offered another site's
+ * stock, which the server would then refuse on submit.
+ *
+ * Quantities offered are `availableQuantity()`, not what is physically there:
+ * stock already promised to a pending transfer or frozen by a write-off awaiting
+ * a decision cannot also be promised to a lorry.
+ */
+
 type StockOption = {
   id: string;
   locationId: string | null;

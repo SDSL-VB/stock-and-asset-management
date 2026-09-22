@@ -11,6 +11,10 @@ import { PERMISSIONS } from "@/lib/rbac/permissions";
 import {
   availableQuantity,
   availabilityInclude,
+  issueWriteOffsInclude,
+  heldByIssue,
+  availableFromIssue,
+  round,
 } from "@/lib/stock-availability";
 import { stockCandidatesWhere, isStockVisible } from "@/lib/stock-visibility";
 import { SELF_APPROVAL_REFUSAL } from "@/lib/review-rules";
@@ -18,8 +22,9 @@ import {
   createTransferRequestSchema,
   rejectRequestSchema,
 } from "@/lib/validations/request";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
+import { transferDecided, transferRequested } from "@/lib/notifications/events";
 
 /**
  * Assets are not a separate registry: everything arrives in central stock as
@@ -49,6 +54,9 @@ export async function getAssetHoldings() {
   const issues = await prisma.stockIssue.findMany({
     where,
     include: {
+      // Losses charged against this holding. What the department still has is
+      // the issued quantity less its approved write-offs — see heldByIssue().
+      ...issueWriteOffsInclude,
       department: {
         select: { id: true, name: true, location: { select: { id: true, name: true } } },
       },
@@ -73,7 +81,13 @@ export async function getAssetHoldings() {
   return issues.map((issue) => ({
     id: issue.id,
     issueNumber: issue.issueNumber,
-    quantity: issue.quantity,
+    // What the department actually still has, not what it was originally
+    // handed. A holding entirely written off reports zero rather than
+    // continuing to claim goods that no longer exist.
+    quantity: heldByIssue(issue),
+    /** How much of it is still free to write off, after anything pending */
+    availableToWriteOff: availableFromIssue(issue),
+    writtenOff: round(issue.quantity - heldByIssue(issue)),
     receivedAt: issue.createdAt,
     itemCode: issue.stockEntry.itemCode,
     itemName: issue.stockEntry.itemName,
@@ -87,7 +101,9 @@ export async function getAssetHoldings() {
     issuedByName: issue.issuedBy.name,
     // Monetary worth is its own permission — null rather than 0 when withheld
     unitPrice: canSeeValue ? issue.stockEntry.unitPrice : null,
-    value: canSeeValue ? issue.quantity * issue.stockEntry.unitPrice : null,
+    // Valued on what is still held, so a write-off takes its worth off the
+    // books at the same moment it takes the units off.
+    value: canSeeValue ? round(heldByIssue(issue) * issue.stockEntry.unitPrice) : null,
   }));
 }
 
@@ -194,9 +210,12 @@ export async function createTransferRequest(stockEntryId: string, data: unknown)
     where: { id: stockEntryId },
     include: {
       ...availabilityInclude,
+      // The visibility rule needs which department each issue went to
+      issues: { select: { quantity: true, departmentId: true } },
     },
   });
-  if (!entry) return { error: "Stock entry not found" };
+  // Only stock you can see can be asked for — as on the stock list
+  if (!entry || !isStockVisible(entry, user, resolveStockScope(user))) return { error: "Stock entry not found" };
   if (entry.status !== "APPROVED") {
     return { error: "Transfers can only be requested for approved stock" };
   }
@@ -206,6 +225,11 @@ export async function createTransferRequest(stockEntryId: string, data: unknown)
   });
   if (!department || !department.isActive) {
     return { error: "Department not found or inactive" };
+  }
+  // Central stock moves into a department at its own site; another site's
+  // stock travels by dispatch, which that site agrees to
+  if (entry.locationId && department.locationId && entry.locationId !== department.locationId) {
+    return { error: "That stock is at another site — ask for it with a site request instead" };
   }
 
   const available = availableQuantity(entry);
@@ -238,6 +262,12 @@ export async function createTransferRequest(stockEntryId: string, data: unknown)
     `Requested transfer of ${request.quantity} × ${entry.itemName} (${entry.entryNumber}) to ${request.department.name}`
   );
 
+  await transferRequested({
+    requestNumber: request.requestNumber,
+    itemName: entry.itemName,
+    requestedById: user.id,
+    departmentId: department.id,
+  });
   revalidatePath("/assets");
   revalidatePath(`/stock/${stockEntryId}`);
   return { success: true, request };
@@ -326,10 +356,19 @@ export async function approveTransferRequest(id: string) {
     };
   }
 
-  await prisma.$transaction([
-    prisma.stockIssue.create({
+  const issueNumber = await nextReference("SI");
+  // Claimed first, conditionally, so approving twice at the same moment moves
+  // the stock once. (A pending request already holds its quantity back from
+  // everyone else, so nothing else can take it in between.)
+  const approved = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.stockTransferRequest.updateMany({
+      where: { id, status: "PENDING" },
+      data: { status: "APPROVED", reviewedById: user.id },
+    });
+    if (claimed.count !== 1) return false;
+    await tx.stockIssue.create({
       data: {
-        issueNumber: await nextReference("SI"),
+        issueNumber,
         stockEntryId: request.stockEntryId,
         departmentId: request.departmentId,
         quantity: request.quantity,
@@ -337,12 +376,10 @@ export async function approveTransferRequest(id: string) {
         notes: `Transfer request ${request.requestNumber}${request.notes ? ` — ${request.notes}` : ""}`,
         issuedById: user.id,
       },
-    }),
-    prisma.stockTransferRequest.update({
-      where: { id },
-      data: { status: "APPROVED", reviewedById: user.id },
-    }),
-  ]);
+    });
+    return true;
+  });
+  if (!approved) return { error: "This request has just been answered by someone else" };
 
   await logActivity(
     "APPROVED",
@@ -351,6 +388,7 @@ export async function approveTransferRequest(id: string) {
     `Approved transfer ${request.requestNumber}: ${request.quantity} × ${entry.itemName} to ${request.department.name} as ${request.isAsset ? "an asset" : "stock"}`
   );
 
+  await transferDecided({ requestNumber: request.requestNumber, itemName: entry.itemName, requestedById: request.requestedById }, true);
   revalidatePath("/assets");
   revalidatePath(`/stock/${request.stockEntryId}`);
   revalidatePath("/stock");
@@ -364,7 +402,7 @@ export async function rejectTransferRequest(id: string, data: unknown) {
 
   const request = await prisma.stockTransferRequest.findUnique({
     where: { id },
-    include: { stockEntry: { select: { entryNumber: true } } },
+    include: { stockEntry: { select: { entryNumber: true, itemName: true } } },
   });
   if (!request) return { error: "Transfer request not found" };
   if (request.status !== "PENDING") return { error: "This request has already been processed" };
@@ -395,6 +433,11 @@ export async function rejectTransferRequest(id: string, data: unknown) {
     `Rejected transfer ${request.requestNumber} (${request.stockEntry.entryNumber})`
   );
 
+  await transferDecided(
+    { requestNumber: request.requestNumber, itemName: request.stockEntry.itemName, requestedById: request.requestedById },
+    false,
+    parsed.data.reviewNote.trim()
+  );
   revalidatePath("/assets");
   revalidatePath(`/stock/${request.stockEntryId}`);
   return { success: true };

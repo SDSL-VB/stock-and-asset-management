@@ -5,6 +5,10 @@ export const createProductRequestSchema = z
     type: z.enum(["PRODUCT", "CATEGORY"]),
     name: z.string().min(2, "Name must be at least 2 characters"),
     categoryId: z.string().optional(),
+    // What the asker thinks it is. Both are suggestions — the reviewer decides,
+    // because they are the one the catalog rules are enforced against.
+    subcategoryId: z.string().optional(),
+    description: z.string().trim().max(300, "Keep the description to a line or two").optional(),
     notes: z.string().optional(),
   })
   .superRefine((data, ctx) => {
@@ -27,6 +31,11 @@ export const approveProductRequestSchema = z.object({
     .optional(),
   name: z.string().min(2, "Name must be at least 2 characters"),
   categoryId: z.string().optional(),
+  // Read only for a PRODUCT request. The reviewer confirms or changes what the
+  // asker suggested, and must satisfy whatever the catalog rules require — they
+  // are the one creating the product.
+  subcategoryId: z.string().optional(),
+  description: z.string().trim().max(300, "Keep the description to a line or two").optional(),
   // Only read when approving a CATEGORY request: the reviewer types the code
   // the new category will hand out. Optional here because this schema covers
   // product approvals too; approveProductRequest insists on it for categories.

@@ -19,7 +19,7 @@
  * silently disappears from view.
  */
 
-export type ScopedUser = {
+type ScopedUser = {
   id: string;
   departmentId?: string | null;
   /** Inherited from the user's department; null for admins */
@@ -28,7 +28,7 @@ export type ScopedUser = {
   inCentralStock?: boolean;
 };
 
-export type ScopedEntry = {
+type ScopedEntry = {
   status: string;
   quantity: number;
   departmentId: string | null;
@@ -52,7 +52,7 @@ function sameLocation(entry: ScopedEntry, user: ScopedUser): boolean {
   return entry.locationId === user.locationId;
 }
 
-export function visibleToLocationScope(entry: ScopedEntry, user: ScopedUser): boolean {
+function visibleToLocationScope(entry: ScopedEntry, user: ScopedUser): boolean {
   if (entry.createdById === user.id) return true;
   return sameLocation(entry, user);
 }
@@ -81,7 +81,7 @@ export function visibleToDepartmentScope(entry: ScopedEntry, user: ScopedUser): 
  * Prisma where-fragment that over-approximates department-scope visibility;
  * ALWAYS post-filter the fetched rows with visibleToDepartmentScope.
  */
-export function departmentScopeCandidatesWhere(departmentId: string | null | undefined) {
+function departmentScopeCandidatesWhere(departmentId: string | null | undefined) {
   return {
     OR: [
       { departmentId: null },
@@ -97,7 +97,7 @@ export function departmentScopeCandidatesWhere(departmentId: string | null | und
  * included so pre-location data stays reachable; ALWAYS post-filter with
  * visibleToLocationScope.
  */
-export function locationScopeCandidatesWhere(
+function locationScopeCandidatesWhere(
   locationId: string | null | undefined,
   userId: string
 ) {
@@ -155,3 +155,10 @@ export function isStockVisible(
       return visibleToLocationScope(entry, user);
   }
 }
+
+/**
+ * Matches no site. Used where someone limited to their own site has no site on
+ * record: a filter on it returns nothing, where leaving the filter out would
+ * have returned every site.
+ */
+export const NO_SITE = "__no_site__";

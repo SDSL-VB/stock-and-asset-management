@@ -1,12 +1,10 @@
 import { requirePermission } from "@/lib/rbac/check";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import {
-  getStockSummaryStats,
   getInventoryOverview,
   getWorkInProgress,
   exportStockReport,
 } from "@/lib/actions/reports";
-import { getDepartmentsForSelect } from "@/lib/actions/users";
 import { PageHeader } from "@/components/shared/page-header";
 import { ExportButton } from "@/components/shared/export-button";
 import { StockReports } from "./_components/stock-reports";
@@ -15,9 +13,7 @@ import { WorkInProgressCard } from "./_components/work-in-progress-card";
 export default async function ReportsPage() {
   const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
 
-  const [summaryStats, departments, inventoryOverview, wip] = await Promise.all([
-    getStockSummaryStats(),
-    getDepartmentsForSelect(),
+  const [inventoryOverview, wip] = await Promise.all([
     getInventoryOverview(),
     getWorkInProgress(),
   ]);
@@ -46,8 +42,6 @@ export default async function ReportsPage() {
         tiedUpValue={wip.tiedUpValue}
       />
       <StockReports
-        summaryStats={summaryStats}
-        departments={departments}
         userPermissions={user.permissions}
         inventoryOverview={inventoryOverview}
       />

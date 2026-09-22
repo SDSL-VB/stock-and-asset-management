@@ -9,9 +9,14 @@ import {
   round,
 } from "@/lib/stock-availability";
 import { buildSchema } from "@/lib/validations/bom";
-import { logActivity } from "./activity";
+import { unitsFromLine, unitsSupported } from "@/lib/build-readiness";
+import { onTheWay } from "@/lib/low-stock";
+import { syncBomWatches } from "@/lib/low-stock-bom";
+import { after } from "next/server";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 import type { Prisma } from "@prisma/client";
+import { lockEntries } from "@/lib/stock-locks";
 
 /**
  * FLOW: making something — components out, finished product in.
@@ -79,6 +84,10 @@ export async function getBuildReadiness(productId: string, quantity: number, loc
   const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
   const wanted = Math.max(1, Math.floor(quantity));
 
+  // Already asked for or ordered for this site — so "Request what's short"
+  // only offers what nobody has asked for yet, and reads "Requested" once done
+  const coming = await onTheWay(bom.lines.map((l) => l.componentProductId), [locationId]);
+
   const lines = await Promise.all(
     bom.lines.map(async (line) => {
       const entries = await entriesFor(line.componentProductId, locationId);
@@ -101,20 +110,22 @@ export async function getBuildReadiness(productId: string, quantity: number, loc
         needed,
         available,
         short: round(Math.max(0, needed - available)),
+        onTheWay: round(coming.get(`${line.componentProductId}|${locationId}`) ?? 0),
         isOptional: line.isOptional,
         notes: line.notes,
         // How many complete units this one line could supply
-        supports: line.quantityPerUnit > 0 ? Math.floor(available / line.quantityPerUnit) : 0,
+        supports: unitsFromLine({ perUnit: line.quantityPerUnit, available }),
         estimatedCost: canSeeValue ? round(unitCost * needed) : null,
       };
     })
   );
 
-  // An optional line missing does not stop a build — you did not order that add-on
+  // The shared rule — see src/lib/build-readiness.ts. An optional line never
+  // blocks a build: nobody ordered that add-on.
   const blocking = lines.filter((l) => !l.isOptional);
-  const maxBuildable = blocking.length
-    ? Math.max(0, Math.min(...blocking.map((l) => l.supports)))
-    : 0;
+  const maxBuildable = unitsSupported(
+    lines.map((l) => ({ perUnit: l.perUnit, available: l.available, isOptional: l.isOptional }))
+  );
 
   return {
     ok: true as const,
@@ -132,8 +143,12 @@ export async function getBuildReadiness(productId: string, quantity: number, loc
 }
 
 /** Uncommitted central-stock entries of one product at one location, oldest first. */
-async function entriesFor(productId: string, locationId: string) {
-  return prisma.stockEntry.findMany({
+async function entriesFor(
+  productId: string,
+  locationId: string,
+  client: Prisma.TransactionClient | typeof prisma = prisma
+) {
+  return client.stockEntry.findMany({
     where: {
       productId,
       status: "APPROVED",
@@ -212,7 +227,7 @@ export async function createBuild(data: unknown) {
 
   // Someone tied to one site can only build there
   const scope = resolveStockScope(user);
-  if (scope !== "all" && user.locationId && user.locationId !== locationId) {
+  if (scope !== "all" && user.locationId !== locationId) {
     return { error: "You can only build at your own site" };
   }
 
@@ -228,6 +243,19 @@ export async function createBuild(data: unknown) {
       const location = await tx.location.findUnique({ where: { id: locationId } });
       if (!location) throw new Error("SOFT:That site does not exist");
 
+      // Hold every component entry at this site still while it is counted and
+      // drawn down, so two builds at the same moment cannot use the same stock
+      const candidates = await tx.stockEntry.findMany({
+        where: {
+          productId: { in: bom.lines.map((l) => l.componentProductId) },
+          status: "APPROVED",
+          departmentId: null,
+          locationId,
+        },
+        select: { id: true },
+      });
+      await lockEntries(tx, candidates.map((c) => c.id));
+
       // Draw down each component, oldest entry first
       const consumptions: { stockEntryId: string; quantity: number }[] = [];
       let rolledUpCost = 0;
@@ -236,7 +264,7 @@ export async function createBuild(data: unknown) {
         let remaining = round(line.quantityPerUnit * quantity);
         if (remaining <= 0) continue;
 
-        const entries = await entriesFor(line.componentProductId, locationId);
+        const entries = await entriesFor(line.componentProductId, locationId, tx);
         const total = round(entries.reduce((sum, e) => sum + availableQuantity(e), 0));
 
         if (total < remaining) {
@@ -316,6 +344,9 @@ export async function createBuild(data: unknown) {
     revalidatePath("/builds");
     revalidatePath("/stock");
     revalidatePath("/dispatch");
+    // This site now builds the product, so its components are watched here too.
+    // After the response, so the build is not held up by it.
+    after(() => syncBomWatches().catch((e) => console.error("Low-stock BOM sync failed:", e)));
     return { success: true, buildNumber: result.buildNumber, buildId: result.build.id };
   } catch (e) {
     const message = e instanceof Error ? e.message : "Build failed";
@@ -389,6 +420,10 @@ export async function finishBuild(buildId: string, quantity: number, batchNumber
   if (build.status !== "IN_PROGRESS") {
     return { error: "That run is not on the floor — there is nothing left to finish" };
   }
+  // A run is finished by the site it is on
+  if (resolveStockScope(user) !== "all" && build.locationId !== user.locationId) {
+    return { error: "That run is at another site" };
+  }
 
   const alreadyDone = build.outputs.reduce((sum, o) => sum + o.quantity, 0);
   const outstanding = build.quantity - alreadyDone;
@@ -407,7 +442,13 @@ export async function finishBuild(buildId: string, quantity: number, batchNumber
 
   const finishesIt = wanted === outstanding;
 
-  await prisma.$transaction(async (tx) => {
+  const done = await prisma.$transaction(async (tx) => {
+    // Locked and recounted: two people finishing the same run at once cannot
+    // both book the same outstanding units in
+    await tx.$queryRaw`SELECT id FROM builds WHERE id = ${buildId} FOR UPDATE`;
+    const finishedSoFar = await tx.stockEntry.aggregate({ where: { buildId }, _sum: { quantity: true } });
+    if (wanted > build.quantity - (finishedSoFar._sum.quantity ?? 0)) return false;
+
     await createOutputEntry(tx, {
       build,
       product: build.product,
@@ -424,7 +465,9 @@ export async function finishBuild(buildId: string, quantity: number, batchNumber
         data: { status: "COMPLETED", completedAt: new Date() },
       });
     }
+    return true;
   });
+  if (!done) return { error: "Someone has just finished some of this run — check what is left and try again" };
 
   await logActivity(
     "UPDATED",
@@ -478,6 +521,10 @@ export async function closeBuildShort(buildId: string, reason: string) {
   });
   if (!build) return { error: "That build does not exist" };
   if (build.status !== "IN_PROGRESS") return { error: "That run is not on the floor" };
+  // Handled by the site the run is on
+  if (resolveStockScope(user) !== "all" && build.locationId !== user.locationId) {
+    return { error: "That run is at another site" };
+  }
 
   const done = build.outputs.reduce((sum, o) => sum + o.quantity, 0);
 
@@ -521,6 +568,10 @@ export async function reverseBuild(buildId: string) {
 
   if (!build) return { error: "That build does not exist" };
   if (build.status === "REVERSED") return { error: "That build has already been reversed" };
+  // Handled by the site the run is on
+  if (resolveStockScope(user) !== "all" && build.locationId !== user.locationId) {
+    return { error: "That run is at another site" };
+  }
 
   // Every batch this run produced has to be untouched — one shipped box is
   // enough to make undoing the whole run a lie.
@@ -666,7 +717,9 @@ export async function getBuildLocations() {
   const user = await requirePermission(PERMISSIONS.BOM_BUILD);
   const scope = resolveStockScope(user);
 
-  if (scope === "all" || !user.locationId) {
+  // Nobody limited to a site builds anywhere without one on record
+  if (scope !== "all" && !user.locationId) return [];
+  if (scope === "all") {
     return prisma.location.findMany({
       where: { isActive: true },
       select: { id: true, name: true },
@@ -675,7 +728,7 @@ export async function getBuildLocations() {
   }
 
   return prisma.location.findMany({
-    where: { isActive: true, id: user.locationId },
+    where: { isActive: true, id: user.locationId! },
     select: { id: true, name: true },
   });
 }

@@ -13,6 +13,22 @@ import { RECYCLE_BIN_DAYS } from "@/lib/recycle-bin";
 import { toast } from "sonner";
 import { Search, Undo2, Trash2, Clock } from "lucide-react";
 
+/**
+ * The recycle bin's table.
+ *
+ * Every deletion in the app archives a full copy of the row first, so restoring
+ * is possible without every query in the app having to exclude soft-deleted
+ * rows. Each entry here is one of those copies.
+ *
+ * Two different capabilities, so two different buttons: `canRestore` puts it
+ * back, `canPurge` destroys it for good. Being able to delete something implies
+ * neither.
+ *
+ * What is IN the list is already scoped by the server — without
+ * recyclebin.scope.all a person sees only their own deletions, which is what
+ * makes the bin safe to give to everybody.
+ */
+
 type Record = {
   id: string;
   entity: string;

@@ -6,9 +6,12 @@ import { PERMISSIONS, BOM_PERMISSIONS } from "@/lib/rbac/permissions";
 import { bomLinesSchema, productKindSchema } from "@/lib/validations/bom";
 import { wouldCreateCycle, expandBom } from "@/lib/bom-tree";
 import { archive } from "@/lib/recycle-bin";
-import { kindFilter } from "@/lib/vocabulary";
+import { kindFilter, isMadeKind, labelOfKind } from "@/lib/vocabulary";
 import { getBomFlow } from "./bom-flow";
-import { logActivity } from "./activity";
+import { syncBomWatches } from "@/lib/low-stock-bom";
+import { bomDecided, bomSubmitted } from "@/lib/notifications/events";
+import { z } from "zod";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 
 /**
@@ -69,9 +72,12 @@ export async function getBomWorkbench(productId: string) {
         id: true,
         code: true,
         name: true,
+        // Both searchable in the component picker — see ProductCombobox
+        description: true,
         unit: true,
         kind: true,
         category: { select: { name: true } },
+        subcategory: { select: { name: true } },
       },
       orderBy: [{ category: { name: "asc" } }, { name: "asc" }],
     }),
@@ -133,6 +139,14 @@ export async function setProductKind(productId: string, data: unknown) {
   const parsed = productKindSchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
 
+  // This is set from a product's bill-of-materials page, and a product with a
+  // bill of materials is made here by definition. Calling it bought would leave
+  // a recipe for something nobody builds.
+  const boms = await prisma.billOfMaterials.count({ where: { productId } });
+  if (boms > 0 && !isMadeKind(parsed.data.kind)) {
+    return { error: "This product has a bill of materials, so it is made here — it cannot be marked as bought." };
+  }
+
   const product = await prisma.product.update({
     where: { id: productId },
     data: { kind: parsed.data.kind, unit: parsed.data.unit.trim() || "pcs" },
@@ -180,6 +194,13 @@ export async function saveBom(
 
   const product = await prisma.product.findUnique({ where: { id: productId } });
   if (!product) return { error: "Product not found" };
+  // Only something made here has a recipe. A raw material or ready goods are
+  // bought whole, and a bill of materials for one would offer to "build" it.
+  if (!isMadeKind(product.kind)) {
+    return {
+      error: `${product.name} is ${labelOfKind(product.kind).toLowerCase()} — bought, not made — so it has no bill of materials.`,
+    };
+  }
 
   // A component appearing twice would silently double the requirement
   const ids = parsed.data.lines.map((l) => l.componentProductId);
@@ -236,7 +257,7 @@ export async function saveBom(
     const highest = await tx.billOfMaterials.findFirst({
       where: { productId },
       orderBy: { version: "desc" },
-      select: { version: true },
+      select: { version: true, lowStockBuilds: true },
     });
     const version = (highest?.version ?? 0) + 1;
 
@@ -259,6 +280,8 @@ export async function saveBom(
         approvedById: canPublish ? user.id : null,
         approvedAt: canPublish ? new Date() : null,
         notes: parsed.data.notes?.trim() || null,
+        // The low-stock cover carries over from the version before
+        lowStockBuilds: highest?.lowStockBuilds ?? 1,
         createdById: user.id,
         // Stamped from the author, never chosen. This is what sends R&D's work
         // to R&D's manager and Production's to Production's — a product itself
@@ -297,6 +320,16 @@ export async function saveBom(
     `${what} of the bill of materials for ${product.code} — ${parsed.data.lines.length} component${parsed.data.lines.length === 1 ? "" : "s"}`
   );
 
+  if (result.created && !result.published) {
+    await bomSubmitted({
+      productId,
+      productName: product.name,
+      version: result.version,
+      authorId: user.id,
+      authorDepartmentId: user.departmentId ?? null,
+    });
+  }
+  await refreshBomWatches();
   revalidatePath(`/bom/${productId}`);
   revalidatePath("/bom");
   return {
@@ -339,7 +372,7 @@ export async function approveBom(bomId: string) {
 
   const bom = await prisma.billOfMaterials.findUnique({
     where: { id: bomId },
-    include: { product: { select: { id: true, code: true } } },
+    include: { product: { select: { id: true, code: true, name: true } } },
   });
   if (!bom) return { error: "That version does not exist" };
   if (bom.status !== "PENDING") return { error: "That version is not waiting for approval" };
@@ -374,6 +407,8 @@ export async function approveBom(bomId: string) {
     `Approved version ${bom.version} of the bill of materials for ${bom.product.code} — it is now the version in force`
   );
 
+  await bomDecided({ productId: bom.productId, productName: bom.product.name, version: bom.version, authorId: bom.createdById }, true);
+  await refreshBomWatches();
   revalidatePath(`/bom/${bom.productId}`);
   revalidatePath("/bom");
   return { success: true };
@@ -388,7 +423,7 @@ export async function rejectBom(bomId: string, reason: string) {
 
   const bom = await prisma.billOfMaterials.findUnique({
     where: { id: bomId },
-    include: { product: { select: { id: true, code: true } } },
+    include: { product: { select: { id: true, code: true, name: true } } },
   });
   if (!bom) return { error: "That version does not exist" };
   if (bom.status !== "PENDING") return { error: "That version is not waiting for approval" };
@@ -408,6 +443,7 @@ export async function rejectBom(bomId: string, reason: string) {
     `Sent version ${bom.version} of the bill of materials for ${bom.product.code} back to its author: ${note}`
   );
 
+  await bomDecided({ productId: bom.productId, productName: bom.product.name, version: bom.version, authorId: bom.createdById }, false, note);
   revalidatePath(`/bom/${bom.productId}`);
   revalidatePath("/bom");
   return { success: true };
@@ -502,6 +538,7 @@ export async function deleteBom(bomId: string, options: { force?: boolean } = {}
         : "")
   );
 
+  await refreshBomWatches();
   revalidatePath(`/bom/${bom.productId}`);
   revalidatePath("/bom");
   return { success: true };
@@ -535,8 +572,50 @@ export async function activateBomVersion(bomId: string) {
     `Version ${bom.version} is now the active bill of materials for ${bom.product.code}`
   );
 
+  await refreshBomWatches();
   revalidatePath(`/bom/${bom.productId}`);
   return { success: true };
+}
+
+/**
+ * Low-stock cover for a product's BOM: keep enough for N builds of it. Applies
+ * to every version of that product's BOM (and so to new ones), then brings the
+ * automatic watches up to date. Anyone who maintains BOMs or runs low stock
+ * may change it.
+ */
+export async function setBomLowStockBuilds(productId: string, builds: number) {
+  await requireAnyPermission([PERMISSIONS.BOM_EDIT, PERMISSIONS.BOM_CREATE, PERMISSIONS.STOCK_LOWSTOCK_MANAGE]);
+  const parsed = z.number().int("Whole builds only").min(1, "At least one build").max(1000, "That is a lot of builds — at most 1000").safeParse(builds);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { code: true } });
+  if (!product) return { error: "Product not found" };
+
+  await prisma.billOfMaterials.updateMany({ where: { productId }, data: { lowStockBuilds: parsed.data } });
+  await logActivity(
+    "UPDATED",
+    "BillOfMaterials",
+    productId,
+    `Low-stock cover for ${product.code}: components kept for ${parsed.data} build${parsed.data === 1 ? "" : "s"}`
+  );
+
+  await refreshBomWatches();
+  revalidatePath(`/bom/${productId}`);
+  return { success: true };
+}
+
+/**
+ * Bring the automatic low-stock watches in line after a BOM change. A failure
+ * here must not undo or fail the BOM change itself — the next change, build or
+ * "Update from BOMs" catches up.
+ */
+async function refreshBomWatches() {
+  try {
+    await syncBomWatches();
+    revalidatePath("/procurement");
+  } catch (e) {
+    console.error("Low-stock BOM sync failed:", e);
+  }
 }
 
 /**

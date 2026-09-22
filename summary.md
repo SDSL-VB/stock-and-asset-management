@@ -7,6 +7,10 @@ Read `README.md` first for what the system *does*. This one is about where it
 is.
 
 
+
+
+
+
 <!-- index:start -->
 
 ## Contents
@@ -115,32 +119,59 @@ prisma/
 | Change what a role can do | `prisma/setup-roles-and-people.ts`, then run it |
 | Add a permission | `prisma/lib/permission-catalog.ts` + `src/lib/rbac/permissions.ts` |
 | Change who sees which stock | `src/lib/stock-visibility.ts` |
-| Change what counts as available, or as held | `src/lib/stock-availability.ts` — `availableQuantity()` is what can be promised, `heldQuantity()` is what is physically there |
-| Change a stock entry's fields or approval steps | `/configure` in the app, not the code — but note it only affects entries submitted *after* the change |
+| Change what counts as available, or as held | `src/lib/stock-availability.ts` — `availableQuantity()` is what can be promised, `heldQuantity()` is what is physically there. A department holding has its own pair: `heldByIssue()` / `availableFromIssue()` |
+| Change how repeat receipts of one product combine on the Reports page | `src/lib/stock-grouping.ts` for the arithmetic (the price column shows one price, or the min–max range) |
+| Change a stock entry's fields or approval steps | Stored in the database (`getFieldConfigs()` / `getAttachmentTypeConfigs()` in `stock.ts` read it). The `/configure` page that edited it is taken out for now; until it returns, change the rows directly. A change only affects entries submitted *after* it |
 | Change wording of product kinds or groups | `src/lib/vocabulary.ts` — every screen reads it |
-| Add a page | a folder in `(dashboard)`, a route in `middleware.ts`, an item in `src/lib/constants.ts` |
-| Change the sidebar | `src/lib/constants.ts` |
+| Change how a product code is assembled | `src/lib/product-codes.ts` — category prefix, optional subcategory segment, typed suffix |
+| Change what a product must carry | The `catalog_config` row (the `/configure` card is taken out for now). The rules are read by `getCatalogRules()` and applied by `catalogRuleErrors()`, so the form and the server agree |
+| Change the "What do you need?" dialog | `src/components/shared/need-dialog.tsx`; it saves through `requestNeeds()` in `src/lib/actions/needs.ts` |
+| Change which products may have a bill of materials | `isMadeKind()` in `src/lib/vocabulary.ts` — only FINISHED today; raw materials and ready goods are bought |
+| Add a page | a folder in `(dashboard)`, a route in `middleware.ts`, an item in `src/lib/constants.ts` (with its `group`) |
+| Change the sidebar | `src/lib/constants.ts` — `NAV_GROUPS` is the headings, in order; each item names its group. The breadcrumb words are `ROUTE_LABELS` in `app-topbar.tsx` |
+| Change when stock counts as low, how use is measured, or how "low since" is found | `src/lib/low-stock.ts` |
+| Change which BOM components are watched, where, and at what minimum | `src/lib/low-stock-bom.ts` |
+| Change the rack format ("10.3") | `RACK_PATTERN` in `src/lib/racks.ts` |
+| Change who is notified of what, and the wording | `src/lib/notifications/events.ts` — every event in one file |
+| Change how mail is sent (SMTP) | `src/lib/notifications/mail.ts`; settings in `.env.example` → Mail |
+| Change when low stock and late orders are checked | `src/lib/notifications/checks.ts`; the daily job is `src/app/api/cron/daily/route.ts` + `vercel.json` |
+| Change when an order line counts as on time or late | `src/lib/order-timing.ts` |
+| Change who may act on another person's account | `src/lib/rbac/authority.ts` — one rule for edit, password, status, delete, roles, grants, departments |
+| Stop two people taking the same stock at once | `lockEntries()` in `src/lib/stock-locks.ts`, inside the transaction that takes it |
+| Change who may attach documents | `src/lib/attachment-rules.ts` — used by the upload route and every attach action |
+| Change what a need request PDF looks like | `src/lib/need-list-pdf.ts` |
+| Change who a deleted person's records move to, or add a table that points at people | `PERSON_LINKS` in `src/lib/actions/users.ts` — a new column that points at a user must be listed there, or deleting that user fails |
 | Change a reference number format | `src/lib/reference-numbers.ts` |
 | Change how long deletions are kept | `RECYCLE_BIN_DAYS` in `src/lib/recycle-bin.ts` |
 | Change what `permissions.md` says | `prisma/generate-permissions-doc.ts`, then `npm run docs:permissions` — the file itself is generated and hand edits are overwritten |
 | Change how often pages update themselves | `src/hooks/use-live-data.ts`; mounted for the whole dashboard by `src/components/shared/live-data.tsx` |
 | Add a filter to the stock list | `src/app/(dashboard)/stock/_components/entry-filters.tsx` for the control, `stock-entry-list.tsx` for the matching, and the URL keys in `stock/page.tsx` |
 | Deploy it, or change the image | `Dockerfile`, `docker-compose.yml`, `docs/hosting.md` |
-| Test that a permission actually gates something | `docs/test-cases-permissions.md` (all 105 keys) or `docs/test-cases-stock-approval.md` (the arriving-goods flow in depth) |
+| Change the colour of a status badge anywhere | `src/lib/design/status.ts` — `TONE_BY_STATUS` maps the status word to one of five tones, `statusPill()` is what components call. Never write `bg-amber-50` on a badge: it has no dark-mode variant |
+| Change how a rupee figure is printed | `src/lib/format.ts` — three functions, differing only in how they treat paise |
+| Test that a permission actually gates something | `docs/test-cases-permissions.md` (all 113 keys) or `docs/test-cases-stock-approval.md` (the arriving-goods flow in depth) |
+| Find out why something was built this way | `docs/decisions.md` — the questions that were settled, and what was settled |
 
 ### The areas, and their action file
 
 | Area | Action file | Page |
 |---|---|---|
 | Goods arriving | `stock.ts` | `/stock` |
+| Several items arriving together (a delivery) | `deliveries.ts` | `/stock/new?mode=delivery`, `/stock/delivery/[id]` |
+| Racks: where stock sits, and finding it | `racks.ts` | `/stock/find`, each entry's page |
+| A person's notifications and mail choices | `notifications.ts` | the bell, `/settings/profile` |
 | Buying | `procurement.ts` | `/procurement` |
+| Raising needs (one or many), need requests and their downloads | `needs.ts` | `/procurement`, `/builds` |
+| Low stock: what is watched, and minimums | `low-stock.ts` | `/procurement`, the bell |
+| Who supplies what, and each pair's lead time | `suppliers.ts` | `/vendors`, `/stock/products`, `/procurement` |
 | Departments' holdings, transfers | `assets.ts` | `/assets` |
 | Catalog, and requests for it | `products.ts` | `/stock/products` |
 | What things are made of | `bom.ts` | `/bom` |
 | Making them | `builds.ts` | `/builds` |
 | Goods leaving | `dispatch.ts` | `/dispatch` |
-| Cross-site readiness | `fulfilment.ts` | `/fulfilment` |
+| Cross-site readiness | `fulfilment.ts` | `/builds` (Plan tab), `/dispatch` (Site requests) |
 | Reports | `reports.ts` | `/reports` |
+| Damaged, lost and unusable stock | `write-offs.ts` | `/wastage` |
 | History | `activity.ts` | `/activity` |
 | People, roles, departments | `users.ts`, `roles.ts`, `departments.ts` | `/users`, `/roles`, `/departments` |
 | Vendors, clients | `vendors.ts`, `clients.ts` | `/vendors`, `/clients` |
@@ -157,7 +188,9 @@ prisma/
 2. `src/lib/rbac/permissions.ts` — the constant
 3. `requirePermission(...)` on the action **and** hide the UI without it
 4. `middleware.ts` if it opens a page
-5. Grant it in `prisma/setup-roles-and-people.ts` and run that
+5. Grant it in `prisma/setup-roles-and-people.ts` and run that. The script
+   creates the new permission row first, so this works on a live database —
+   never use `db:seed` for it, which wipes everything
 6. `npm run docs:permissions`
 
 If the new key is useless on its own — approving something you cannot see —
@@ -175,7 +208,11 @@ they can use or shown one they cannot. `npm run audit:access` catches most of it
 
 `prisma migrate dev` is interactive and does not work here. Write the SQL by
 hand in a new folder under `prisma/migrations/`, then `npx prisma migrate
-deploy`. Stop the dev server before `npx prisma generate`.
+deploy`. Stop the dev server before `npx prisma generate`, and start it again
+afterwards — on any machine, not just Windows. A running server keeps the
+database client it started with, so after a schema change it fails with
+"Cannot read properties of undefined (reading 'findMany')" on the new table
+until it restarts. The code and database are fine; the process is stale.
 
 ---
 

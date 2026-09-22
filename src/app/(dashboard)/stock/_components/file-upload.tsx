@@ -15,6 +15,31 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { upload } from "@vercel/blob/client";
 import { checkAttachmentUpload, recordStockAttachment } from "@/lib/actions/stock";
+import { recordDeliveryAttachment } from "@/lib/actions/deliveries";
+
+/**
+ * The attachment picker on a stock entry.
+ *
+ * Uploads run in TWO steps, and the order is the point:
+ *
+ *   1. checkAttachmentUpload()  asks the server whether this is allowed — signed
+ *                               in, holds the permission, entry still editable,
+ *                               right type and size. No file is sent yet.
+ *   2. upload()                 the browser sends the bytes STRAIGHT to blob
+ *                               storage with the token step 1 issued.
+ *   3. recordStockAttachment()  tells the server where they landed.
+ *
+ * The file never passes through our server, because a serverless function may
+ * only receive about 4.5 MB of request body and a 10 MB invoice was being
+ * rejected with a 413 before any of our code ran. See `src/app/api/upload/route.ts`,
+ * which is the real gate: no token, no upload.
+ *
+ * On a delivery (several entries booked in together) the file is uploaded once
+ * against its first line and then recorded on every line, via `deliveryId`.
+ *
+ * The type list is stored per deployment (attachment_type_configs), so the built-in
+ * defaults here are only a fallback for a database that has none set.
+ */
 
 interface AttachmentTypeConfig {
   id: string;
@@ -25,11 +50,14 @@ interface AttachmentTypeConfig {
 }
 
 interface Props {
+  /** The entry the upload is checked against — a delivery's first line */
   stockEntryId: string;
+  /** When set, the uploaded file is recorded on every editable line of this delivery */
+  deliveryId?: string;
   attachmentTypes?: AttachmentTypeConfig[];
 }
 
-export function FileUpload({ stockEntryId, attachmentTypes }: Props) {
+export function FileUpload({ stockEntryId, deliveryId, attachmentTypes }: Props) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -106,14 +134,16 @@ export function FileUpload({ stockEntryId, attachmentTypes }: Props) {
       // Only now does the database learn about it. The action re-checks the
       // permission and the entry's status, because everything it is being told
       // here came from the browser.
-      const result = await recordStockAttachment({
-        stockEntryId,
+      const file = {
         attachmentType,
         fileName: selectedFile.name,
         fileUrl: blob.url,
         fileSize: selectedFile.size,
         mimeType: selectedFile.type,
-      });
+      };
+      const result = deliveryId
+        ? await recordDeliveryAttachment({ deliveryId, ...file })
+        : await recordStockAttachment({ stockEntryId, ...file });
 
       if ("error" in result) {
         toast.error(result.error);

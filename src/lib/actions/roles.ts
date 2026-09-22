@@ -1,9 +1,10 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { requirePermission, holdsRole } from "@/lib/rbac/check";
+import { z } from "zod";
+import { requirePermission, requireAnyPermission, holdsRole } from "@/lib/rbac/check";
 import { PERMISSIONS, ROLES } from "@/lib/rbac/permissions";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 
 /**
@@ -52,7 +53,25 @@ export async function getRoleById(id: string) {
   });
 }
 
+/**
+ * Whether the signed-in person may change a role: the Super Admin any role but
+ * their own kind's protection aside; anyone else only a role strictly junior to
+ * their own, and never one they hold — otherwise editing roles is a way to
+ * promote yourself.
+ */
+function refusalToEditRole(
+  currentUser: { role: string; roles?: string[]; hierarchyLevel: number },
+  role: { name: string; hierarchyLevel: number }
+): string | null {
+  if (holdsRole(currentUser, ROLES.SUPER_ADMIN)) return null;
+  if (role.name === ROLES.SUPER_ADMIN) return "Only the Super Admin can change the Super Admin role";
+  if (holdsRole(currentUser, role.name)) return "You cannot change a role you hold yourself";
+  if (role.hierarchyLevel <= currentUser.hierarchyLevel) return `${role.name} is at or above your rank, so you cannot change it`;
+  return null;
+}
+
 export async function getAllPermissions() {
+  await requireAnyPermission([PERMISSIONS.ROLES_VIEW, PERMISSIONS.ROLES_EDIT, PERMISSIONS.ROLES_CREATE]);
   return prisma.permission.findMany({
     orderBy: [{ module: "asc" }, { key: "asc" }],
   });
@@ -64,28 +83,39 @@ export async function updateRolePermissions(
 ) {
   const currentUser = await requirePermission(PERMISSIONS.ROLES_EDIT);
 
-  const role = await prisma.role.findUnique({ where: { id: roleId } });
+  const ids = z.array(z.string()).max(500).safeParse(permissionIds);
+  if (!ids.success) return { error: "That is not a list of permissions" };
+  const wanted = [...new Set(ids.data)];
+
+  const role = await prisma.role.findUnique({
+    where: { id: roleId },
+    include: { permissions: { select: { permissionId: true } } },
+  });
   if (!role) return { error: "Role not found" };
+  const refusal = refusalToEditRole(currentUser, role);
+  if (refusal) return { error: refusal };
 
-  // Prevent non-Super Admin from modifying Super Admin role
-  if (role.name === ROLES.SUPER_ADMIN && !holdsRole(currentUser, ROLES.SUPER_ADMIN)) {
-    return { error: "Only the Super Admin can modify the Super Admin role" };
+  // Every id must be a real permission, and anything ADDED must be one the
+  // editor holds — the same ceiling as granting to a person
+  const permissions = await prisma.permission.findMany({ where: { id: { in: wanted } }, select: { id: true, key: true } });
+  if (permissions.length !== wanted.length) return { error: "One of those permissions does not exist" };
+  const had = new Set(role.permissions.map((p) => p.permissionId));
+  const beyond = permissions.find((p) => !had.has(p.id) && !currentUser.permissions.includes(p.key));
+  if (beyond && !holdsRole(currentUser, ROLES.SUPER_ADMIN)) {
+    return { error: `You can only add permissions you hold yourself (${beyond.key})` };
   }
 
-  // Replace all permissions
-  await prisma.rolePermission.deleteMany({ where: { roleId } });
-
-  if (permissionIds.length > 0) {
-    await prisma.rolePermission.createMany({
-      data: permissionIds.map((permissionId) => ({ roleId, permissionId })),
-    });
-  }
+  // Replace all permissions, together or not at all
+  await prisma.$transaction([
+    prisma.rolePermission.deleteMany({ where: { roleId } }),
+    prisma.rolePermission.createMany({ data: wanted.map((permissionId) => ({ roleId, permissionId })) }),
+  ]);
 
   await logActivity(
     "UPDATED",
     "Role",
     roleId,
-    `Updated permissions for ${role.name} (${permissionIds.length} permissions)`
+    `Updated permissions for ${role.name} (${wanted.length} permissions)`
   );
 
   revalidatePath("/roles");
@@ -94,10 +124,17 @@ export async function updateRolePermissions(
 }
 
 export async function updateRoleHierarchy(roleId: string, hierarchyLevel: number) {
-  await requirePermission(PERMISSIONS.ROLES_EDIT);
+  const currentUser = await requirePermission(PERMISSIONS.ROLES_EDIT);
+  if (!Number.isInteger(hierarchyLevel)) return { error: "A rank is a whole number" };
 
   const role = await prisma.role.findUnique({ where: { id: roleId } });
   if (!role) return { error: "Role not found" };
+  const refusal = refusalToEditRole(currentUser, role);
+  if (refusal) return { error: refusal };
+  // Nobody lifts a role to their own rank or above
+  if (!holdsRole(currentUser, ROLES.SUPER_ADMIN) && hierarchyLevel <= currentUser.hierarchyLevel) {
+    return { error: "You can only place a role below your own rank" };
+  }
 
   // Super Admin (0) and Admin (1) are fixed at the top of the hierarchy
   if (role.name === ROLES.SUPER_ADMIN || role.name === ROLES.ADMIN) {
@@ -123,12 +160,16 @@ export async function updateRoleHierarchy(roleId: string, hierarchyLevel: number
   return { success: true };
 }
 
-export async function createRole(data: { name: string; description?: string; isSystem?: boolean }) {
-  // Purely permission-gated (roles.create) — no role-name checks
+export async function createRole(data: { name: string; description?: string }) {
   await requirePermission(PERMISSIONS.ROLES_CREATE);
+  const parsed = z
+    .object({ name: z.string().trim().min(2, "Give the role a name").max(60), description: z.string().trim().max(300).optional() })
+    .safeParse(data);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { name, description } = parsed.data;
 
   const existing = await prisma.role.findUnique({
-    where: { name: data.name },
+    where: { name },
   });
   if (existing) return { error: "A role with this name already exists" };
 
@@ -139,9 +180,10 @@ export async function createRole(data: { name: string; description?: string; isS
 
   const role = await prisma.role.create({
     data: {
-      name: data.name,
-      description: data.description,
-      isSystem: data.isSystem ?? false,
+      name,
+      description,
+      // Protected (undeletable) roles are made by the setup script, never here
+      isSystem: false,
       hierarchyLevel: nextLevel,
     },
   });
@@ -158,7 +200,7 @@ export async function createRole(data: { name: string; description?: string; isS
 }
 
 export async function deleteRole(id: string) {
-  await requirePermission(PERMISSIONS.ROLES_DELETE);
+  const currentUser = await requirePermission(PERMISSIONS.ROLES_DELETE);
 
   const role = await prisma.role.findUnique({
     where: { id },
@@ -172,6 +214,8 @@ export async function deleteRole(id: string) {
 
   if (!role) return { error: "Role not found" };
   if (role.isSystem) return { error: "System roles cannot be deleted" };
+  const refusal = refusalToEditRole(currentUser, role);
+  if (refusal) return { error: refusal };
   if (role._count.users > 0)
     return { error: "Cannot delete a role that has users assigned to it" };
   if (role._count.heldAsAdditional > 0)
@@ -180,7 +224,7 @@ export async function deleteRole(id: string) {
     };
   if (role._count.approvalSteps > 0)
     return {
-      error: "This role is used as an approver in an approval flow. Remove it from the flow first (Stock Config → Approval Flows).",
+      error: "This role is named as an approver in the stock approval flow, so it cannot be deleted.",
     };
 
   await prisma.rolePermission.deleteMany({ where: { roleId: id } });

@@ -32,11 +32,35 @@ import {
   closePurchaseOrder,
   cancelPurchaseOrder,
 } from "@/lib/actions/procurement";
-import { NewIntentDialog } from "./new-intent-dialog";
+import { NeedDialog, type NeedProduct } from "@/components/shared/need-dialog";
+import { NeedListDialog } from "./need-list-dialog";
 import { NewOrderDialog } from "./new-order-dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { ClipboardList, PackageSearch, Check, X, Undo2, Loader2 } from "lucide-react";
+import { formatMoney } from "@/lib/format";
+import { toneStyles, type StatusTone } from "@/lib/design/status";
+import { updateLeadTimeFromOrder } from "@/lib/actions/suppliers";
+import { NEED_STATUS_LABEL } from "@/lib/vocabulary";
+
+/**
+ * The Procurement page: stated needs, and the orders raised against them.
+ *
+ * Two tabs over one journey — an engineer says what is needed, a buyer decides
+ * it is worth ordering, and verified needs become an order to a single vendor.
+ * Each need can only be ordered once.
+ *
+ * Tabs are built from permissions rather than fixed, so somebody who may raise
+ * needs but not orders sees one tab rather than two with one of them dead.
+ *
+ * The verification step can be switched off (the stored procurement flow), in
+ * which case anything raised is immediately orderable — which is why
+ * `requiresApproval` is passed in rather than assumed.
+ *
+ * Nothing here stores how much of an order is still outstanding. It is the
+ * ordered quantity less the stock entries pointing at the line, so a part
+ * delivery needs no bookkeeping beyond entering what turned up.
+ */
 
 type Intent = {
   id: string;
@@ -55,10 +79,19 @@ type Intent = {
   requestedBy: { name: string };
   reviewedBy: { name: string } | null;
   order: { id: string; poNumber: string; status: string } | null;
+  needList: { id: string; listNumber: string } | null;
 };
 
 type OrderLine = {
   id: string;
+  productId: string;
+  leadTimeDays: number | null;
+  expectedBy: Date | null;
+  /** On time / late / overdue against the lead time — src/lib/order-timing.ts */
+  timing: { state: "waiting" | "overdue" | "on-time" | "late" | "no-date"; days: number; label: string };
+  recordedLeadTime: number | null;
+  /** Days it actually took, when clearly longer than the lead time on record */
+  suggestedLeadTime: number | null;
   productCode: string;
   productName: string;
   unit: string;
@@ -75,6 +108,7 @@ type Order = {
   id: string;
   poNumber: string;
   status: "OPEN" | "CLOSED" | "CANCELLED";
+  vendorId: string;
   vendorName: string;
   locationName: string;
   expectedDate: Date | null;
@@ -94,7 +128,7 @@ interface Props {
   intents: Intent[];
   orders: Order[];
   intentForm: {
-    products: { id: string; code: string; name: string; unit: string; kind: string; categoryName: string }[];
+    products: NeedProduct[];
     vendors: { id: string; name: string }[];
     locations: { id: string; name: string }[];
   } | null;
@@ -113,43 +147,46 @@ interface Props {
     requestedByName: string;
     neededBy: Date | null;
   }[];
-  orderForm: { vendors: { id: string; name: string }[]; locations: { id: string; name: string }[] } | null;
+  orderForm: {
+    vendors: { id: string; name: string }[];
+    locations: { id: string; name: string }[];
+    leadTimes: { productId: string; vendorId: string; leadTimeDays: number }[];
+  } | null;
   requiresApproval: boolean;
   canSeeIntents: boolean;
   canRaiseIntent: boolean;
   canApproveIntent: boolean;
+  /** Approvers and order raisers may download a need request as CSV / PDF */
+  canDownloadLists: boolean;
   canSeeOrders: boolean;
   canRaiseOrder: boolean;
   canCloseOrder: boolean;
   canSeeValue: boolean;
+  /** May update a vendor's recorded lead time from a late order */
+  canEditLeadTimes: boolean;
   currentUserId: string;
 }
 
+// Tones rather than raw palette colours, so the badges follow the theme. The
+// tone is chosen per state on purpose: a verified need is still waiting on the
+// buyer (blue, in progress) and only an ordered one is settled (green).
 const INTENT_STATUS: Record<Intent["status"], { label: string; className: string }> = {
-  PENDING: { label: "Waiting", className: "bg-amber-50 text-amber-800 border-amber-200" },
-  APPROVED: { label: "Ready to order", className: "bg-blue-50 text-blue-800 border-blue-200" },
-  ORDERED: { label: "Ordered", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  REJECTED: { label: "Declined", className: "bg-red-50 text-red-700 border-red-200" },
-  CANCELLED: { label: "Withdrawn", className: "bg-gray-100 text-gray-600 border-gray-200" },
+  PENDING: { label: NEED_STATUS_LABEL.PENDING, className: toneStyles("pending").pill },
+  APPROVED: { label: NEED_STATUS_LABEL.APPROVED, className: toneStyles("info").pill },
+  ORDERED: { label: NEED_STATUS_LABEL.ORDERED, className: toneStyles("approved").pill },
+  REJECTED: { label: NEED_STATUS_LABEL.REJECTED, className: toneStyles("rejected").pill },
+  CANCELLED: { label: NEED_STATUS_LABEL.CANCELLED, className: toneStyles("draft").pill },
 };
 
 const ORDER_STATUS: Record<Order["status"], { label: string; className: string }> = {
-  OPEN: { label: "Open", className: "bg-blue-50 text-blue-800 border-blue-200" },
-  CLOSED: { label: "Closed", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  CANCELLED: { label: "Cancelled", className: "bg-gray-100 text-gray-600 border-gray-200" },
+  OPEN: { label: "Open", className: toneStyles("info").pill },
+  CLOSED: { label: "Closed", className: toneStyles("approved").pill },
+  CANCELLED: { label: "Cancelled", className: toneStyles("draft").pill },
 };
 
 function formatDate(d: Date | null) {
   if (!d) return "—";
   return new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(new Date(d));
-}
-
-function formatMoney(n: number) {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 2,
-  }).format(n);
 }
 
 export function ProcurementManager(props: Props) {
@@ -163,11 +200,13 @@ export function ProcurementManager(props: Props) {
     canSeeIntents,
     canRaiseIntent,
     canApproveIntent,
+    canDownloadLists,
     canSeeOrders,
     canRaiseOrder,
     canCloseOrder,
     canSeeValue,
     currentUserId,
+    canEditLeadTimes,
   } = props;
 
   // Only render a tab someone can actually use
@@ -191,7 +230,7 @@ export function ProcurementManager(props: Props) {
           ))}
         </TabsList>
         <div className="flex flex-wrap gap-2">
-          {canRaiseIntent && intentForm && <NewIntentDialog {...intentForm} />}
+          {canRaiseIntent && intentForm && <NeedDialog {...intentForm} />}
           {canRaiseOrder && orderForm && (
             <NewOrderDialog
               {...orderForm}
@@ -208,6 +247,7 @@ export function ProcurementManager(props: Props) {
             intents={intents}
             canApprove={canApproveIntent}
             canRaise={canRaiseIntent}
+            canDownloadLists={canDownloadLists}
             currentUserId={currentUserId}
           />
         </TabsContent>
@@ -215,7 +255,12 @@ export function ProcurementManager(props: Props) {
 
       {canSeeOrders && (
         <TabsContent value="orders">
-          <OrderList orders={orders} canClose={canCloseOrder} canSeeValue={canSeeValue} />
+          <OrderList
+            orders={orders}
+            canClose={canCloseOrder}
+            canSeeValue={canSeeValue}
+            canEditLeadTimes={canEditLeadTimes}
+          />
         </TabsContent>
       )}
     </Tabs>
@@ -226,11 +271,13 @@ function IntentTable({
   intents,
   canApprove,
   canRaise,
+  canDownloadLists,
   currentUserId,
 }: {
   intents: Intent[];
   canApprove: boolean;
   canRaise: boolean;
+  canDownloadLists: boolean;
   currentUserId: string;
 }) {
   const router = useRouter();
@@ -290,7 +337,14 @@ function IntentTable({
             <TableBody>
               {intents.map((i) => (
                 <TableRow key={i.id}>
-                  <TableCell className="font-mono text-xs">{i.intentNumber}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {i.intentNumber}
+                    {i.needList && (
+                      <div>
+                        <NeedListDialog list={i.needList} canDownload={canDownloadLists} />
+                      </div>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <div className="min-w-0">
                       <p className="truncate font-medium">{i.product.name}</p>
@@ -425,14 +479,26 @@ function IntentTable({
   );
 }
 
+/** Tone for a line's timing: late or overdue stand out, on time is quiet */
+const TIMING_TONE: Record<OrderLine["timing"]["state"], StatusTone> = {
+  waiting: "info",
+  overdue: "rejected",
+  "on-time": "approved",
+  late: "pending",
+  "no-date": "draft",
+};
+
 function OrderList({
   orders,
   canClose,
   canSeeValue,
+  canEditLeadTimes,
 }: {
   orders: Order[];
   canClose: boolean;
   canSeeValue: boolean;
+  /** May update a vendor's recorded lead time — see suppliers.ts */
+  canEditLeadTimes: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -533,6 +599,7 @@ function OrderList({
                     <TableHead className="text-right">Still owed</TableHead>
                     {canSeeValue && <TableHead className="text-right">Unit price</TableHead>}
                     {canSeeValue && <TableHead className="text-right">Line total</TableHead>}
+                    <TableHead>Timing</TableHead>
                     <TableHead>From</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -569,6 +636,39 @@ function OrderList({
                           {line.lineTotal !== null ? formatMoney(line.lineTotal) : "—"}
                         </TableCell>
                       )}
+                      <TableCell>
+                        <Badge variant="outline" className={toneStyles(TIMING_TONE[line.timing.state]).pill}>
+                          {line.timing.label}
+                        </Badge>
+                        {line.expectedBy && (
+                          <span className="mt-0.5 block text-micro text-muted-foreground">
+                            {line.leadTimeDays} day{line.leadTimeDays === 1 ? "" : "s"} · due {formatDate(line.expectedBy)}
+                          </span>
+                        )}
+                        {line.suggestedLeadTime !== null && (
+                          <span className="mt-1 block text-micro">
+                            Took {line.suggestedLeadTime} days; {order.vendorName} has {line.recordedLeadTime} on record.
+                            {canEditLeadTimes && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="ml-1 h-6 px-2 text-micro"
+                                disabled={pending}
+                                onClick={() =>
+                                  startTransition(async () => {
+                                    const res = await updateLeadTimeFromOrder(line.productId, order.vendorId, line.suggestedLeadTime!);
+                                    if ("error" in res) return void toast.error(res.error);
+                                    toast.success(`${order.vendorName}: lead time now ${line.suggestedLeadTime} days`);
+                                    router.refresh();
+                                  })
+                                }
+                              >
+                                Update lead time to {line.suggestedLeadTime} days
+                              </Button>
+                            )}
+                          </span>
+                        )}
+                      </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">
                         {line.intentNumber ?? "—"}
                       </TableCell>

@@ -53,6 +53,9 @@ interface Props {
  * reason it was given and who gave it, because a grant nobody can explain is
  * one nobody will ever dare remove.
  *
+ * Several can be ticked and granted together: they share one reason and one
+ * end date, and are saved all at once or not at all.
+ *
  * This card is rendered only for holders of users.permissions.grant, and never
  * on your own profile.
  */
@@ -67,7 +70,7 @@ export function ExtraPermissionsCard({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [adding, setAdding] = useState(false);
-  const [permissionKey, setPermissionKey] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
   const [reason, setReason] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [query, setQuery] = useState("");
@@ -93,7 +96,7 @@ export function ExtraPermissionsCard({
 
   function reset() {
     setAdding(false);
-    setPermissionKey("");
+    setPicked([]);
     setReason("");
     setExpiresAt("");
     setQuery("");
@@ -102,7 +105,7 @@ export function ExtraPermissionsCard({
   function grant(alsoGrant = false) {
     startTransition(async () => {
       const res = await grantPermission(userId, {
-        permissionKey,
+        permissionKeys: picked,
         reason,
         expiresAt,
         alsoGrant,
@@ -114,14 +117,18 @@ export function ExtraPermissionsCard({
       // The permission cannot work on its own — say so before saving it
       if ("needsLinked" in res && res.needsLinked) {
         setLinkPrompt({
-          key: permissionKey,
-          name: res.permissionName ?? permissionKey,
+          key: picked.join(","),
+          name: res.permissionName ?? "That permission",
           reason: res.reason ?? "It depends on another permission.",
           missing: res.missing ?? [],
         });
         return;
       }
-      toast.success(`${userName} now holds that permission`);
+      toast.success(
+        picked.length === 1
+          ? `${userName} now holds that permission`
+          : `${userName} now holds those ${picked.length} permissions`
+      );
       reset();
       router.refresh();
     });
@@ -156,7 +163,7 @@ export function ExtraPermissionsCard({
         {!adding && grantable.length > 0 && (
           <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Grant one
+            Grant permissions
           </Button>
         )}
       </CardHeader>
@@ -170,7 +177,7 @@ export function ExtraPermissionsCard({
               matches the name, the key *and* the description.
             */}
             <div className="space-y-1.5">
-              <Label htmlFor="permission-search">Permission</Label>
+              <Label htmlFor="permission-search">Permissions — tick as many as needed</Label>
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -192,12 +199,16 @@ export function ExtraPermissionsCard({
                   </p>
                 ) : (
                   matches.map((p) => {
-                    const isPicked = p.key === permissionKey;
+                    const isPicked = picked.includes(p.key);
                     return (
                       <button
                         key={p.key}
                         type="button"
-                        onClick={() => setPermissionKey(isPicked ? "" : p.key)}
+                        role="checkbox"
+                        aria-checked={isPicked}
+                        onClick={() =>
+                          setPicked((all) => (isPicked ? all.filter((k) => k !== p.key) : [...all, p.key]))
+                        }
                         className={cn(
                           "flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors",
                           isPicked ? "bg-primary/10" : "hover:bg-muted/60"
@@ -205,7 +216,7 @@ export function ExtraPermissionsCard({
                       >
                         <span
                           className={cn(
-                            "mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+                            "mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border",
                             isPicked ? "border-primary bg-primary text-primary-foreground" : "border-input"
                           )}
                         >
@@ -232,6 +243,15 @@ export function ExtraPermissionsCard({
               <p className="text-micro text-muted-foreground">
                 Showing {matches.length} of {grantable.length}. Only permissions you hold
                 yourself are offered.
+                {picked.length > 0 && (
+                  <>
+                    {" "}
+                    <span className="font-medium text-foreground">{picked.length} ticked.</span>{" "}
+                    <button type="button" className="underline" onClick={() => setPicked([])}>
+                      Clear
+                    </button>
+                  </>
+                )}
               </p>
             </div>
 
@@ -261,8 +281,8 @@ export function ExtraPermissionsCard({
             </div>
 
             <div className="flex gap-2">
-              <Button size="sm" onClick={() => grant(false)} disabled={pending || !permissionKey || !reason.trim()}>
-                Grant
+              <Button size="sm" onClick={() => grant(false)} disabled={pending || picked.length === 0 || !reason.trim()}>
+                {picked.length > 1 ? `Grant ${picked.length} permissions` : "Grant"}
               </Button>
               <Button size="sm" variant="ghost" onClick={reset} disabled={pending}>
                 Cancel

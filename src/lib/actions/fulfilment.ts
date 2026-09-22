@@ -14,8 +14,12 @@ import {
   reviewSiteRequestSchema,
 } from "@/lib/validations/fulfilment";
 import { SELF_APPROVAL_REFUSAL } from "@/lib/review-rules";
-import { logActivity } from "./activity";
+import { buildableAtSites, centralAvailability } from "@/lib/build-readiness";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
+import { siteRequestDecided, siteRequested } from "@/lib/notifications/events";
+import { lockEntries } from "@/lib/stock-locks";
+import { NO_SITE } from "@/lib/stock-visibility";
 
 /**
  * FLOW: asking another site for stock.
@@ -44,7 +48,7 @@ import { revalidatePath } from "next/cache";
  * possible. Nothing here is stored — it is a question asked of current stock.
  */
 
-export type SiteStock = {
+type SiteStock = {
   locationId: string;
   locationName: string;
   available: number;
@@ -52,62 +56,7 @@ export type SiteStock = {
   buildable: number;
 };
 
-/** Uncommitted central stock of one product, per site. */
-async function stockByLocation(productId: string): Promise<Map<string, number>> {
-  const entries = await prisma.stockEntry.findMany({
-    where: { productId, status: "APPROVED", departmentId: null },
-    select: {
-      locationId: true,
-      quantity: true,
-      ...availabilityInclude,
-    },
-  });
 
-  const byLocation = new Map<string, number>();
-  for (const e of entries) {
-    if (!e.locationId) continue;
-    const free = availableQuantity(e);
-    if (free <= 0) continue;
-    byLocation.set(e.locationId, round((byLocation.get(e.locationId) ?? 0) + free));
-  }
-  return byLocation;
-}
-
-/**
- * How many complete units of a product each site could build right now, from
- * the top level of its bill of materials.
- *
- * Deliberately one level deep, matching what building actually consumes — a
- * sub-assembly has to exist as stock before it can go into something else.
- */
-async function buildableByLocation(
-  productId: string,
-  locationIds: string[]
-): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-
-  const bom = await prisma.billOfMaterials.findFirst({
-    where: { productId, isActive: true, status: "PUBLISHED" },
-    include: { lines: { where: { isOptional: false } } },
-  });
-  if (!bom || bom.lines.length === 0) return out;
-
-  for (const locationId of locationIds) {
-    let smallest = Infinity;
-
-    for (const line of bom.lines) {
-      const stock = await stockByLocation(line.componentProductId);
-      const here = stock.get(locationId) ?? 0;
-      const supports =
-        line.quantityPerUnit > 0 ? Math.floor(here / line.quantityPerUnit) : 0;
-      smallest = Math.min(smallest, supports);
-      if (smallest === 0) break;
-    }
-
-    out.set(locationId, Number.isFinite(smallest) ? smallest : 0);
-  }
-  return out;
-}
 
 /**
  * Whether a quantity of a product can be fulfilled, and how.
@@ -151,9 +100,9 @@ export async function getFulfilmentPlan(productId: string, quantity: number) {
     orderBy: { name: "asc" },
   });
 
-  const stock = await stockByLocation(product.id);
+  const stock = (await centralAvailability([product.id])).get(product.id) ?? new Map<string, number>();
   const buildable = product.billsOfMaterials.length
-    ? await buildableByLocation(
+    ? await buildableAtSites(
         product.id,
         locations.map((l) => l.id)
       )
@@ -258,7 +207,7 @@ export async function getReviewableSiteRequests() {
     id: r.id,
     title: `${r.quantity} ${r.product.unit} · ${r.product.name}`,
     subtitle: `${r.requestNumber} · for ${r.toLocation.name}`,
-    href: "/fulfilment",
+    href: "/dispatch?tab=requests",
   }));
 }
 
@@ -353,7 +302,7 @@ export async function createSiteRequest(data: unknown) {
 
   // Only worth asking for what is actually free there. This is a courtesy
   // check, not the guarantee — acceptance re-checks, because stock moves.
-  const held = (await stockByLocation(productId)).get(fromLocationId) ?? 0;
+  const held = (await centralAvailability([productId])).get(productId)?.get(fromLocationId) ?? 0;
   if (held <= 0) {
     return { error: "That site is not holding any of this product" };
   }
@@ -386,7 +335,16 @@ export async function createSiteRequest(data: unknown) {
     `Asked ${fromLocation.name} for ${quantity} × ${product.name} on behalf of ${toLocation.name} (${request.requestNumber})`
   );
 
-  revalidatePath("/fulfilment");
+  await siteRequested({
+    requestNumber: request.requestNumber,
+    productName: product.name,
+    quantity,
+    fromLocationId,
+    toLocationName: toLocation.name,
+    requestedById: user.id,
+  });
+  revalidatePath("/dispatch");
+  revalidatePath("/builds");
   return { success: true, request };
 }
 
@@ -400,10 +358,10 @@ export async function getSiteRequests() {
   const seesAllSites = resolveStockScope(user) === "all";
   const requests = await prisma.siteRequest.findMany({
     where:
-      seesAllSites || !user.locationId
+      seesAllSites
         ? {}
         : {
-            OR: [{ fromLocationId: user.locationId }, { toLocationId: user.locationId }],
+            OR: [{ fromLocationId: user.locationId ?? NO_SITE }, { toLocationId: user.locationId ?? NO_SITE }],
           },
     include: {
       product: { select: { code: true, name: true, unit: true } },
@@ -512,7 +470,27 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
   // it reads the table it is about to write to.
   const dispatchNumber = await nextReference("DSP");
 
+  // Claimed, checked and taken in one transaction: a second acceptance at the
+  // same moment finds the request no longer pending, and the stock picked is
+  // locked and re-counted so it cannot have gone elsewhere in between
   const dispatch = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.siteRequest.updateMany({
+      where: { id: request.id, status: "PENDING" },
+      data: {
+        status: "ACCEPTED",
+        reviewNote: parsed.data.reviewNote?.trim() || null,
+        reviewedById: user.id,
+        reviewedAt: new Date(),
+      },
+    });
+    if (claimed.count !== 1) throw new Error("ALREADY_ANSWERED");
+
+    await lockEntries(tx, picks.map((p) => p.stockEntryId));
+    for (const pick of picks) {
+      const fresh = await tx.stockEntry.findUniqueOrThrow({ where: { id: pick.stockEntryId }, include: availabilityInclude });
+      if (pick.quantity > availableQuantity(fresh)) throw new Error("STOCK_MOVED");
+    }
+
     const created = await tx.dispatch.create({
       data: {
         dispatchNumber,
@@ -527,20 +505,14 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
         items: { create: picks },
       },
     });
-
-    await tx.siteRequest.update({
-      where: { id: request.id },
-      data: {
-        status: "ACCEPTED",
-        reviewNote: parsed.data.reviewNote?.trim() || null,
-        reviewedById: user.id,
-        reviewedAt: new Date(),
-        dispatchId: created.id,
-      },
-    });
-
+    await tx.siteRequest.update({ where: { id: request.id }, data: { dispatchId: created.id } });
     return created;
+  }).catch((e: Error) => {
+    if (e.message === "ALREADY_ANSWERED" || e.message === "STOCK_MOVED") return e.message;
+    throw e;
   });
+  if (dispatch === "ALREADY_ANSWERED") return { error: "Someone has just answered this request" };
+  if (dispatch === "STOCK_MOVED") return { error: "Some of that stock was taken just now — try again" };
 
   await logActivity(
     "DISPATCHED",
@@ -549,9 +521,14 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
     `Accepted ${request.requestNumber} — sent ${request.quantity} × ${request.product.name} from ${request.fromLocation.name} to ${request.toLocation.name} as ${dispatch.dispatchNumber}`
   );
 
-  revalidatePath("/fulfilment");
   revalidatePath("/dispatch");
+  revalidatePath("/builds");
   revalidatePath("/stock");
+  await siteRequestDecided(
+    { requestNumber: request.requestNumber, productName: request.product.name, requestedById: request.requestedById },
+    true,
+    `On its way as ${dispatch.dispatchNumber}`
+  );
   return { success: true, dispatchNumber: dispatch.dispatchNumber };
 }
 
@@ -595,7 +572,9 @@ export async function rejectSiteRequest(id: string, data: unknown) {
     `Declined ${request.requestNumber} from ${request.toLocation.name} for ${request.quantity} × ${request.product.name}`
   );
 
-  revalidatePath("/fulfilment");
+  await siteRequestDecided({ requestNumber: request.requestNumber, productName: request.product.name, requestedById: request.requestedById }, false);
+  revalidatePath("/dispatch");
+  revalidatePath("/builds");
   return { success: true };
 }
 
@@ -632,6 +611,7 @@ export async function cancelSiteRequest(id: string) {
     `Withdrew ${request.requestNumber} to ${request.fromLocation.name} for ${request.quantity} × ${request.product.name}`
   );
 
-  revalidatePath("/fulfilment");
+  revalidatePath("/dispatch");
+  revalidatePath("/builds");
   return { success: true };
 }

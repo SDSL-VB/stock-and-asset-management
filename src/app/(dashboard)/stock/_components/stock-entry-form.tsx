@@ -25,10 +25,12 @@ import { toast } from "sonner";
 import { PurchaseOrderPicker, type OpenOrderLine } from "./purchase-order-picker";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Save, Send, Paperclip, Search, X } from "lucide-react";
+import { Combobox } from "@base-ui/react/combobox";
+import { ChevronsUpDown, Loader2, Save, Send, Paperclip, Search, X } from "lucide-react";
 import { FileUpload } from "./file-upload";
 import { RequestProductDialog } from "./request-product-dialog";
 import { codePrefixOf } from "@/lib/product-codes";
+import { formatMoney } from "@/lib/format";
 
 interface FieldConfig {
   id: string;
@@ -88,6 +90,7 @@ interface Props {
     locationId: string | null;
     clientId: string | null;
     batchNumber: string | null;
+    rackLocation?: string | null;
     warranty: {
       purchaseDate: Date;
       modelNumber: string;
@@ -144,15 +147,17 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
           invoiceNumber: initialData.invoiceNumber ?? "",
           locationId: initialData.locationId ?? "",
           batchNumber: initialData.batchNumber ?? "",
+          rackLocation: initialData.rackLocation ?? "",
           clientId: initialData.clientId ?? "",
           isDirectToClient: !!(initialData.clientId ?? initialData.clientName),
           clientName: initialData.clientName ?? "",
           clientLocation: initialData.clientLocation ?? "",
-          customFields: (initialData.customFields as Record<string, unknown>) ?? {},
+          customFields: (initialData.customFields as Record<string, string | number | boolean | null>) ?? {},
         }
       : {
           vendorId: "",
           batchNumber: "",
+          rackLocation: "",
           locationId: defaultLocationId ?? "",
           clientId: "",
           isDirectToClient: false,
@@ -466,10 +471,7 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
             <div className="space-y-2">
               <Label>Total Price</Label>
               <div className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm font-semibold">
-                {new Intl.NumberFormat("en-IN", {
-                  style: "currency",
-                  currency: "INR",
-                }).format(totalPrice)}
+                {formatMoney(totalPrice)}
               </div>
             </div>
           </div>
@@ -511,6 +513,23 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
               )}
             </div>
             )}
+            <div className="space-y-2">
+              <Label htmlFor="rackLocation">Rack</Label>
+              <Input
+                id="rackLocation"
+                {...register("rackLocation")}
+                placeholder="e.g. 10.3"
+                className="font-mono uppercase"
+              />
+              {errors.rackLocation ? (
+                <p className="text-sm text-destructive">{errors.rackLocation.message}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Where it is put away: rack.row — 10.3 is rack 10, row 3. Find stock uses it to
+                  send people straight there.
+                </p>
+              )}
+            </div>
             {canSetBatch && (
               <div className="space-y-2">
                 <Label htmlFor="batchNumber">Batch Number</Label>
@@ -839,8 +858,73 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
   );
 }
 
-// Category select + debounced product-name search that autofills the exact
-// catalog name and code once a product is picked.
+type CategoryOption = { id: string; name: string; codePrefix: string | null };
+
+/**
+ * Pick a category by typing part of its name or code prefix. Optional: it only
+ * narrows the product search, and picking a product fills it in anyway.
+ */
+function CategoryCombobox({
+  categories,
+  value,
+  onChange,
+}: {
+  categories: CategoryOption[];
+  value: string;
+  onChange: (categoryId: string) => void;
+}) {
+  const selected = categories.find((c) => c.id === value) ?? null;
+  return (
+    <Combobox.Root
+      items={categories}
+      value={selected}
+      onValueChange={(next) => onChange((next as CategoryOption | null)?.id ?? "")}
+      itemToStringLabel={(c: CategoryOption) => c.name}
+      isItemEqualToValue={(a: CategoryOption, b: CategoryOption) => a.id === b.id}
+      filter={(c: CategoryOption, query: string) =>
+        `${c.name} ${c.codePrefix ?? ""}`.toLowerCase().includes(query.trim().toLowerCase())
+      }
+    >
+      <div className="relative">
+        <Combobox.Input
+          placeholder="All categories — type to find one"
+          className="h-9 w-full rounded-md border bg-transparent px-3 pr-8 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <Combobox.Trigger
+          aria-label="Show categories"
+          className="absolute inset-y-0 right-0 flex w-8 items-center justify-center text-muted-foreground"
+        >
+          <ChevronsUpDown className="h-4 w-4" />
+        </Combobox.Trigger>
+      </div>
+      <Combobox.Portal>
+        <Combobox.Positioner sideOffset={4} className="z-50">
+          <Combobox.Popup className="max-h-72 w-(--anchor-width) overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+            <Combobox.Empty className="px-2 py-3 text-center text-sm text-muted-foreground empty:hidden">
+              No category matches that.
+            </Combobox.Empty>
+            <Combobox.List>
+              {(c: CategoryOption) => (
+                <Combobox.Item
+                  key={c.id}
+                  value={c}
+                  className="flex cursor-default items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm outline-none data-highlighted:bg-accent data-highlighted:text-accent-foreground"
+                >
+                  {c.name}
+                  {c.codePrefix && <span className="font-mono text-xs text-muted-foreground">{c.codePrefix}</span>}
+                </Combobox.Item>
+              )}
+            </Combobox.List>
+          </Combobox.Popup>
+        </Combobox.Positioner>
+      </Combobox.Portal>
+    </Combobox.Root>
+  );
+}
+
+// Searchable category (optional) + debounced product search that autofills the
+// exact catalog name and code once a product is picked. With no category
+// chosen the search covers the whole catalog, and the product brings its own.
 function ProductSearch({
   categories,
   selected,
@@ -899,33 +983,22 @@ function ProductSearch({
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="space-y-2">
-        <Label>Category *</Label>
-        <Select
+        <Label>Category</Label>
+        <CategoryCombobox
+          categories={categories}
           value={shownCategoryId}
-          items={categories.map((c) => ({ value: c.id, label: c.name }))}
-          onValueChange={(value) => {
-            const next = (value as string) ?? "";
+          onChange={(next) => {
             setCategoryId(next);
             onCategoryChange?.(next);
             // Changing category invalidates the current selection
-            if (selected && selected.category.id !== next) {
+            if (selected && next && selected.category.id !== next) {
               onSelect(null);
               setQuery("");
               setResults([]);
             }
+            if (query.trim()) runSearch(query, next);
           }}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select category" />
-          </SelectTrigger>
-          <SelectContent>
-            {categories.map((cat) => (
-              <SelectItem key={cat.id} value={cat.id}>
-                {cat.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        />
       </div>
 
       <div className="space-y-2" ref={containerRef}>
@@ -957,7 +1030,6 @@ function ProductSearch({
             <Input
               id="productSearch"
               value={query}
-              disabled={!shownCategoryId}
               onChange={(e) => {
                 setQuery(e.target.value);
                 runSearch(e.target.value, shownCategoryId);
@@ -965,7 +1037,7 @@ function ProductSearch({
               onFocus={() => {
                 if (results.length > 0) setOpen(true);
               }}
-              placeholder={shownCategoryId ? "Type product name..." : "Select a category first"}
+              placeholder={shownCategoryId ? "Type product name or code..." : "Search every category..."}
               className="pl-9"
               autoComplete="off"
             />
@@ -984,10 +1056,18 @@ function ProductSearch({
                           className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-accent"
                           onClick={() => {
                             onSelect(product);
+                            // The product decides the category (and so the code's front half)
+                            setCategoryId(product.category.id);
+                            onCategoryChange?.(product.category.id);
                             setOpen(false);
                           }}
                         >
-                          <span className="min-w-0 truncate">{product.name}</span>
+                          <span className="min-w-0 truncate">
+                            {product.name}
+                            {!shownCategoryId && (
+                              <span className="ml-1.5 text-xs text-muted-foreground">{product.category.name}</span>
+                            )}
+                          </span>
                           <span className="shrink-0 font-mono text-xs text-muted-foreground">
                             {product.code}
                           </span>

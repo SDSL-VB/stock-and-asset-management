@@ -38,6 +38,31 @@ import {
   Undo2,
   Download,
 } from "lucide-react";
+import { statusPill } from "@/lib/design/status";
+
+/**
+ * The Dispatch page: consignments leaving, arriving, and going to clients.
+ *
+ * The operator's OWN site is the pivot the three tabs turn on — the same
+ * consignment is "outgoing" to the site that raised it and "incoming" to the
+ * site receiving it, so which tab a row lands in depends on who is looking.
+ *
+ * Statuses, and what each one means for stock:
+ *
+ *   PENDING     raised, waiting for the destination to accept
+ *   IN_TRANSIT  accepted and on the way (client dispatches start here — there
+ *               is nobody at the far end to accept)
+ *   RECEIVED    arrived; the stock books in as central stock at the destination
+ *   REJECTED    the destination refused it
+ *   CANCELLED   the origin withdrew it
+ *
+ * The first three hold stock; the last two do not, which is why rejecting or
+ * cancelling frees the quantity without anything having to move it back. See
+ * `COMMITTING_DISPATCH_STATUSES` in `src/lib/stock-availability.ts`.
+ *
+ * Nobody may accept or reject a consignment they raised themselves — enforced on
+ * the server, and the buttons are simply absent here.
+ */
 
 type DispatchItem = {
   id: string;
@@ -97,14 +122,6 @@ interface Props {
   seesAllLocations?: boolean;
   canExport?: boolean;
 }
-
-const STATUS_STYLES: Record<DispatchRow["status"], string> = {
-  PENDING: "bg-amber-50 text-amber-800 border-amber-200",
-  IN_TRANSIT: "bg-blue-50 text-blue-800 border-blue-200",
-  RECEIVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  REJECTED: "bg-red-50 text-red-700 border-red-200",
-  CANCELLED: "bg-gray-100 text-gray-600 border-gray-200",
-};
 
 const STATUS_LABELS: Record<DispatchRow["status"], string> = {
   PENDING: "Awaiting acceptance",
@@ -290,7 +307,7 @@ function DispatchCards({
             >
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono font-semibold">{d.dispatchNumber}</span>
-                <Badge variant="outline" className={STATUS_STYLES[d.status]}>
+                <Badge variant="outline" className={statusPill(d.status)}>
                   {STATUS_LABELS[d.status]}
                 </Badge>
               </div>
@@ -527,7 +544,7 @@ function DispatchDetailDialog({
             <DialogHeader>
               <DialogTitle className="flex flex-wrap items-center gap-2">
                 <span className="font-mono">{dispatch.dispatchNumber}</span>
-                <Badge variant="outline" className={STATUS_STYLES[dispatch.status]}>
+                <Badge variant="outline" className={statusPill(dispatch.status)}>
                   {STATUS_LABELS[dispatch.status]}
                 </Badge>
               </DialogTitle>

@@ -6,7 +6,7 @@ import { PERMISSIONS } from "@/lib/rbac/permissions";
 import { vendorSchema } from "@/lib/validations/vendor";
 import { toCsv } from "@/lib/csv";
 import { archive } from "@/lib/recycle-bin";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 
 const VENDOR_MANAGE_PERMISSIONS = [

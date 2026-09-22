@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
@@ -15,8 +16,33 @@ import type { PermissionKey } from "./permissions";
  * those.
  */
 
+/**
+ * `auth()`, but at most ONCE per request.
+ *
+ * Use this everywhere instead of calling `auth()` directly — the layouts do too.
+ *
+ * Why it matters more than it looks. Rendering one page calls `auth()` seven or
+ * eight times: the root layout, the dashboard layout, the page's own gate, and
+ * once inside every server action the page awaits. Each of those calls runs
+ * NextAuth's `jwt` callback, which re-reads the user's whole role and permission
+ * graph — six SQL statements — whenever its 30-second freshness window has
+ * lapsed.
+ *
+ * And they ALL re-read, not just the first. The refreshed token is only written
+ * back to the cookie when the response is sent, so every call within the same
+ * request sees the same stale `refreshedAt` and independently decides it is time
+ * to refresh. One page load was issuing about forty-five queries for what is a
+ * single question, and against a database 222ms away that was most of the wait.
+ *
+ * React's `cache()` gives one memo per request, so the answer is fetched once
+ * and handed to everyone else. Nothing about freshness changes: the token could
+ * never be refreshed mid-request anyway, so every one of those calls was already
+ * returning the same value — just at six queries a time.
+ */
+const getSession = cache(async () => auth());
+
 export async function getCurrentUser() {
-  const session = await auth();
+  const session = await getSession();
   return session?.user ?? null;
 }
 

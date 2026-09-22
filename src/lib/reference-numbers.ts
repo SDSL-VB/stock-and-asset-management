@@ -29,9 +29,15 @@ const SERIES = {
   PI: { model: "purchaseIntent", field: "intentNumber" },
   /** Purchase order — what was ordered from a vendor */
   PO: { model: "purchaseOrder", field: "poNumber" },
+  /** Write-off — stock marked damaged, lost or otherwise unusable */
+  WO: { model: "stockWriteOff", field: "writeOffNumber" },
+  /** Need list — several needs raised together: a build's shortfall, or low stock */
+  NR: { model: "needList", field: "listNumber" },
+  /** Delivery — several stock entries that arrived together on one invoice */
+  DLV: { model: "delivery", field: "deliveryNumber" },
 } as const;
 
-export type ReferenceSeries = keyof typeof SERIES;
+type ReferenceSeries = keyof typeof SERIES;
 
 /**
  * The next number in a series, for today.

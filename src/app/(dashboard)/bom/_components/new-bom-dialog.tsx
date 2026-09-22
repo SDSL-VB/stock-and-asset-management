@@ -27,7 +27,7 @@ import { KIND_HINT, KIND_LABEL, COMMON_UNITS, type ProductKind } from "@/lib/voc
 import { getBomCandidates } from "@/lib/actions/bom";
 import { createProduct } from "@/lib/actions/products";
 import { toast } from "sonner";
-import { Plus, Search, Check, Loader2, Wrench, Boxes, ArrowLeft } from "lucide-react";
+import { Plus, Search, Check, Loader2, ArrowLeft } from "lucide-react";
 
 type Candidate = {
   id: string;
@@ -67,7 +67,8 @@ export function NewBomDialog({ categories, canCreateProduct }: Props) {
   const [picked, setPicked] = useState<Candidate | null>(null);
 
   // Inline create
-  const [kind, setKind] = useState<ProductKind>("FINISHED");
+  // Always a finished product — see the note in the form below
+  const kind: ProductKind = "FINISHED";
   const [categoryId, setCategoryId] = useState("");
   const [codeSuffix, setCodeSuffix] = useState("");
   const [name, setName] = useState("");
@@ -235,23 +236,13 @@ export function NewBomDialog({ categories, canCreateProduct }: Props) {
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>What is it?</Label>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <KindChoice
-                  icon={Wrench}
-                  kind="FINISHED"
-                  selected={kind === "FINISHED"}
-                  onClick={() => setKind("FINISHED")}
-                />
-                <KindChoice
-                  icon={Boxes}
-                  kind="KIT"
-                  selected={kind === "KIT"}
-                  onClick={() => setKind("KIT")}
-                />
-              </div>
-            </div>
+            {/* A new product here is always a finished product: this dialog
+                gives it a bill of materials, and only things made here have one.
+                Bought items — raw materials, ready goods — are added in the
+                Catalog instead. */}
+            <p className="rounded-md bg-muted p-2.5 text-caption text-muted-foreground">
+              {KIND_HINT.FINISHED}
+            </p>
 
             <div className="space-y-1.5">
               <Label>Category</Label>
@@ -356,36 +347,3 @@ export function NewBomDialog({ categories, canCreateProduct }: Props) {
   );
 }
 
-function KindChoice({
-  icon: Icon,
-  kind,
-  selected,
-  onClick,
-}: {
-  icon: typeof Wrench;
-  kind: ProductKind;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-start gap-2.5 rounded-lg border p-2.5 text-left transition-colors",
-        selected ? "border-primary/40 bg-primary/[0.04]" : "hover:bg-muted/60"
-      )}
-    >
-      <Icon
-        className={cn(
-          "mt-0.5 h-4 w-4 shrink-0",
-          selected ? "text-primary" : "text-muted-foreground"
-        )}
-      />
-      <span className="min-w-0">
-        <span className="block text-sm font-medium">{KIND_LABEL[kind]}</span>
-        <span className="mt-0.5 block text-micro text-muted-foreground">{KIND_HINT[kind]}</span>
-      </span>
-    </button>
-  );
-}

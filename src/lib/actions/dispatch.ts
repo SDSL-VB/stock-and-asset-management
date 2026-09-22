@@ -17,8 +17,11 @@ import {
   availabilityInclude,
 } from "@/lib/stock-availability";
 import { SELF_APPROVAL_REFUSAL } from "@/lib/review-rules";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
+import { lockEntries } from "@/lib/stock-locks";
+import { NO_SITE } from "@/lib/stock-visibility";
+import { toCsv } from "@/lib/csv";
 
 /**
  * FLOW: goods leaving — to another site, or to a client.
@@ -50,12 +53,11 @@ export async function getDispatches() {
   const scope = resolveStockScope(user);
   const where: Record<string, unknown> = {};
 
-  if (scope !== "all" && user.locationId) {
-    // An operator sees consignments leaving their site and arriving at it
-    where.OR = [
-      { originLocationId: user.locationId },
-      { toLocationId: user.locationId },
-    ];
+  if (scope !== "all") {
+    // An operator sees consignments leaving their site and arriving at it.
+    // With no site on record they see none — never every site.
+    const site = user.locationId ?? NO_SITE;
+    where.OR = [{ originLocationId: site }, { toLocationId: site }];
   }
 
   const canSeeClientDetail = user.permissions.includes(PERMISSIONS.CLIENTS_VIEW);
@@ -131,15 +133,8 @@ export async function getDispatchDashboardCounts() {
   const user = await requireAnyPermission(DISPATCH_PERMISSIONS);
 
   const scope = resolveStockScope(user);
-  const mine =
-    scope !== "all" && user.locationId
-      ? {
-          OR: [
-            { originLocationId: user.locationId },
-            { toLocationId: user.locationId },
-          ],
-        }
-      : {};
+  const site = user.locationId ?? NO_SITE;
+  const mine = scope !== "all" ? { OR: [{ originLocationId: site }, { toLocationId: site }] } : {};
 
   const [awaitingAcceptance, inTransit, deliveredThisMonth] = await Promise.all([
     prisma.dispatch.count({ where: { ...mine, status: "PENDING" } }),
@@ -162,7 +157,8 @@ export async function getDispatchableStock(originLocationId?: string) {
 
   const scope = resolveStockScope(user);
   const where: Record<string, unknown> = { status: "APPROVED", departmentId: null };
-  const originId = scope === "all" ? originLocationId : user.locationId;
+  // Everyone else dispatches only from their own site — with none, nothing
+  const originId = scope === "all" ? originLocationId : user.locationId ?? NO_SITE;
   if (originId) {
     where.locationId = originId;
   }
@@ -223,74 +219,87 @@ export async function createDispatch(data: unknown) {
     return { error: "The destination must be a different location" };
   }
 
-  // Every line has to still be available at this site
-  for (const item of items) {
-    const entry = await prisma.stockEntry.findUnique({
-      where: { id: item.stockEntryId },
-      select: {
-        itemName: true,
-        quantity: true,
-        status: true,
-        departmentId: true,
-        locationId: true,
-        ...availabilityInclude,
-      },
-    });
-    if (!entry) return { error: "One of the selected items no longer exists" };
-    if (entry.status !== "APPROVED" || entry.departmentId !== null) {
-      return { error: `${entry.itemName} is not available in central stock` };
-    }
-    if (entry.locationId !== originId) {
-      return { error: `${entry.itemName} is not held at your location` };
-    }
-    const available = availableQuantity(entry);
-    if (item.quantity > available) {
-      return {
-        error: `Only ${available} of ${entry.itemName} is available — you asked for ${item.quantity}`,
-      };
-    }
+  // One line per stock entry — two lines drawing on the same entry would each
+  // be checked against the same free quantity
+  const entryIds = items.map((i) => i.stockEntryId);
+  if (new Set(entryIds).size !== entryIds.length) {
+    return { error: "The same stock is on two lines — put it on one line with the total" };
   }
 
   const dispatchNumber = await nextReference("DSP");
 
-  // A line carries the batch of the stock it draws from — never a new number.
-  // Two consignments of one batch therefore always agree.
-  const sourceBatches = new Map(
-    (
-      await prisma.stockEntry.findMany({
-        where: { id: { in: items.map((i) => i.stockEntryId) } },
-        select: { id: true, batchNumber: true },
-      })
-    ).map((e) => [e.id, e.batchNumber])
-  );
-
   // A client dispatch has nobody to accept it, so it leaves as in transit.
   const status = destination === "CLIENT" ? "IN_TRANSIT" : "PENDING";
 
-  const dispatch = await prisma.dispatch.create({
-    data: {
-      dispatchNumber,
-      originLocationId: originId,
-      destination,
-      toLocationId: destination === "LOCATION" ? toLocationId : null,
-      clientId: destination === "CLIENT" ? clientId : null,
-      status,
-      notes: notes?.trim() || null,
-      createdById: user.id,
-      items: {
-        create: items.map((item) => ({
-          stockEntryId: item.stockEntryId,
-          quantity: item.quantity,
-          isAsset: item.isAsset ?? false,
-          batchNumber: sourceBatches.get(item.stockEntryId) ?? null,
-        })),
+  // Checked and taken in one transaction, with the entries locked, so two
+  // dispatches raised at the same moment cannot both take the last units
+  const outcome = await prisma.$transaction(async (tx) => {
+    await lockEntries(tx, entryIds);
+
+    for (const item of items) {
+      const entry = await tx.stockEntry.findUnique({
+        where: { id: item.stockEntryId },
+        select: {
+          itemName: true,
+          quantity: true,
+          status: true,
+          departmentId: true,
+          locationId: true,
+          ...availabilityInclude,
+        },
+      });
+      if (!entry) return { error: "One of the selected items no longer exists" };
+      if (entry.status !== "APPROVED" || entry.departmentId !== null) {
+        return { error: `${entry.itemName} is not available in central stock` };
+      }
+      if (entry.locationId !== originId) {
+        return { error: `${entry.itemName} is not held at your location` };
+      }
+      const available = availableQuantity(entry);
+      if (item.quantity > available) {
+        return { error: `Only ${available} of ${entry.itemName} is available — you asked for ${item.quantity}` };
+      }
+    }
+
+    // A line carries the batch of the stock it draws from — never a new number.
+    // Two consignments of one batch therefore always agree.
+    const sourceBatches = new Map(
+      (
+        await tx.stockEntry.findMany({
+          where: { id: { in: entryIds } },
+          select: { id: true, batchNumber: true },
+        })
+      ).map((e) => [e.id, e.batchNumber])
+    );
+
+    const created = await tx.dispatch.create({
+      data: {
+        dispatchNumber,
+        originLocationId: originId,
+        destination,
+        toLocationId: destination === "LOCATION" ? toLocationId : null,
+        clientId: destination === "CLIENT" ? clientId : null,
+        status,
+        notes: notes?.trim() || null,
+        createdById: user.id,
+        items: {
+          create: items.map((item) => ({
+            stockEntryId: item.stockEntryId,
+            quantity: item.quantity,
+            isAsset: item.isAsset ?? false,
+            batchNumber: sourceBatches.get(item.stockEntryId) ?? null,
+          })),
+        },
       },
-    },
-    include: {
-      toLocation: { select: { name: true } },
-      client: { select: { name: true, city: true } },
-    },
+      include: {
+        toLocation: { select: { name: true } },
+        client: { select: { name: true, city: true } },
+      },
+    });
+    return { dispatch: created };
   });
+  if ("error" in outcome) return { error: outcome.error };
+  const { dispatch } = outcome;
 
   const target =
     dispatch.destination === "CLIENT"
@@ -394,7 +403,7 @@ export async function rejectDispatch(id: string, data: unknown) {
   // Rejecting releases the quantity back into the origin's central stock
   revalidatePath("/dispatch");
   revalidatePath("/stock");
-  revalidatePath("/fulfilment");
+  revalidatePath("/builds");
   return { success: true };
 }
 
@@ -482,7 +491,7 @@ export async function cancelDispatch(id: string, data: unknown) {
 
   revalidatePath("/dispatch");
   revalidatePath("/stock");
-  revalidatePath("/fulfilment");
+  revalidatePath("/builds");
   return { success: true };
 }
 
@@ -516,7 +525,16 @@ export async function markDispatchReceived(id: string) {
     return { error: "Only the receiving location can mark this dispatch received" };
   }
 
-  await prisma.$transaction(async (tx) => {
+  const received = await prisma.$transaction(async (tx) => {
+    // Claim it first, conditionally: a second press at the same moment finds
+    // it no longer in transit and changes nothing, so the goods are never
+    // booked in twice at the destination.
+    const claimed = await tx.dispatch.updateMany({
+      where: { id, status: "IN_TRANSIT" },
+      data: { status: "RECEIVED", receivedById: user.id, receivedAt: new Date() },
+    });
+    if (claimed.count !== 1) return false;
+
     if (dispatch.destination === "LOCATION" && dispatch.toLocationId) {
       for (const item of dispatch.items) {
         const source = item.stockEntry;
@@ -556,11 +574,9 @@ export async function markDispatchReceived(id: string) {
       }
     }
 
-    await tx.dispatch.update({
-      where: { id },
-      data: { status: "RECEIVED", receivedById: user.id, receivedAt: new Date() },
-    });
+    return true;
   });
+  if (!received) return { error: "This dispatch has just been marked received by someone else" };
 
   const target =
     dispatch.destination === "CLIENT"
@@ -590,8 +606,15 @@ export async function lookupBatch(batchNumber: string) {
   const trimmed = batchNumber.trim().toUpperCase();
   if (!trimmed) return { error: "Enter a batch number" };
 
+  // Consignments of the caller's own site, as on the dispatch list
+  const site = user.locationId ?? NO_SITE;
   const matches = await prisma.dispatchItem.findMany({
-    where: { batchNumber: { equals: trimmed, mode: "insensitive" } },
+    where: {
+      batchNumber: { equals: trimmed, mode: "insensitive" },
+      ...(resolveStockScope(user) === "all"
+        ? {}
+        : { dispatch: { OR: [{ originLocationId: site }, { toLocationId: site }] } }),
+    },
     include: {
       stockEntry: {
         select: { entryNumber: true, itemCode: true, itemName: true, supplierName: true },
@@ -659,15 +682,9 @@ export async function exportDispatchReport() {
   const user = await requirePermission(PERMISSIONS.DISPATCH_EXPORT);
 
   const scope = resolveStockScope(user);
+  const site = user.locationId ?? NO_SITE;
   const where: Record<string, unknown> =
-    scope !== "all" && user.locationId
-      ? {
-          OR: [
-            { originLocationId: user.locationId },
-            { toLocationId: user.locationId },
-          ],
-        }
-      : {};
+    scope !== "all" ? { OR: [{ originLocationId: site }, { toLocationId: site }] } : {};
 
   const dispatches = await prisma.dispatch.findMany({
     where,
@@ -732,9 +749,7 @@ export async function exportDispatchReport() {
     ])
   );
 
-  const csv = [headers, ...rows]
-    .map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-    .join("\n");
+  const csv = toCsv(headers, rows);
 
   await logActivity(
     "EXPORTED",

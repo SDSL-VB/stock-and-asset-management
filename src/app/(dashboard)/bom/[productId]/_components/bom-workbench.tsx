@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,11 +20,11 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DeleteDialog } from "@/components/shared/delete-dialog";
+import { ProductCombobox } from "@/components/shared/product-combobox";
 import { cn } from "@/lib/utils";
 import {
   KIND_LABEL,
   KIND_HINT,
-  PRODUCT_KINDS,
   COMMON_UNITS,
   labelOfKind,
 } from "@/lib/vocabulary";
@@ -47,14 +48,41 @@ import {
   Hammer,
   Clock,
 } from "lucide-react";
+import { statusPill } from "@/lib/design/status";
+import { LowStockCover } from "./low-stock-cover";
+
+/**
+ * One product's bill of materials: writing it, publishing it, and building from
+ * it.
+ *
+ * A bill of materials lists the components and how many of each go into one
+ * unit. A member writes it; the manager OF THAT MEMBER'S DEPARTMENT publishes
+ * it. Versions are the safety net — editing the live one fixes a mistake,
+ * publishing a new one records a design change, and old versions stay readable
+ * so past work still explains itself.
+ *
+ * Two things about what is on screen:
+ *
+ * The editor loads whatever is in force, else whatever this person has waiting
+ * or was sent back — never somebody else's draft.
+ *
+ * Submissions from another department are shown but carry no buttons. They route
+ * to that department's manager, so the actions are absent rather than present
+ * and refused on click.
+ *
+ * A bill of materials can never contain itself; `wouldCreateCycle` in
+ * `src/lib/bom-tree.ts` runs on save, inside the transaction.
+ */
 
 type Component = {
   id: string;
   code: string;
   name: string;
+  description: string | null;
   unit: string;
   kind: string;
   category: { name: string };
+  subcategory: { name: string } | null;
 };
 
 type Version = {
@@ -71,6 +99,8 @@ type Version = {
   authorDepartment: { id: string; name: string } | null;
   _count: { lines: number; builds: number };
   builds: { status: string }[];
+  /** Low-stock cover: components kept for this many builds */
+  lowStockBuilds: number;
   lines: {
     id: string;
     componentProductId: string;
@@ -125,6 +155,8 @@ interface Props {
   canSetBatch: boolean;
   canEditProduct: boolean;
   canSeeValue: boolean;
+  /** bom.edit, bom.create or stock.lowstock.manage — may change the low-stock cover */
+  canSetCover: boolean;
 }
 
 type DraftLine = {
@@ -137,13 +169,6 @@ type DraftLine = {
 
 let keySeed = 0;
 const nextKey = () => `line-${keySeed++}`;
-
-const STATUS_STYLES: Record<string, string> = {
-  PUBLISHED: "border-emerald-200 bg-emerald-50 text-emerald-800",
-  PENDING: "border-amber-200 bg-amber-50 text-amber-900",
-  REJECTED: "border-red-200 bg-red-50 text-red-800",
-  DRAFT: "border-slate-200 bg-slate-50 text-slate-700",
-};
 
 const STATUS_LABELS: Record<string, string> = {
   PUBLISHED: "published",
@@ -190,6 +215,7 @@ export function BomWorkbench({
   canSetBatch,
   canEditProduct,
   canSeeValue,
+  canSetCover,
 }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -215,7 +241,8 @@ export function BomWorkbench({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
 
-  const [kind, setKind] = useState(product.kind);
+  // Fixed: only a product made here has this page
+  const kind = product.kind;
   const [unit, setUnit] = useState(product.unit);
 
   // Build tab
@@ -235,10 +262,6 @@ export function BomWorkbench({
   const [rejectNote, setRejectNote] = useState("");
   const [deleting, setDeleting] = useState<Version | null>(null);
 
-  const componentItems = useMemo(
-    () => components.map((c) => ({ value: c.id, label: `${c.code} — ${c.name}` })),
-    [components]
-  );
   const byId = useMemo(() => new Map(components.map((c) => [c.id, c])), [components]);
   const writable = canEdit || canCreate;
 
@@ -288,14 +311,16 @@ export function BomWorkbench({
     startTransition(async () => {
       const res = await saveBom(product.id, payload, { asNewVersion });
       if (res?.error) return setError(res.error);
-      flash(
+      // Saving is the end of editing, so it returns to the list of bills of
+      // materials; the message travels as a toast because this page unmounts
+      toast.success(
         res.created
           ? res.published
-            ? `Published version ${res.version}.`
-            : `Version ${res.version} sent for approval.`
-          : `Version ${res.version} updated.`
+            ? `${product.name}: published version ${res.version}.`
+            : `${product.name}: version ${res.version} sent for approval.`
+          : `${product.name}: version ${res.version} updated.`
       );
-      router.refresh();
+      router.push("/bom");
     });
   }
 
@@ -453,24 +478,12 @@ export function BomWorkbench({
                 <CardTitle className="text-sm">What this product is</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-wrap items-end gap-4">
+                {/* The kind is not a choice here: a product with a bill of
+                    materials is made here by definition. Changing it to something
+                    bought is refused by the server anyway. */}
                 <div className="min-w-[240px] flex-1 space-y-1.5">
                   <Label>Kind</Label>
-                  <Select
-                    value={kind}
-                    items={PRODUCT_KINDS.map((k) => ({ value: k, label: KIND_LABEL[k] }))}
-                    onValueChange={(v) => setKind((v as string) ?? product.kind)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PRODUCT_KINDS.map((k) => (
-                        <SelectItem key={k} value={k}>
-                          {KIND_LABEL[k]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <p className="text-sm font-medium">{KIND_LABEL[kind as keyof typeof KIND_LABEL] ?? kind}</p>
                   <p className="text-micro text-muted-foreground">
                     {KIND_HINT[kind as keyof typeof KIND_HINT]}
                   </p>
@@ -493,12 +506,16 @@ export function BomWorkbench({
                 <Button
                   variant="outline"
                   onClick={saveKind}
-                  disabled={pending || (kind === product.kind && unit === product.unit)}
+                  disabled={pending || unit === product.unit}
                 >
                   Save
                 </Button>
               </CardContent>
             </Card>
+          )}
+
+          {versions.length > 0 && (
+            <LowStockCover productId={product.id} builds={versions[0].lowStockBuilds} canSet={canSetCover} />
           )}
 
           <Card>
@@ -508,7 +525,7 @@ export function BomWorkbench({
                 {editing && (
                   <Badge
                     variant="outline"
-                    className={cn("text-micro", STATUS_STYLES[editing.status])}
+                    className={cn("text-micro", statusPill(editing.status))}
                   >
                     version {editing.version} · {STATUS_LABELS[editing.status] ?? editing.status}
                   </Badge>
@@ -544,25 +561,13 @@ export function BomWorkbench({
                         key={line.key}
                         className="grid grid-cols-1 gap-3 rounded-lg border p-3 md:grid-cols-[1fr_120px_110px_1fr_40px] md:items-center md:border-0 md:p-1"
                       >
-                        <Select
+                        {/* Searchable: a real parts list is too long to scroll */}
+                        <ProductCombobox
+                          products={components}
                           value={line.componentProductId}
-                          items={componentItems}
-                          onValueChange={(v) =>
-                            updateLine(line.key, { componentProductId: (v as string) ?? "" })
-                          }
+                          onChange={(id) => updateLine(line.key, { componentProductId: id })}
                           disabled={!writable}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Pick a component" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {components.map((c) => (
-                              <SelectItem key={c.id} value={c.id}>
-                                {c.code} — {c.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        />
 
                         <div className="flex items-center gap-1.5">
                           <Input
@@ -957,7 +962,7 @@ export function BomWorkbench({
                       <span className="font-medium">Version {v.version}</span>
                       <Badge
                         variant="outline"
-                        className={cn("text-micro", STATUS_STYLES[v.status])}
+                        className={cn("text-micro", statusPill(v.status))}
                       >
                         {v.isActive && v.status === "PUBLISHED"
                           ? "in force"

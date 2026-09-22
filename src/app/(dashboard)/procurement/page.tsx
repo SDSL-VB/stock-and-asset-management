@@ -1,5 +1,5 @@
 import { requireAnyPermission } from "@/lib/rbac/check";
-import { PERMISSIONS, PROCUREMENT_PERMISSIONS } from "@/lib/rbac/permissions";
+import { PERMISSIONS, PROCUREMENT_PAGE_PERMISSIONS } from "@/lib/rbac/permissions";
 import {
   getIntents,
   getPurchaseOrders,
@@ -11,9 +11,11 @@ import {
 import { PageHeader } from "@/components/shared/page-header";
 import { HowTo } from "@/components/shared/how-to";
 import { ProcurementManager } from "./_components/procurement-manager";
+import { getStockLevels, getStockLevelFormData } from "@/lib/actions/low-stock";
+import { LowStockPanel } from "./_components/low-stock-panel";
 
 export default async function ProcurementPage() {
-  const user = await requireAnyPermission(PROCUREMENT_PERMISSIONS);
+  const user = await requireAnyPermission(PROCUREMENT_PAGE_PERMISSIONS);
   const has = (p: string) => user.permissions.includes(p);
 
   // Every call is guarded by the key it needs. A failed check redirects, so one
@@ -24,13 +26,23 @@ export default async function ProcurementPage() {
   const canSeeOrders = has(PERMISSIONS.PROCUREMENT_PO_VIEW);
   const canRaiseOrder = has(PERMISSIONS.PROCUREMENT_PO_CREATE);
 
-  const [intents, orders, intentForm, orderable, orderForm, flow] = await Promise.all([
+  const canSeeLowStock = has(PERMISSIONS.STOCK_LOWSTOCK_VIEW);
+  const canManageLowStock = has(PERMISSIONS.STOCK_LOWSTOCK_MANAGE);
+
+  // Whoever acts on a need request — verifies its needs, or orders them — may take
+  // it away as a file, from any of its needs in the Needs table
+  const canDownloadLists =
+    has(PERMISSIONS.PROCUREMENT_INTENT_APPROVE) || has(PERMISSIONS.PROCUREMENT_PO_CREATE);
+
+  const [intents, orders, intentForm, orderable, orderForm, flow, stockLevels, stockLevelForm] = await Promise.all([
     canSeeIntents ? getIntents() : Promise.resolve([]),
     canSeeOrders ? getPurchaseOrders() : Promise.resolve([]),
     canRaiseIntent ? getIntentFormData() : Promise.resolve(null),
     canRaiseOrder ? getOrderableIntents() : Promise.resolve([]),
     canRaiseOrder ? getPurchaseOrderFormData() : Promise.resolve(null),
     getProcurementFlow(),
+    canSeeLowStock ? getStockLevels() : Promise.resolve([]),
+    canManageLowStock ? getStockLevelFormData() : Promise.resolve(null),
   ]);
 
   return (
@@ -53,8 +65,8 @@ export default async function ProcurementPage() {
                 {
                   title: "Turn needs into an order",
                   description: flow.requiresApproval
-                    ? "Procurement verifies each need, then puts one or more onto an order for a single vendor, with the prices agreed. Verification can be switched off in Configuration."
-                    : "Verification is switched off, so any stated need can go straight onto an order. Turn it back on in Configuration if that changes.",
+                    ? "Procurement verifies each need, then puts one or more onto an order for a single vendor, with the prices agreed."
+                    : "Verification is switched off, so any stated need can go straight onto an order.",
                 },
                 {
                   title: "Book in what arrives",
@@ -72,6 +84,18 @@ export default async function ProcurementPage() {
         />
       </PageHeader>
 
+      {canSeeLowStock && (
+        <LowStockPanel
+          rows={stockLevels}
+          form={stockLevelForm}
+          canManage={canManageLowStock}
+          needForm={intentForm}
+        />
+      )}
+
+      {/* Its tabs are built from the procurement keys; someone here only for the
+          low-stock alert holds none, and would get a manager with no tabs */}
+      {(canSeeIntents || canSeeOrders) && (
       <ProcurementManager
         intents={intents}
         orders={orders}
@@ -82,12 +106,17 @@ export default async function ProcurementPage() {
         canSeeIntents={canSeeIntents}
         canRaiseIntent={canRaiseIntent}
         canApproveIntent={has(PERMISSIONS.PROCUREMENT_INTENT_APPROVE)}
+        canDownloadLists={canDownloadLists}
         canSeeOrders={canSeeOrders}
         canRaiseOrder={canRaiseOrder}
         canCloseOrder={has(PERMISSIONS.PROCUREMENT_PO_CLOSE)}
         canSeeValue={has(PERMISSIONS.PROCUREMENT_VALUE_VIEW)}
         currentUserId={user.id}
+        canEditLeadTimes={
+          has(PERMISSIONS.VENDORS_EDIT) || has(PERMISSIONS.PRODUCTS_EDIT) || has(PERMISSIONS.STOCK_LOWSTOCK_MANAGE)
+        }
       />
+      )}
     </div>
   );
 }

@@ -34,6 +34,18 @@ import {
 } from "@/components/ui/select";
 import { Loader2, MoreVertical, Pencil, Power, Trash2 } from "lucide-react";
 
+/**
+ * Rename, re-site or remove one department, from its row on the list.
+ *
+ * A department's LOCATION is the field that matters most here, because it is
+ * where its members get their site from. Nobody has a site of their own; it is
+ * inherited from the department they belong to, which is why Super Admin and
+ * Admin — who belong to none — are never narrowed by one.
+ *
+ * So moving a department between sites moves everyone in it, and changes what
+ * stock they can see. Deleting is recoverable for 30 days like everything else.
+ */
+
 interface Department {
   id: string;
   name: string;
@@ -116,6 +128,7 @@ export function DepartmentActions({ department, canEdit, canDelete, locations = 
           render={<Button variant="ghost" size="sm" aria-label="Department actions" />}
         >
           <MoreVertical className="h-4 w-4" />
+          <span className="text-xs">Actions</span>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {canEdit && (

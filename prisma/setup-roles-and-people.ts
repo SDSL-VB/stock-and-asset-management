@@ -15,9 +15,16 @@
  *
  *   Nothing is granted by role NAME in the application. These lists decide
  *   everything; the code only ever asks "do they hold this key?".
+ *
+ * It also brings the permission TABLE in line with prisma/lib/permission-catalog.ts
+ * before handing anything out, so a newly added key exists on a live database
+ * by the time a role asks for it. That step only adds keys and refreshes their
+ * wording; it never deletes one.
  */
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { randomBytes } from "crypto";
+import { PERMISSION_CATALOG } from "./lib/permission-catalog";
 
 /** What a newly created account gets. Change it on first sign-in. */
 export const DEFAULT_PASSWORD = "Welcome@123!";
@@ -58,10 +65,19 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
       // Assets: read only. Turning stock into a holding belongs to the people
       // who can see the stock it comes from.
       "assets.view",
+      // Admin has no stock.view, so this never opens the Stock Entries page.
+      // What it does is answer "how much may they see?" on the pages they DO
+      // reach — the asset register and the procurement pages both ask, and both
+      // need the answer to be every site. This used to be inferred from the
+      // role being NAMED "Admin"; saying it outright means renaming the role
+      // cannot quietly change what an admin can see.
+      "stock.scope.all",
       // Buying, end to end, including the rule about whether needs are verified
       "procurement.intent.view", "procurement.intent.create", "procurement.intent.approve",
       "procurement.po.view", "procurement.po.create", "procurement.po.close",
       "procurement.value.view", "config.flows.procurement",
+      // They own the catalog, so they decide how strict it is
+      "config.catalog",
       // History of the things they run — not goods movements, not passwords
       "activity.view", "activity.scope.all",
       "activity.view.people", "activity.view.catalog", "activity.view.procurement",
@@ -80,6 +96,9 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
       "reports.view", "reports.export",
       "stock.view", "stock.scope.all", "stock.value.view", "stock.warranty.view",
       "dispatch.view", "dispatch.export",
+      // What has been lost, and to what. Read-only: an auditor reports on
+      // wastage rather than deciding it.
+      "stock.writeoff.view",
       // Read
       "departments.view", "users.view", "bom.view", "products.view", "fulfilment.view",
       // Masters, including taking the list away as a file
@@ -106,6 +125,11 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
       // Their team's transfers land here
       "assets.transfer.request", "assets.transfer.approve",
       "assets.view", "assets.create",
+      // Damage in their department: they report it on their own holdings and
+      // sign off what their team reports. Reversing an approval is an admin
+      // correction, so it is deliberately not here.
+      "stock.writeoff.view", "stock.writeoff.create",
+      "stock.writeoff.department", "stock.writeoff.approve",
       // A manager publishes what their team writes. Building is NOT here: it
       // belongs to whoever runs production, which is one person, not every
       // holder of this role — see the Builder role below.
@@ -131,6 +155,8 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
       "products.view",
       // Asking, never doing: every one of these is reviewed by someone else
       "assets.transfer.request",
+      // Reports damage on what their department holds; a manager decides.
+      "stock.writeoff.view", "stock.writeoff.department",
       "products.request.create", "categories.request.create",
       // Seeing every site's availability is what makes asking another site possible
       "fulfilment.view", "fulfilment.request",
@@ -149,6 +175,9 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
       "stock.view", "stock.create", "stock.edit", "stock.scope.own",
       "stock.batch.edit", "stock.value.view",
       "stock.warranty.view", "stock.warranty.edit",
+      // They unpack the goods, so they are who finds the damage. Reporting it
+      // only; a manager decides whether it comes off the books.
+      "stock.writeoff.view", "stock.writeoff.create",
       "products.view",
       // Enough of procurement to tell a PO delivery from a fresh one
       "procurement.intent.view", "procurement.intent.create", "procurement.po.view",
@@ -195,6 +224,9 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
     hierarchyLevel: 2,
     keys: [
       "stock.approve", "stock.view", "stock.scope.location", "stock.warranty.view",
+      // Signing off what arrives and signing off what is written off are the
+      // same judgement about the same stock at the same site.
+      "stock.writeoff.view", "stock.writeoff.approve",
     ],
   },
 
@@ -282,8 +314,36 @@ const PEOPLE: Person[] = [
 /** Uday covers Bengaluru dispatch through his second role. */
 const DEACTIVATE = ["dispatchblore@straightdrivesport.com"];
 
+/**
+ * Permissions held by ONE person rather than through a role — the exception,
+ * with the reason written down, because "why can he do that?" must always have
+ * an answer.
+ *
+ * Each person listed here ends up with exactly these grants and no others, so
+ * an entry is also how a stale grant is removed. Someone not listed is left
+ * alone. When a grant here becomes a job several people do, move it into a role
+ * and delete the line.
+ */
+const INDIVIDUAL_GRANTS: { email: string; keys: string[]; reason: string }[] = [
+  {
+    email: "kiruba@straightdrivesport.com",
+    keys: ["stock.lowstock.view", "stock.lowstock.manage"],
+    reason: "Watches stock levels and reorders while low stock has no role of its own",
+  },
+];
+
 /** Somewhere to send progress. The seed indents it; the script prints plainly. */
-type Options = { log?: (line: string) => void };
+type Options = {
+  log?: (line: string) => void;
+  /**
+   * The known starting passwords above (DEFAULT_PASSWORD, and any
+   * `newPassword`) are for a local or test database made by the seed. Run on
+   * its own — against a real database — every NEW account gets a random
+   * starting password instead, printed once below; a password written in this
+   * file is a password anyone who reads the code knows.
+   */
+  knownPasswords?: boolean;
+};
 
 /**
  * Creates or updates every role and every person, and points the stock approval
@@ -294,6 +354,33 @@ type Options = { log?: (line: string) => void };
  */
 export async function applyRolesAndPeople(prisma: PrismaClient, options: Options = {}) {
   const log = options.log ?? ((line: string) => console.log(line));
+
+  /* --- the permission catalog ----------------------------------------- */
+  //
+  // Without this, adding a permission to a LIVE database had no working path:
+  // the only thing that created permission rows was seed.ts, which wipes
+  // everything first. So a new key existed in the catalog and in a role list
+  // here, and this script then refused it as unknown.
+  //
+  // Upsert, never delete. A key missing from the catalog is left in the table
+  // rather than removed, because removing it would silently strip it from every
+  // role and person that holds it — that deserves a deliberate migration.
+  const before = await prisma.permission.count();
+  await prisma.$transaction(
+    PERMISSION_CATALOG.map((definition) =>
+      prisma.permission.upsert({
+        where: { key: definition.key },
+        update: {
+          name: definition.name,
+          module: definition.module,
+          description: definition.description,
+        },
+        create: definition,
+      })
+    )
+  );
+  const added = (await prisma.permission.count()) - before;
+  log(`permission catalog: ${PERMISSION_CATALOG.length} keys${added > 0 ? `, ${added} new` : ""}\n`);
 
   const allPermissions = await prisma.permission.findMany({ select: { id: true, key: true } });
   const permissionId = new Map(allPermissions.map((p) => [p.key, p.id]));
@@ -359,21 +446,23 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
     }
 
     if (!user) {
+      const starting = options.knownPasswords
+        ? person.newPassword ?? DEFAULT_PASSWORD
+        : `${randomBytes(9).toString("base64url")}#1Aa`; // meets the password rules
       user = await prisma.user.create({
         data: {
           name: person.name,
           email: person.email,
-          password: await bcrypt.hash(person.newPassword ?? DEFAULT_PASSWORD, 12),
+          password: await bcrypt.hash(starting, 12),
           roleId: role.id,
           departmentId: department?.id ?? null,
           isActive: true,
-          // The password below is written down in this file, so it is a
-          // starting password only: requireAuth() stops each person at
+          // A starting password only: requireAuth() stops each person at
           // /settings/password until they have replaced it.
           mustChangePassword: true,
         },
       });
-      log(`created ${person.name} <${person.email}> — starting password ${person.newPassword ?? DEFAULT_PASSWORD} (must be changed at first sign-in)`);
+      log(`created ${person.name} <${person.email}> — starting password ${starting} (must be changed at first sign-in)`);
     } else {
       await prisma.user.update({
         where: { id: user.id },
@@ -381,7 +470,7 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
           name: person.name,
           roleId: role.id,
           departmentId: department?.id ?? null,
-          isActive: true,
+          // isActive is left alone: an account someone switched off stays off
         },
       });
     }
@@ -411,13 +500,34 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
   }
 
   /* --- individual grants ------------------------------------------------ */
-  // Kiruba's four exceptions are now the Buyer and Stock Approver roles, so the
-  // one-off grants would be duplicates nobody could explain later.
-  const cleared = await prisma.userPermission.deleteMany({
-    where: { user: { email: "kiruba@straightdrivesport.com" } },
-  });
-  if (cleared.count > 0) {
-    log(`\n  removed ${cleared.count} individual grants from Kirubakaran — now covered by his roles`);
+  // Each listed person ends up with exactly their listed grants. This used to
+  // delete ALL of Kirubakaran's grants on every run (his old one-offs had become
+  // roles), which would also have wiped any grant made since.
+  log("");
+  for (const grant of INDIVIDUAL_GRANTS) {
+    const person = await prisma.user.findUnique({ where: { email: grant.email }, select: { id: true, name: true } });
+    if (!person) continue;
+    const ids = grant.keys.map((key) => {
+      const id = permissionId.get(key);
+      if (!id) throw new Error(`Individual grant names a permission that does not exist: ${key}`);
+      return id;
+    });
+    const removed = await prisma.userPermission.deleteMany({
+      where: { userId: person.id, permissionId: { notIn: ids } },
+    });
+    for (const pid of ids) {
+      await prisma.userPermission.upsert({
+        where: { userId_permissionId: { userId: person.id, permissionId: pid } },
+        update: { reason: grant.reason },
+        create: {
+          userId: person.id,
+          permissionId: pid,
+          reason: grant.reason,
+          grantedById: superAdmin?.id ?? person.id,
+        },
+      });
+    }
+    log(`${person.name.padEnd(18)} individually: ${grant.keys.join(", ")}${removed.count ? ` (${removed.count} old grant${removed.count === 1 ? "" : "s"} removed)` : ""}`);
   }
 
   /* --- accounts no longer needed ---------------------------------------- */

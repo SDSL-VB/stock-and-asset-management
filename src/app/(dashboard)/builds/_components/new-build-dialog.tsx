@@ -24,8 +24,9 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { getBuildableProducts, getBuildReadiness, createBuild } from "@/lib/actions/builds";
+import { NeedDialog, type NeedPrefill, type NeedProduct } from "@/components/shared/need-dialog";
 import { toast } from "sonner";
-import { Plus, Search, Loader2, Hammer, AlertTriangle } from "lucide-react";
+import { Plus, Search, Loader2, Hammer, AlertTriangle, Check } from "lucide-react";
 
 type Buildable = {
   id: string;
@@ -46,12 +47,23 @@ type ReadinessLine = {
   needed: number;
   available: number;
   short: number;
+  /** Already asked for or ordered for this site */
+  onTheWay: number;
   isOptional: boolean;
 };
 
 interface Props {
   locations: { id: string; name: string }[];
   canSetBatch: boolean;
+  /**
+   * What the "What do you need?" dialog offers — present only for holders of
+   * procurement.intent.create, who get "Request what's short" on a short build
+   */
+  needForm?: {
+    products: NeedProduct[];
+    vendors: { id: string; name: string }[];
+    locations: { id: string; name: string }[];
+  } | null;
 }
 
 function formatQty(n: number) {
@@ -66,7 +78,7 @@ function formatQty(n: number) {
  * which is most of the time. It picks the bill of materials first, then asks
  * the same questions.
  */
-export function NewBuildDialog({ locations, canSetBatch }: Props) {
+export function NewBuildDialog({ locations, canSetBatch, needForm }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
@@ -80,6 +92,7 @@ export function NewBuildDialog({ locations, canSetBatch }: Props) {
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
   const [batch, setBatch] = useState("");
   const [notes, setNotes] = useState("");
+  const [asking, setAsking] = useState(false);
   const [readiness, setReadiness] = useState<{
     lines: ReadinessLine[];
     canBuild: boolean;
@@ -158,6 +171,25 @@ export function NewBuildDialog({ locations, canSetBatch }: Props) {
       router.refresh();
     });
   }
+
+  // Short, needed, and not yet asked for or ordered
+  const stillToAsk = (readiness?.lines ?? [])
+    .filter((l) => !l.isOptional)
+    .map((l) => ({ ...l, toAsk: l.short - l.onTheWay }))
+    .filter((l) => l.toAsk > 0);
+
+  const shortagePrefill: NeedPrefill | undefined = picked
+    ? {
+        reason: `Short for ${Math.floor(Number(quantity))} × ${picked.name}`,
+        locationId,
+        lines: stillToAsk.map((l) => ({
+          productId: l.componentProductId,
+          quantity: l.toAsk,
+          note: l.onTheWay > 0 ? `${formatQty(l.onTheWay)} ${l.unit} already on the way` : undefined,
+        })),
+        source: { kind: "BUILD_SHORTAGE", productId: picked.id, quantity: Math.floor(Number(quantity)) },
+      }
+    : undefined;
 
   return (
     <Dialog open={open} onOpenChange={toggle}>
@@ -329,6 +361,11 @@ export function NewBuildDialog({ locations, canSetBatch }: Props) {
                             )}
                           >
                             {formatQty(l.available)} {l.unit}
+                            {l.short > 0 && l.onTheWay > 0 && (
+                              <span className="block text-micro font-normal text-muted-foreground">
+                                {formatQty(l.onTheWay)} on the way
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -338,15 +375,44 @@ export function NewBuildDialog({ locations, canSetBatch }: Props) {
               )}
 
               {readiness && !readiness.canBuild && (
-                <p className="flex items-start gap-2 text-sm text-destructive">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>
-                    Not enough on hand.{" "}
-                    {readiness.maxBuildable > 0
-                      ? `The most you could build right now is ${readiness.maxBuildable}.`
-                      : "Nothing can be built until stock arrives."}
-                  </span>
-                </p>
+                <div className="space-y-2">
+                  <p className="flex items-start gap-2 text-sm text-destructive">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      Not enough on hand.{" "}
+                      {readiness.maxBuildable > 0
+                        ? `The most you could build right now is ${readiness.maxBuildable}.`
+                        : "Nothing can be built until stock arrives."}
+                    </span>
+                  </p>
+                  {/* Opens "What do you need?" filled in with whatever is short
+                      and not already asked for; the person picks vendors and the
+                      date. Once everything short is on its way the button reads
+                      "Requested", so the same shortage is not asked for twice. */}
+                  {needForm && picked && (
+                    stillToAsk.length === 0 ? (
+                      <Button type="button" variant="outline" size="sm" disabled>
+                        <Check className="mr-1.5 h-4 w-4" />
+                        Requested
+                      </Button>
+                    ) : (
+                      <>
+                        <Button type="button" variant="outline" size="sm" onClick={() => setAsking(true)}>
+                          Request what&apos;s short ({stillToAsk.length})
+                        </Button>
+                        {asking && (
+                          <NeedDialog
+                            {...needForm}
+                            open
+                            onOpenChange={setAsking}
+                            onRequested={check}
+                            prefill={shortagePrefill}
+                          />
+                        )}
+                      </>
+                    )
+                  )}
+                </div>
               )}
 
               {readiness?.canBuild && (

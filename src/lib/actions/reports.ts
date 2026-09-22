@@ -4,9 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission, resolveStockScope } from "@/lib/rbac/check";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import { toCsv } from "@/lib/csv";
+import { NO_SITE } from "@/lib/stock-visibility";
+import { hideMoney } from "@/lib/hide-money";
 import {
   visibleToDepartmentScope,
-  departmentScopeCandidatesWhere,
 } from "@/lib/stock-visibility";
 import { kindFilter, groupOf, labelOfKind, type ProductGroup } from "@/lib/vocabulary";
 import {
@@ -14,6 +15,9 @@ import {
   heldQuantity,
   committingDispatchItemsWhere,
   committingBuildConsumptionsWhere,
+  centralWriteOffsWhere,
+  issueWriteOffsSelect,
+  heldByIssue,
 } from "@/lib/stock-availability";
 import type { Prisma, StockEntryStatus } from "@prisma/client";
 
@@ -38,13 +42,29 @@ interface ReportFilters {
   group?: ProductGroup;
 }
 
+/**
+ * Someone who sees one site (stock.scope.location) sees that site's stock and
+ * anything they booked in themselves — in every report, as on the stock list.
+ * With no site on record, only their own.
+ */
+function siteWhere(user: { id: string; locationId?: string | null }): Prisma.StockEntryWhereInput {
+  return { OR: [{ locationId: user.locationId ?? NO_SITE }, { createdById: user.id }] };
+}
+
 const STOCK_ENTRY_STATUSES = ["DRAFT", "SUBMITTED", "APPROVED", "REJECTED"] as const;
 
 function isStockEntryStatus(value: string): value is StockEntryStatus {
   return (STOCK_ENTRY_STATUSES as readonly string[]).includes(value);
 }
 
-export async function getStockReport(filters: ReportFilters = {}) {
+/** The stock report — with prices only for those allowed to see them. */
+async function getStockReport(filters: ReportFilters = {}) {
+  const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
+  const result = await readStockReport(filters);
+  return user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW) ? result : hideMoney(result);
+}
+
+async function readStockReport(filters: ReportFilters = {}) {
   const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
 
   const where: Prisma.StockEntryWhereInput = {};
@@ -68,6 +88,7 @@ export async function getStockReport(filters: ReportFilters = {}) {
       { issues: { some: { departmentId: filters.departmentId } } },
     ];
   }
+  if (scope === "location") where.AND = [siteWhere(user)];
   // Checked against the enum rather than trusted. The filter arrives as a
   // string from the report form, and an unrecognised one used to reach Prisma
   // and throw; now it simply does not filter.
@@ -178,9 +199,24 @@ async function computeDepartmentDistribution(
       location: { select: { name: true } },
       quantity: true,
       unitPrice: true,
-      issues: { select: { departmentId: true, quantity: true } },
+      // Both department names ride back on THIS query. Turning ids into names
+      // used to need a second findMany afterwards, and because it depended on
+      // this one's results it could not run in parallel with it — a whole extra
+      // round trip for something the join already had.
+      department: { select: { name: true } },
+      issues: {
+        select: {
+          departmentId: true,
+          quantity: true,
+          department: { select: { name: true } },
+          ...issueWriteOffsSelect,
+        },
+      },
       dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
       buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
+      // The fifth drawdown. Central write-offs only — a department's losses
+      // come off its own holding, never off the entry as well.
+      writeOffs: { where: centralWriteOffsWhere, select: { quantity: true, status: true } },
     },
   });
 
@@ -212,14 +248,16 @@ async function computeDepartmentDistribution(
   }
 
   for (const entry of entries) {
-    let issued = 0;
     for (const issue of entry.issues) {
-      issued += issue.quantity;
       if (restrictToDepartmentId && issue.departmentId !== restrictToDepartmentId) continue;
-      const b = bucket(issue.departmentId, issue.departmentId, null);
+      // What the department still HAS, not what it was handed: a holding it has
+      // written off must stop counting towards its inventory and its value.
+      const inHand = heldByIssue(issue);
+      if (inHand <= 0) continue;
+      const b = bucket(issue.departmentId, issue.departmentId, issue.department.name);
       b.entries.add(entry.id);
-      b.quantity += issue.quantity;
-      b.value += issue.quantity * entry.unitPrice;
+      b.quantity += inHand;
+      b.value += inHand * entry.unitPrice;
     }
     // What is still standing here: issues, consignments and builds all taken off.
     const remaining = heldQuantity(entry);
@@ -227,7 +265,7 @@ async function computeDepartmentDistribution(
       if (entry.departmentId) {
         // Legacy entries carried their own department
         if (restrictToDepartmentId && entry.departmentId !== restrictToDepartmentId) continue;
-        const b = bucket(entry.departmentId, entry.departmentId, null);
+        const b = bucket(entry.departmentId, entry.departmentId, entry.department?.name ?? null);
         b.entries.add(entry.id);
         b.quantity += remaining;
         b.value += remaining * entry.unitPrice;
@@ -243,22 +281,12 @@ async function computeDepartmentDistribution(
     }
   }
 
-  const deptIds = [...byDept.values()]
-    .map((b) => b.departmentId)
-    .filter((id): id is string => id !== null);
-  const departments = await prisma.department.findMany({
-    where: { id: { in: deptIds } },
-    select: { id: true, name: true },
-  });
-  const deptMap = new Map(departments.map((d) => [d.id, d.name]));
-
+  // Every bucket already carries its name, from the join above.
   return [...byDept.values()]
     .map((agg) => ({
       departmentId: agg.departmentId,
       centralLocation: agg.centralLocation,
-      departmentName:
-        agg.name ??
-        (agg.departmentId ? deptMap.get(agg.departmentId) ?? "Unknown" : "Central Stock"),
+      departmentName: agg.name ?? (agg.departmentId ? "Unknown" : "Central Stock"),
       entries: agg.entries.size,
       quantity: agg.quantity,
       value: agg.value,
@@ -266,103 +294,6 @@ async function computeDepartmentDistribution(
     .sort((a, b) => b.value - a.value);
 }
 
-export async function getStockSummaryStats() {
-  const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
-
-  const scope = resolveStockScope(user);
-
-  // Department scope computes from the exact visible set (shared rule)
-  if (scope === "department") {
-    const candidates = await prisma.stockEntry.findMany({
-      where: departmentScopeCandidatesWhere(user.departmentId),
-      select: {
-        status: true,
-        quantity: true,
-        totalPrice: true,
-        departmentId: true,
-        locationId: true,
-        createdById: true,
-        createdAt: true,
-        issues: { select: { departmentId: true, quantity: true } },
-      dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
-      buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
-      },
-    });
-    const visible = candidates.filter((e) => visibleToDepartmentScope(e, user));
-
-    const thirtyDaysAgo = new Date(new Date().setDate(new Date().getDate() - 30));
-    const recent = visible.filter((e) => e.createdAt >= thirtyDaysAgo);
-    const statusCounts = new Map<string, number>();
-    for (const e of recent) {
-      statusCounts.set(e.status, (statusCounts.get(e.status) ?? 0) + 1);
-    }
-
-    const byDepartment = await computeDepartmentDistribution(
-      departmentScopeCandidatesWhere(user.departmentId),
-      { restrictToDepartmentId: user.departmentId ?? undefined, includeCentral: true }
-    );
-
-    return {
-      total: visible.length,
-      approved: visible.filter((e) => e.status === "APPROVED").length,
-      rejected: visible.filter((e) => e.status === "REJECTED").length,
-      pending: visible.filter((e) => e.status === "SUBMITTED").length,
-      totalApprovedValue: visible
-        .filter((e) => e.status === "APPROVED")
-        .reduce((sum, e) => sum + e.totalPrice, 0),
-      byDepartment: byDepartment.map((d) => ({
-        departmentName: d.departmentName,
-        count: d.entries,
-        totalValue: d.value,
-      })),
-      last30Days: [...statusCounts.entries()].map(([status, count]) => ({ status, count })),
-    };
-  }
-
-  const where: Prisma.StockEntryWhereInput =
-    scope === "own" ? { createdById: user.id } : {};
-
-  const [total, approved, rejected, pending, totalValue, byDepartment, monthlyTrend] =
-    await Promise.all([
-      prisma.stockEntry.count({ where }),
-      prisma.stockEntry.count({ where: { ...where, status: "APPROVED" } }),
-      prisma.stockEntry.count({ where: { ...where, status: "REJECTED" } }),
-      prisma.stockEntry.count({ where: { ...where, status: "SUBMITTED" } }),
-      prisma.stockEntry.aggregate({
-        where: { ...where, status: "APPROVED" },
-        _sum: { totalPrice: true },
-      }),
-      // Department scope returned earlier — this path is all/own only
-      computeDepartmentDistribution(where),
-      prisma.stockEntry.groupBy({
-        by: ["status"],
-        where: {
-          ...where,
-          createdAt: {
-            gte: new Date(new Date().setDate(new Date().getDate() - 30)),
-          },
-        },
-        _count: true,
-      }),
-    ]);
-
-  return {
-    total,
-    approved,
-    rejected,
-    pending,
-    totalApprovedValue: totalValue._sum.totalPrice ?? 0,
-    byDepartment: byDepartment.map((d) => ({
-      departmentName: d.departmentName,
-      count: d.entries,
-      totalValue: d.value,
-    })),
-    last30Days: monthlyTrend.map((m) => ({
-      status: m.status,
-      count: m._count,
-    })),
-  };
-}
 
 /**
  * Inventory numbers for one department, computed from what the department
@@ -384,9 +315,12 @@ async function getDepartmentInventory(departmentId: string) {
       unitPrice: true,
       departmentId: true,
       createdAt: true,
-      issues: { select: { departmentId: true, quantity: true, createdAt: true } },
+      issues: { select: { departmentId: true, quantity: true, createdAt: true, ...issueWriteOffsSelect } },
       dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
       buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
+      // The fifth drawdown. Central write-offs only — a department's losses
+      // come off its own holding, never off the entry as well.
+      writeOffs: { where: centralWriteOffsWhere, select: { quantity: true, status: true } },
     },
   });
 
@@ -411,13 +345,15 @@ async function getDepartmentInventory(departmentId: string) {
 
   let entryCount = 0;
   for (const entry of entries) {
-    let issuedTotal = 0;
     let deptQty = 0;
     for (const issue of entry.issues) {
-      issuedTotal += issue.quantity;
       if (issue.departmentId === departmentId) {
-        deptQty += issue.quantity;
-        addToMonth(issue.createdAt, entry.id, issue.quantity, issue.quantity * entry.unitPrice);
+        // Net of what this department has written off — see heldByIssue().
+        const inHand = heldByIssue(issue);
+        deptQty += inHand;
+        if (inHand > 0) {
+          addToMonth(issue.createdAt, entry.id, inHand, inHand * entry.unitPrice);
+        }
       }
     }
     if (entry.departmentId === departmentId) {
@@ -476,7 +412,14 @@ async function getDepartmentInventory(departmentId: string) {
   };
 }
 
+/** The inventory overview — with values only for those allowed to see them. */
 export async function getInventoryOverview(departmentId?: string) {
+  const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
+  const result = await readInventoryOverview(departmentId);
+  return user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW) ? result : hideMoney(result);
+}
+
+async function readInventoryOverview(departmentId?: string) {
   const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
   const scope = resolveStockScope(user);
 
@@ -498,6 +441,7 @@ export async function getInventoryOverview(departmentId?: string) {
       OR: [{ departmentId }, { issues: { some: { departmentId } } }],
     };
   }
+  if (scope === "location") baseWhere = { AND: [baseWhere, siteWhere(user)] };
 
   // A department drill-down reports what that department actually holds
   if (departmentId && scope !== "department") {
@@ -603,6 +547,12 @@ export async function getInventoryOverview(departmentId?: string) {
 export interface StockHoldingRow {
   entryId: string;
   entryNumber: string;
+  /**
+   * The catalog product this receipt is of. Null on entries that predate the
+   * catalog. It is what the Reports page groups repeat receipts by — see
+   * `src/lib/stock-grouping.ts` for the fallbacks when it is missing.
+   */
+  productId: string | null;
   itemCode: string | null;
   itemName: string;
   categoryName: string | null;
@@ -610,6 +560,8 @@ export interface StockHoldingRow {
   group: ProductGroup;
   kindLabel: string;
   supplierName: string;
+  /** The supplier lot these goods belong to, when one was recorded */
+  batchNumber: string | null;
   quantity: number;
   unitPrice: number;
   value: number;
@@ -618,12 +570,23 @@ export interface StockHoldingRow {
   receivedAt: Date;
 }
 
+/** What a site or department holds — with prices only for those allowed to see them. */
+export async function getStockHoldings(target: {
+  departmentId?: string;
+  /** A location id — central stock is scoped per site */
+  centralLocation?: string;
+}): Promise<StockHoldingRow[]> {
+  const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
+  const result = await readStockHoldings(target);
+  return user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW) ? result : hideMoney(result);
+}
+
 /**
  * What is physically sitting in one place right now — either a central-stock
  * location (approved, unmoved quantity) or a department (issued + legacy).
  * Backs the searchable/exportable holdings table on the reports page.
  */
-export async function getStockHoldings(target: {
+async function readStockHoldings(target: {
   departmentId?: string;
   /** A location id — central stock is scoped per site */
   centralLocation?: string;
@@ -640,13 +603,24 @@ export async function getStockHoldings(target: {
   ) {
     return [];
   }
+  // Someone who sees one site asks only about that site: its central stock,
+  // or a department there
+  if (scope === "location" || scope === "department") {
+    if (target.centralLocation && target.centralLocation !== user.locationId) return [];
+    if (target.departmentId) {
+      const department = await prisma.department.findUnique({ where: { id: target.departmentId }, select: { locationId: true } });
+      if (!department || department.locationId !== user.locationId) return [];
+    }
+  }
 
   const select = {
     id: true,
     entryNumber: true,
+    productId: true,
     itemCode: true,
     itemName: true,
     supplierName: true,
+    batchNumber: true,
     quantity: true,
     unitPrice: true,
     locationId: true,
@@ -655,9 +629,12 @@ export async function getStockHoldings(target: {
     departmentId: true,
     createdAt: true,
     product: { select: { kind: true, category: { select: { name: true } } } },
-    issues: { select: { departmentId: true, quantity: true } },
+    issues: { select: { departmentId: true, quantity: true, ...issueWriteOffsSelect } },
     dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
     buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
+    // The fifth drawdown. Central write-offs only — a department's losses
+    // come off its own holding, never off the entry as well.
+    writeOffs: { where: centralWriteOffsWhere, select: { quantity: true, status: true } },
   } as const;
 
   if (target.centralLocation) {
@@ -669,19 +646,20 @@ export async function getStockHoldings(target: {
 
     return entries
       .map((e) => {
-        const issued = e.issues.reduce((sum, i) => sum + i.quantity, 0);
         // What is still standing here: issues, consignments and builds all taken off.
         const remaining = heldQuantity(e);
         return remaining > 0
           ? {
               entryId: e.id,
               entryNumber: e.entryNumber,
+              productId: e.productId,
               itemCode: e.itemCode,
               itemName: e.itemName,
               categoryName: e.product?.category.name ?? null,
               group: groupOf(e.product?.kind ?? "RAW"),
               kindLabel: labelOfKind(e.product?.kind ?? "RAW"),
               supplierName: e.supplierName,
+              batchNumber: e.batchNumber,
               quantity: remaining,
               unitPrice: e.unitPrice,
               value: remaining * e.unitPrice,
@@ -707,10 +685,11 @@ export async function getStockHoldings(target: {
 
     return entries
       .map((e) => {
-        const issuedTotal = e.issues.reduce((sum, i) => sum + i.quantity, 0);
+        // Net of write-offs: a department that has written its holding off is
+        // not still holding it.
         let inDept = e.issues
           .filter((i) => i.departmentId === departmentId)
-          .reduce((sum, i) => sum + i.quantity, 0);
+          .reduce((sum, i) => sum + heldByIssue(i), 0);
         if (e.departmentId === departmentId) {
           inDept += Math.max(0, heldQuantity(e));
         }
@@ -718,12 +697,14 @@ export async function getStockHoldings(target: {
           ? {
               entryId: e.id,
               entryNumber: e.entryNumber,
+              productId: e.productId,
               itemCode: e.itemCode,
               itemName: e.itemName,
               categoryName: e.product?.category.name ?? null,
               group: groupOf(e.product?.kind ?? "RAW"),
               kindLabel: labelOfKind(e.product?.kind ?? "RAW"),
               supplierName: e.supplierName,
+              batchNumber: e.batchNumber,
               quantity: inDept,
               unitPrice: e.unitPrice,
               value: inDept * e.unitPrice,
@@ -739,29 +720,52 @@ export async function getStockHoldings(target: {
   return [];
 }
 
+/**
+ * Six months of arrivals, in ONE round trip.
+ *
+ * This used to run six `aggregate` calls in a loop, each awaited before the
+ * next began. Against a database ~220ms away that is 1.3 seconds of waiting for
+ * six numbers, and it was the single slowest thing on the reports page.
+ *
+ * Now the window is fetched once and bucketed here. The rows are small (three
+ * columns, and only entries approved in the last six months), so doing the
+ * arithmetic in JavaScript costs nothing next to what a round trip costs.
+ */
 async function getMonthlyTrend(baseWhere: Prisma.StockEntryWhereInput) {
-  const months: { month: string; entries: number; value: number; quantity: number }[] = [];
   const now = new Date();
+  const windowStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
 
+  const entries = await prisma.stockEntry.findMany({
+    where: {
+      ...baseWhere,
+      status: "APPROVED",
+      createdAt: { gte: windowStart },
+    },
+    select: { createdAt: true, quantity: true, totalPrice: true },
+  });
+
+  // "2026-7" → the running totals for that month. Keyed the same way the loop
+  // below looks them up, so a month with no arrivals simply finds nothing and
+  // reports zeroes rather than being missing from the chart.
+  const buckets = new Map<string, { entries: number; quantity: number; value: number }>();
+  for (const entry of entries) {
+    const key = `${entry.createdAt.getFullYear()}-${entry.createdAt.getMonth()}`;
+    const bucket = buckets.get(key) ?? { entries: 0, quantity: 0, value: 0 };
+    bucket.entries += 1;
+    bucket.quantity += entry.quantity;
+    bucket.value += entry.totalPrice;
+    buckets.set(key, bucket);
+  }
+
+  const months: { month: string; entries: number; value: number; quantity: number }[] = [];
   for (let i = 5; i >= 0; i--) {
     const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
-
-    const result = await prisma.stockEntry.aggregate({
-      where: {
-        ...baseWhere,
-        status: "APPROVED",
-        createdAt: { gte: start, lte: end },
-      },
-      _count: true,
-      _sum: { quantity: true, totalPrice: true },
-    });
-
+    const bucket = buckets.get(`${start.getFullYear()}-${start.getMonth()}`);
     months.push({
       month: start.toLocaleString("en-IN", { month: "short", year: "2-digit" }),
-      entries: result._count,
-      value: result._sum.totalPrice ?? 0,
-      quantity: result._sum.quantity ?? 0,
+      entries: bucket?.entries ?? 0,
+      value: bucket?.value ?? 0,
+      quantity: bucket?.quantity ?? 0,
     });
   }
 
@@ -769,7 +773,7 @@ async function getMonthlyTrend(baseWhere: Prisma.StockEntryWhereInput) {
 }
 
 export async function exportStockReport(filters: ReportFilters = {}) {
-  const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
+  const user = await requirePermission(PERMISSIONS.REPORTS_EXPORT);
 
   const { entries } = await getStockReport(filters);
 
@@ -828,7 +832,7 @@ export async function getWorkInProgress() {
 
   const scope = resolveStockScope(user);
   const where: Prisma.BuildWhereInput = { status: "IN_PROGRESS" };
-  if (scope !== "all" && user.locationId) where.locationId = user.locationId;
+  if (scope !== "all") where.locationId = user.locationId ?? NO_SITE;
 
   const builds = await prisma.build.findMany({
     where,

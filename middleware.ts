@@ -14,15 +14,20 @@ const ROUTE_PERMISSIONS: Record<string, string[]> = {
   // Wider than assets.view: the transfer queue lives on this page too.
   // Keep in step with ASSET_PAGE_PERMISSIONS.
   "/assets": ["assets.view", "assets.transfer.request", "assets.transfer.approve"],
-  // Keep in step with DISPATCH_PERMISSIONS, which is what the page accepts —
-  // dispatch.export was missing here, so an export-only holder would see the
-  // sidebar item and be bounced by the route.
+  // Wider than stock.writeoff.view: the review queue lives on this page too.
+  // Keep in step with WASTAGE_PAGE_PERMISSIONS.
+  "/wastage": ["stock.writeoff.view", "stock.writeoff.approve"],
+  // Keep in step with DISPATCH_PAGE_PERMISSIONS. The fulfilment keys are here
+  // because site requests moved onto this page from the old Fulfilment page.
   "/dispatch": [
     "dispatch.view",
     "dispatch.create",
     "dispatch.accept",
     "dispatch.receive",
     "dispatch.export",
+    "fulfilment.view",
+    "fulfilment.request",
+    "fulfilment.approve",
   ],
   "/activity": ["activity.view"],
   "/settings": ["settings.view"],
@@ -36,13 +41,6 @@ const ROUTE_PERMISSIONS: Record<string, string[]> = {
   // their own sidebar showed them. An empty list means "signed in is enough",
   // matching the page's own requireAuth() gate.
   "/settings/profile": [],
-  "/configure": [
-    "stock.config.fields",
-    "stock.config.attachments",
-    "stock.config.flows",
-    "config.flows.bom",
-    "config.flows.procurement",
-  ],
   // Must list exactly what the page accepts. Keep in step with
   // CATALOG_PAGE_PERMISSIONS — a key here that the page does not accept locks
   // someone out of a page they could use, and the reverse hides one they can.
@@ -60,10 +58,10 @@ const ROUTE_PERMISSIONS: Record<string, string[]> = {
   ],
   "/stock": ["stock.view", "stock.create"],
   "/bom": ["bom.view", "bom.create", "bom.edit", "bom.approve", "bom.publish", "bom.build"],
-  "/builds": ["bom.view", "bom.build", "bom.unbuild"],
+  // Keep in step with BUILDS_PAGE_PERMISSIONS: fulfilment.view opens the Plan tab
+  "/builds": ["bom.view", "bom.build", "bom.unbuild", "fulfilment.view"],
   "/recycle-bin": ["recyclebin.view", "recyclebin.restore", "recyclebin.purge"],
   "/reports": ["reports.view"],
-  "/fulfilment": ["fulfilment.view", "fulfilment.request", "fulfilment.approve"],
   "/procurement": [
     "procurement.intent.view",
     "procurement.intent.create",
@@ -71,6 +69,8 @@ const ROUTE_PERMISSIONS: Record<string, string[]> = {
     "procurement.po.view",
     "procurement.po.create",
     "procurement.po.close",
+    // The low-stock alert lives on this page. Keep in step with PROCUREMENT_PAGE_PERMISSIONS.
+    "stock.lowstock.view",
   ],
 };
 

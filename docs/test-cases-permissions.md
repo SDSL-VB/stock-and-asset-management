@@ -2,9 +2,13 @@
 
 Companion to [`permissions.md`](../permissions.md) (what each role and each
 person holds) and to [`test-cases-stock-approval.md`](./test-cases-stock-approval.md)
-(the deep dive on one flow). This file is the **breadth** pass: all **105
+(the deep dive on one flow). This file is the **breadth** pass: all **113
 permissions**, each one tried by somebody who holds it and somebody who does
 not, plus a walkthrough per person.
+
+What the last full pass found, and what was fixed, is in
+[`test-runs-2026-08.md`](./test-runs-2026-08.md) — kept separately so this stays
+a checklist rather than a checklist mixed with one afternoon's history.
 
 ## How to run these
 
@@ -32,84 +36,6 @@ account: grant it to one person temporarily from their profile
 (`/users/<id>` → Grant Extra Permissions), or add it to a role at
 `/roles/<id>`. Undo it afterwards. Grants are add-only and you can never grant a
 permission you do not hold yourself.
-
----
-
-## Run log — automated pass, 18 Aug 2026
-
-> **Second run, after the fixes: 214 assertions, 0 failures.** Defects 1 and 2
-> below are fixed, as are both latent mismatches and a third found while fixing
-> them (department approval flows were losing to the company default, because
-> Postgres sorts NULLs first on `DESC`). Defect 3 — the stuck entry — now has a
-> recovery path in the app; see
-> [`test-cases-stock-approval.md`](./test-cases-stock-approval.md) §B1a.
-> Defect 4 remains open: it is a staffing decision, though a Hyderabad Central
-> Stock Manager has since been created, which closes it.
-
-### First run
-
-What could be checked without signing in was checked mechanically, against the
-live database and the real `NAV_ITEMS`, scope resolvers and `isStockVisible`:
-**192 assertions passed, 18 failed**, and the failures are four distinct
-defects, listed below. Everything that needs a session — whether a control is
-absent rather than disabled, and the create → submit → approve round trip — is
-still outstanding.
-
-| Result | What was checked |
-| --- | --- |
-| **Pass** | Sidebar contents for all 10 active people (Part 1) — every list matches exactly |
-| **Pass** | 190 nav-item × person pairs against the middleware route table, bar the four defects below |
-| **Pass** | Stock scope, activity scope and recycle-bin scope for every person |
-| **Pass** | Who sees each of the 14 stock entries (Ashish sees no Bengaluru stock; Manohar no Hyderabad; Nagarajan everything; Spandana only her own; Shravani has no route into stock at all) |
-| **Pass** | `npm run audit:access` — no page admits a role and then bounces it |
-| **Pass** | No permission is held by nobody; no empty role has members |
-| **Fail** | **My Profile is unreachable for 8 of the 10 people** — see defect 1 |
-| **Fail** | Builds is openable but never linked for 7 people — defect 2 |
-| **Fail** | SE-20260814-001 still stuck in SUBMITTED with no approval step — defect 3 |
-| **Fail** | Hyderabad has no on-site holder of `stock.approve` — defect 4 (staffing, not code) |
-
-### Defect 1 — the sidebar offers My Profile to everyone; middleware refuses it
-
-`src/app/(dashboard)/settings/profile/page.tsx` gates itself with `requireAuth()`
-— every signed-in person, by design — and the nav item carries no permission at
-all. But `middleware.ts` picks the longest matching prefix, and the only rule
-matching `/settings/profile` is **`/settings`**, which demands `settings.view`.
-Only Phani Raj and Shravani hold it, so the other eight are redirected to
-`/unauthorized` by a link their own sidebar shows them.
-
-Fix is one line — add `"/settings/profile": []`, or an explicit rule listing no
-permission, ahead of the `/settings` entry so the longer prefix wins.
-`npm run audit:access` does not catch this: it audits page gates per role, not
-prefix collisions in the route table.
-
-### Defect 2 — Builds: openable, never linked
-
-The route rule and the page both accept `bom.view` (the page renders a read-only
-build list without `bom.build`), but the nav item requires `bom.build` or
-`bom.unbuild`. Ashish, Deepanjona, Manohar, Nagarajan, Raghava, Spandana and
-Uday can therefore load `/builds` by URL while it never appears in their
-sidebar. Safe direction — nothing is exposed that the page did not intend — but
-the two lists should agree. Either add `bom.view` to the nav item so the
-read-only list is discoverable, or drop `bom.view` from both the route and the
-page.
-
-### Defects 3 and 4
-
-Both were already documented — the stuck entry in Part 0 and in
-[`test-cases-stock-approval.md`](./test-cases-stock-approval.md) §B, the
-Hyderabad approver gap as fact 0.1. The automated pass confirms both on live
-data: the entry has **0 pending approval steps**, and the only person permitted
-to approve at Hyderabad is the Super Admin.
-
-### Two latent versions of defect 1, worth fixing at the same time
-
-Neither affects anyone today, because no current person holds the odd
-combination — but both are the same class of mismatch:
-
-* **Stock Entries** — the route admits `stock.create`, the nav item requires
-  `stock.view`. Someone with create-but-not-view would have access and no link.
-* **Dispatch** — the nav item admits `dispatch.export`, the route does not list
-  it. Someone with only `dispatch.export` would see the link and be bounced.
 
 ---
 
@@ -143,7 +69,7 @@ on `/unauthorized`, never on the page.
 
 * Sidebar: **all 20 items** — Dashboard, Team Members, Roles, Departments, Stock
   Entries, Assets, Catalog, Vendors, Clients, Bills of Materials, Builds,
-  Fulfilment, Procurement, Dispatch, Reports, Activity Log, Configuration,
+  Fulfilment, Procurement, Dispatch, Reports, Activity Log,
   Recycle Bin, Settings, My Profile.
 * Nothing is hidden anywhere; every table column, tab and button in this document
   should be present.
@@ -152,13 +78,11 @@ on `/unauthorized`, never on the page.
 ### W2 — Shravani (Admin) · `shravani@straightdrivesport.com`
 
 * Sees (14): Dashboard, Team Members, Roles, Departments, Assets, Catalog,
-  Vendors, Clients, Procurement, Activity Log, Configuration, Recycle Bin,
+  Vendors, Clients, Procurement, Activity Log, Recycle Bin,
   Settings, My Profile.
 * Hidden (6): **Stock Entries, Bills of Materials, Builds, Fulfilment, Dispatch,
   Reports**.
 * Type `/stock`, `/reports`, `/dispatch` → each must redirect to `/unauthorized`.
-* On Configuration she must see **only** the procurement flow card — the stock
-  field/attachment/flow cards and the BOM flow card belong to keys she lacks.
 * Activity log: sees everyone's actions, but only the catalog, people and buying
   categories — no stock, movement, making or security lines.
 
@@ -167,8 +91,7 @@ on `/unauthorized`, never on the page.
 * Sees (13): Dashboard, Team Members, Departments, Stock Entries, Assets,
   Vendors, Bills of Materials, Builds, Fulfilment, Procurement, Activity Log,
   Recycle Bin, My Profile.
-* Hidden (7): **Roles, Catalog, Clients, Dispatch, Reports, Configuration,
-  Settings**.
+* Hidden (6): **Roles, Catalog, Clients, Dispatch, Reports, Settings**.
 * The clearest demonstration that roles add up: Builds comes from *Builder*,
   Procurement from *Buyer*, the approval card on stock from *Stock Approver*,
   and everything else from *Department Manager*.
@@ -183,7 +106,7 @@ on `/unauthorized`, never on the page.
 * Sees (11): Dashboard, Team Members, Departments, Stock Entries, Assets, Bills
   of Materials, Fulfilment, Procurement, Activity Log, Recycle Bin, My Profile.
 * Hidden (9): **Roles, Catalog, Vendors, Clients, Builds, Dispatch, Reports,
-  Configuration, Settings**.
+  Settings**.
 * Stock scope **department** (R&D) plus Bengaluru central stock. He must never
   see Production's or any Hyderabad holdings.
 * Compare against W3 side by side: same base role, very different screen,
@@ -191,7 +114,7 @@ on `/unauthorized`, never on the page.
 
 ### W5 — Nagarajan (Auditor + Buyer) · `nagarajan@straightdrivesport.com`
 
-* Sees (16): everything except **Roles, Builds, Configuration, Settings**.
+* Sees (16): everything except **Roles, Builds, Settings**.
 * Stock scope **all** *and* `stock.value.view` — the only non-admin who sees the
   money. Every price, total and report value must be visible.
 * But he cannot create or approve stock entries: no Book In button, no approval
@@ -261,6 +184,8 @@ Pages: `/stock`, `/stock/new`, `/stock/[id]`, `/stock/[id]/edit`, `/configure`.
 | `stock.approve` | Open a SUBMITTED entry at your site | Amber Action Required card with Approve / Reject | **Manohar**, **Spandana** — no card at all |
 | `stock.move` | Open an APPROVED central entry with quantity left | Move to Department is offered | **Spandana** — offered a transfer *request* instead, or nothing |
 | `stock.value.view` | Look at any entry and the stock list | Unit price, total and value columns visible | **Kirubakaran** — quantities only; no price column, no total, no value tile |
+| `stock.lowstock.view` | Look at the top bar, then open `/procurement` | A bell in the top bar (a red count when something needs ordering); opening it lists each item with **"Low since <date, time> — <the movement that did it>"**. A Low stock card on Procurement lists each watched product per site with the same line; **Raise needs** opens "What do you need?" filled in (needs `procurement.intent.create` too) | **Nagarajan** — a Buyer too, but holds no individual grant: no bell, no card |
+| `stock.lowstock.manage` | On the Low stock card, press **Watch a product**, then edit and stop watching one; press **Lead times** on a row | The button and the row controls are present, and saving the minimum changes the reorder point shown. It opens "Who supplies it" — lead time per vendor, editable (the same records as on Vendors and in the Catalog) | **Uday** — no card at all; calling the action directly is refused |
 | `stock.batch.edit` | Open `/stock/new` | Batch number field is present and saves | **Kirubakaran** (grant `stock.create` temporarily) — field absent, and a batch posted directly is ignored by the action |
 | `stock.warranty.view` | Open an entry with warranty details | Warranty card shows purchase date, model, serial, expiry | **Deepanjona** — card absent |
 | `stock.warranty.edit` | Open `/stock/new` or edit a draft | Warranty fields are editable | **Kirubakaran** — read-only or absent |
@@ -268,9 +193,14 @@ Pages: `/stock`, `/stock/new`, `/stock/[id]`, `/stock/[id]/edit`, `/configure`.
 | `stock.scope.location` | Open `/stock` as Ashish | Every Hyderabad department + Hyderabad central | Compare with **Manohar** (department scope) |
 | `stock.scope.department` | Open `/stock` as Manohar | R&D's stock + Bengaluru central stock still worth acting on | Compare with **Raghava** — different department, different list |
 | `stock.scope.own` | Open `/stock` as Spandana | Only entries she created | Compare with **Uday**, same base role, whole site |
-| `stock.config.fields` | `/configure` → entry fields card | Card present, a custom field can be added and then appears on `/stock/new` | **Shravani** — card absent though she can open `/configure` |
-| `stock.config.attachments` | `/configure` → attachment types card | Card present; marking a type required blocks submit until it is uploaded | **Shravani** — card absent |
-| `stock.config.flows` | `/configure` → approval flows card | Card present; steps can be added and removed | **Shravani** — card absent |
+| `stock.writeoff.view` | Open `/wastage` | The page opens; write-offs visible, narrowed by stock scope | **Manohar** has it — compare with somebody who has neither writeoff key: no Wastage nav, `/wastage` → `/unauthorized` |
+| `stock.writeoff.create` | Open an APPROVED central entry | "Report loss" is offered on the entry | **Manohar** — the action is absent on a central entry; he reports against his department instead |
+| `stock.writeoff.department` | Open `/assets`, find your department's holding | "Report loss" is offered on the holding row | **Uday** — no such action on the Assets page |
+| `stock.writeoff.approve` | Open `/wastage` with a PENDING write-off at your site | Approve / Decline card present | **Uday**, **Deepanjona** — the queue renders read-only, no decision buttons |
+| `stock.writeoff.reverse` | Open an APPROVED write-off | "Reverse" is offered, and asks for a reason | **Manohar** — deliberately withheld from managers; reversing is an admin correction |
+| `stock.config.fields` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
+| `stock.config.attachments` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
+| `stock.config.flows` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
 
 ### Team members — 7 keys
 
@@ -415,8 +345,9 @@ Page: `/procurement`.
 | `reports.export` | Export a report | CSV downloads | **Kirubakaran** |
 | `settings.view` | Open `/settings` | Settings readable | **Nagarajan** |
 | `settings.edit` | Change a setting | Saves | **Nagarajan** |
-| `config.flows.bom` | `/configure` → BOM approval flow card | Set whether a BOM needs approval and by which role; only roles that hold `bom.approve` may be chosen | **Shravani** — card absent |
-| `config.flows.procurement` | `/configure` → procurement flow card | Set whether a need must be verified before ordering | **Kirubakaran** — no Configuration nav at all |
+| `config.flows.bom` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
+| `config.flows.procurement` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
+| `config.catalog` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
 
 ### Recycle bin — 5 keys
 
@@ -516,6 +447,7 @@ rather than absent.
 | `clients.export` | Nagarajan | Kirubakaran | | |
 | `clients.view` | Nagarajan | Kirubakaran | | |
 | `config.flows.bom` | Phani Raj | Shravani | | |
+| `config.catalog` | Shravani | Kirubakaran | | |
 | `config.flows.procurement` | Shravani | Kirubakaran | | |
 | `departments.create` | Shravani | Kirubakaran | | |
 | `departments.delete` | Shravani | Nagarajan | | |
@@ -569,10 +501,17 @@ rather than absent.
 | `stock.scope.department` | Manohar | — | | |
 | `stock.scope.location` | Ashish | — | | |
 | `stock.scope.own` | Spandana | — | | |
+| `stock.lowstock.manage` | Kirubakaran | Uday | | |
+| `stock.lowstock.view` | Kirubakaran | Nagarajan | | |
 | `stock.value.view` | Nagarajan | Kirubakaran | | |
 | `stock.view` | Ashish | Shravani | | |
 | `stock.warranty.edit` | Spandana | Kirubakaran | | |
 | `stock.warranty.view` | Manohar | Deepanjona | | |
+| `stock.writeoff.approve` | Manohar | Uday | | |
+| `stock.writeoff.create` | Uday | Manohar | | |
+| `stock.writeoff.department` | Manohar | Uday | | |
+| `stock.writeoff.reverse` | Phani Raj | Manohar | | |
+| `stock.writeoff.view` | Manohar | Shravani | | |
 | `users.create` | Shravani | Kirubakaran | | |
 | `users.delete` | Shravani | Nagarajan | | |
 | `users.edit` | Shravani | Manohar | | |
@@ -586,8 +525,11 @@ rather than absent.
 | `vendors.export` | Nagarajan | Kirubakaran | | |
 | `vendors.view` | Kirubakaran | Manohar | | |
 
-105 keys. Walkthroughs W1–W10 and D-00, cross-cutting X1–X10, and Parts 0.1–0.7
+113 keys. Walkthroughs W1–W10 and D-00, cross-cutting X1–X10, and Parts 0.1–0.7
 are recorded separately in whatever form suits — a line each is enough.
+
+If this number and `permissions.md` ever disagree, this file is the one that has
+fallen behind: `permissions.md` is generated from the database.
 
 ---
 
@@ -611,5 +553,6 @@ they must never offer a choice that returns nothing.
 
 **Two notes from the live data when this shipped:** no entry is an asset yet, so
 the stock/assets dropdown is hidden for everyone until one exists — it is built
-and will appear on its own. And three entries hold `KIT` products even though
-`schema.prisma` describes a kit as never stocked; worth deciding which is right.
+and will appear on its own. The three entries holding `KIT` products are now
+correct: KIT means **ready goods** — bought whole, stocked, and never given a
+bill of materials.

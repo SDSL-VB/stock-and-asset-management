@@ -7,6 +7,7 @@ import {
   requireAuth,
   holdsRole,
 } from "@/lib/rbac/check";
+import { refusalOver, refusalToAssign } from "@/lib/rbac/authority";
 import { PERMISSIONS, ROLES } from "@/lib/rbac/permissions";
 import {
   createUserSchema,
@@ -15,7 +16,7 @@ import {
 } from "@/lib/validations/user";
 import { ensureDeletedUser } from "@/lib/deleted-user";
 import { archive, type Relink } from "@/lib/recycle-bin";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import bcrypt from "bcryptjs";
 import {
   encryptPassword,
@@ -23,6 +24,7 @@ import {
   isPasswordVaultEnabled,
 } from "@/lib/crypto";
 import { revalidatePath } from "next/cache";
+import type { Prisma } from "@prisma/client";
 
 /**
  * Team members: their details, their credentials, and the roles they hold.
@@ -113,6 +115,12 @@ export async function createUser(data: unknown) {
 
   const { password, departmentId, ...rest } = parsed.data;
 
+  const roleRefusal = await refusalToAssign(currentUser, rest.roleId);
+  if (roleRefusal) return { error: roleRefusal };
+  if (departmentId && !(await prisma.department.findUnique({ where: { id: departmentId }, select: { id: true } }))) {
+    return { error: "That department no longer exists" };
+  }
+
   // Check for duplicate email
   const existing = await prisma.user.findUnique({
     where: { email: rest.email },
@@ -153,16 +161,8 @@ export async function createUser(data: unknown) {
 export async function updateUser(id: string, data: unknown) {
   const currentUser = await requirePermission(PERMISSIONS.USERS_EDIT);
 
-  // Prevent editing Super Admin unless you are Super Admin
-  const targetUser = await prisma.user.findUnique({
-    where: { id },
-    include: { role: { select: { name: true } } },
-  });
-  if (!targetUser) return { error: "User not found" };
-
-  if (targetUser.role.name === ROLES.SUPER_ADMIN && !holdsRole(currentUser, ROLES.SUPER_ADMIN)) {
-    return { error: "Only the Super Admin can modify the Super Admin account" };
-  }
+  const refusal = await refusalOver(currentUser, id);
+  if (refusal) return { error: refusal };
 
   const parsed = updateUserSchema.safeParse(data);
   if (!parsed.success) {
@@ -171,13 +171,8 @@ export async function updateUser(id: string, data: unknown) {
 
   const { departmentId, ...rest } = parsed.data;
 
-  // Prevent assigning Super Admin role unless you are Super Admin
-  if (rest.roleId) {
-    const targetRole = await prisma.role.findUnique({ where: { id: rest.roleId } });
-    if (targetRole?.name === ROLES.SUPER_ADMIN && !holdsRole(currentUser, ROLES.SUPER_ADMIN)) {
-      return { error: "Only the Super Admin can assign the Super Admin role" };
-    }
-  }
+  const roleRefusal = await refusalToAssign(currentUser, rest.roleId);
+  if (roleRefusal) return { error: roleRefusal };
 
   // Check for duplicate email (excluding current user)
   const existing = await prisma.user.findFirst({
@@ -212,15 +207,8 @@ export async function toggleUserStatus(id: string) {
   });
   if (!user) return { error: "User not found" };
 
-  // Prevent disabling your own account
-  if (user.id === currentUser.id) {
-    return { error: "You cannot disable your own account" };
-  }
-
-  // Prevent disabling Super Admin
-  if (user.role.name === ROLES.SUPER_ADMIN && !holdsRole(currentUser, ROLES.SUPER_ADMIN)) {
-    return { error: "The Super Admin account cannot be disabled" };
-  }
+  const refusal = await refusalOver(currentUser, id);
+  if (refusal) return { error: refusal };
 
   const updated = await prisma.user.update({
     where: { id },
@@ -248,54 +236,92 @@ export async function toggleUserStatus(id: string) {
  * than destroyed. Activity logs keep the person's name as a snapshot, so
  * searching for them still finds what they did.
  */
+/**
+ * Every column, in every table, that points at a person.
+ *
+ * Deleting someone re-points each of these at the hidden system account rather
+ * than deleting the records, so the history stays and nothing is orphaned (see
+ * src/lib/deleted-user.ts). This one list is read three times by deleteUser —
+ * to COUNT what the person is linked to, to RECORD it for undo, and to RE-POINT
+ * it — so the three can never disagree.
+ *
+ * They used to be three hand-written lists, and they drifted: tables added
+ * later (write-offs, purchase needs and orders, site requests, need requests, the
+ * recycle bin itself) were in none of them. Deleting anybody who had ever raised
+ * a need or used a Delete button then failed with a raw foreign-key error.
+ *
+ * When a new table gains a column pointing at a user, add it here. The two
+ * links that cascade away with the account instead — the roles a person held
+ * and the grants given TO them — are deliberately absent.
+ *
+ * Names are Prisma model names; restoring from the recycle bin reads them back.
+ */
+const PERSON_LINKS = [
+  ["ActivityLog", "userId"],
+  ["StockEntry", "createdById"],
+  ["StockEntry", "approvedById"],
+  ["StockEntryAttachment", "uploadedById"],
+  ["StockApproval", "approverUserId"],
+  ["StockIssue", "issuedById"],
+  ["StockWriteOff", "raisedById"],
+  ["StockWriteOff", "reviewedById"],
+  ["StockWriteOff", "reversedById"],
+  ["ProductRequest", "requestedById"],
+  ["ProductRequest", "reviewedById"],
+  ["StockTransferRequest", "requestedById"],
+  ["StockTransferRequest", "reviewedById"],
+  ["BillOfMaterials", "createdById"],
+  ["BillOfMaterials", "approvedById"],
+  ["Build", "builtById"],
+  ["Dispatch", "createdById"],
+  ["Dispatch", "acceptedById"],
+  ["Dispatch", "receivedById"],
+  ["SiteRequest", "requestedById"],
+  ["SiteRequest", "reviewedById"],
+  ["PurchaseIntent", "requestedById"],
+  ["PurchaseIntent", "reviewedById"],
+  ["PurchaseOrder", "createdById"],
+  ["PurchaseOrder", "closedById"],
+  ["NeedList", "createdById"],
+  ["DeletedRecord", "deletedById"],
+  ["UserPermission", "grantedById"],
+  ["UserRole", "grantedById"],
+] as const;
+
+type LinkDelegate = {
+  count(args: { where: Record<string, string> }): Promise<number>;
+  findMany(args: { where: Record<string, string>; select: { id: true } }): Promise<{ id: string }[]>;
+  updateMany(args: { where: Record<string, string>; data: Record<string, string> }): Promise<unknown>;
+};
+
+/** The Prisma delegate for a model name, e.g. "StockEntry" → client.stockEntry. */
+function delegateFor(client: Prisma.TransactionClient, table: string): LinkDelegate {
+  const key = table.charAt(0).toLowerCase() + table.slice(1);
+  return (client as unknown as Record<string, LinkDelegate>)[key];
+}
+
 export async function deleteUser(id: string, options: { force?: boolean } = {}) {
   const currentUser = await requirePermission(PERMISSIONS.USERS_DELETE);
 
   const user = await prisma.user.findUnique({
     where: { id },
-    include: {
-      role: { select: { name: true } },
-      _count: {
-        select: {
-          activityLogs: true,
-          stockEntriesCreated: true,
-          stockEntriesApproved: true,
-          attachmentsUploaded: true,
-          approvalsGiven: true,
-          stockIssuesCreated: true,
-          productRequestsMade: true,
-          productRequestsReviewed: true,
-          transferRequestsMade: true,
-          transferRequestsReviewed: true,
-        },
-      },
-    },
+    include: { role: { select: { name: true } } },
   });
   if (!user) return { error: "User not found" };
 
-  if (user.id === currentUser.id) {
-    return { error: "You cannot delete your own account" };
-  }
-  if (user.role.name === ROLES.SUPER_ADMIN && !holdsRole(currentUser, ROLES.SUPER_ADMIN)) {
-    return { error: "Only the Super Admin can delete a Super Admin account" };
-  }
+  const refusal = await refusalOver(currentUser, id);
+  if (refusal) return { error: refusal };
 
   if (user.isSystem) {
     return { error: "That is a system account and cannot be deleted" };
   }
 
-  const c = user._count;
-  const references =
-    c.activityLogs +
-    c.stockEntriesCreated +
-    c.stockEntriesApproved +
-    c.attachmentsUploaded +
-    c.approvalsGiven +
-    c.stockIssuesCreated +
-    c.productRequestsMade +
-    c.productRequestsReviewed +
-    c.transferRequestsMade +
-    c.transferRequestsReviewed;
+  // Everything that points at this person, counted from the same list that the
+  // re-pointing below walks — so the nudge can never under-count them again.
+  const linkCounts = await Promise.all(
+    PERSON_LINKS.map(([table, field]) => delegateFor(prisma, table).count({ where: { [field]: id } }))
+  );
+  const references = linkCounts.reduce((sum, n) => sum + n, 0);
 
   // The nudge. Deleting used to be blocked outright here, which — because
   // activity logs count — meant nobody could ever be deleted, and a hard block
@@ -317,37 +343,15 @@ export async function deleteUser(id: string, options: { force?: boolean } = {}) 
     // used to belong to this person.
     const relinks: Relink[] = [];
     if (references > 0) {
-      const grab = async (
-        table: string,
-        field: string,
-        rows: Promise<{ id: string }[]>
-      ) => {
-        const found = await rows;
-        if (found.length) relinks.push({ table, field, ids: found.map((r) => r.id) });
-      };
-
-      await Promise.all([
-        grab("ActivityLog", "userId", tx.activityLog.findMany({ where: { userId: id }, select: { id: true } })),
-        grab("StockEntry", "createdById", tx.stockEntry.findMany({ where: { createdById: id }, select: { id: true } })),
-        grab("StockEntry", "approvedById", tx.stockEntry.findMany({ where: { approvedById: id }, select: { id: true } })),
-        grab("StockEntryAttachment", "uploadedById", tx.stockEntryAttachment.findMany({ where: { uploadedById: id }, select: { id: true } })),
-        grab("StockApproval", "approverUserId", tx.stockApproval.findMany({ where: { approverUserId: id }, select: { id: true } })),
-        grab("StockIssue", "issuedById", tx.stockIssue.findMany({ where: { issuedById: id }, select: { id: true } })),
-        grab("ProductRequest", "requestedById", tx.productRequest.findMany({ where: { requestedById: id }, select: { id: true } })),
-        grab("ProductRequest", "reviewedById", tx.productRequest.findMany({ where: { reviewedById: id }, select: { id: true } })),
-        grab("StockTransferRequest", "requestedById", tx.stockTransferRequest.findMany({ where: { requestedById: id }, select: { id: true } })),
-        grab("StockTransferRequest", "reviewedById", tx.stockTransferRequest.findMany({ where: { reviewedById: id }, select: { id: true } })),
-        grab("BillOfMaterials", "createdById", tx.billOfMaterials.findMany({ where: { createdById: id }, select: { id: true } })),
-        grab("BillOfMaterials", "approvedById", tx.billOfMaterials.findMany({ where: { approvedById: id }, select: { id: true } })),
-        grab("Build", "builtById", tx.build.findMany({ where: { builtById: id }, select: { id: true } })),
-        grab("Dispatch", "createdById", tx.dispatch.findMany({ where: { createdById: id }, select: { id: true } })),
-        grab("Dispatch", "acceptedById", tx.dispatch.findMany({ where: { acceptedById: id }, select: { id: true } })),
-        grab("Dispatch", "receivedById", tx.dispatch.findMany({ where: { receivedById: id }, select: { id: true } })),
-        grab("UserPermission", "grantedById", tx.userPermission.findMany({ where: { grantedById: id }, select: { id: true } })),
-      ]);
+      for (const [table, field] of PERSON_LINKS) {
+        const rows = await delegateFor(tx, table).findMany({ where: { [field]: id }, select: { id: true } });
+        if (rows.length) relinks.push({ table, field, ids: rows.map((r) => r.id) });
+      }
     }
 
-    const { role: _role, _count: _counts, ...snapshot } = user;
+    // The reversible password copy is not kept in the bin: a restored account
+    // keeps its login (the one-way hash) but its password cannot be revealed.
+    const { role: _role, passwordEnc: _readable, ...snapshot } = user;
     await archive(tx, {
       entity: "User",
       entityId: id,
@@ -363,54 +367,11 @@ export async function deleteUser(id: string, options: { force?: boolean } = {}) 
       // as a snapshot, which is what keeps a deleted person searchable.
       const tombstoneId = await ensureDeletedUser(tx);
 
-      await Promise.all([
-        tx.activityLog.updateMany({ where: { userId: id }, data: { userId: tombstoneId } }),
-        tx.stockEntry.updateMany({ where: { createdById: id }, data: { createdById: tombstoneId } }),
-        tx.stockEntry.updateMany({ where: { approvedById: id }, data: { approvedById: tombstoneId } }),
-        tx.stockEntryAttachment.updateMany({
-          where: { uploadedById: id },
-          data: { uploadedById: tombstoneId },
-        }),
-        tx.stockApproval.updateMany({
-          where: { approverUserId: id },
-          data: { approverUserId: tombstoneId },
-        }),
-        tx.stockIssue.updateMany({ where: { issuedById: id }, data: { issuedById: tombstoneId } }),
-        tx.productRequest.updateMany({
-          where: { requestedById: id },
-          data: { requestedById: tombstoneId },
-        }),
-        tx.productRequest.updateMany({
-          where: { reviewedById: id },
-          data: { reviewedById: tombstoneId },
-        }),
-        tx.stockTransferRequest.updateMany({
-          where: { requestedById: id },
-          data: { requestedById: tombstoneId },
-        }),
-        tx.stockTransferRequest.updateMany({
-          where: { reviewedById: id },
-          data: { reviewedById: tombstoneId },
-        }),
-        tx.billOfMaterials.updateMany({
-          where: { createdById: id },
-          data: { createdById: tombstoneId },
-        }),
-        tx.billOfMaterials.updateMany({
-          where: { approvedById: id },
-          data: { approvedById: tombstoneId },
-        }),
-        tx.build.updateMany({ where: { builtById: id }, data: { builtById: tombstoneId } }),
-        tx.dispatch.updateMany({ where: { createdById: id }, data: { createdById: tombstoneId } }),
-        tx.dispatch.updateMany({ where: { acceptedById: id }, data: { acceptedById: tombstoneId } }),
-        tx.dispatch.updateMany({ where: { receivedById: id }, data: { receivedById: tombstoneId } }),
-        // Grants this person handed out stay readable; the grants they held go
-        // with them, via the cascade on the account
-        tx.userPermission.updateMany({
-          where: { grantedById: id },
-          data: { grantedById: tombstoneId },
-        }),
-      ]);
+      await Promise.all(
+        PERSON_LINKS.map(([table, field]) =>
+          delegateFor(tx, table).updateMany({ where: { [field]: id }, data: { [field]: tombstoneId } })
+        )
+      );
     }
 
     await tx.user.delete({ where: { id } });
@@ -469,13 +430,8 @@ export async function revealUserPassword(id: string) {
   });
   if (!targetUser) return { error: "User not found" };
 
-  // Only the Super Admin may read the Super Admin's password
-  if (
-    targetUser.role.name === ROLES.SUPER_ADMIN &&
-    !holdsRole(currentUser, ROLES.SUPER_ADMIN)
-  ) {
-    return { error: "Only the Super Admin can view the Super Admin password" };
-  }
+  const refusal = await refusalOver(currentUser, id);
+  if (refusal) return { error: refusal };
 
   const password = decryptPassword(targetUser.passwordEnc);
   if (!password) {
@@ -513,12 +469,8 @@ export async function setUserPassword(id: string, data: unknown) {
     include: { role: { select: { name: true } } },
   });
   if (!targetUser) return { error: "User not found" };
-  if (
-    targetUser.role.name === ROLES.SUPER_ADMIN &&
-    !holdsRole(currentUser, ROLES.SUPER_ADMIN)
-  ) {
-    return { error: "Only the Super Admin can change the Super Admin password" };
-  }
+  const refusal = await refusalOver(currentUser, id);
+  if (refusal) return { error: refusal };
 
   const hashedPassword = await bcrypt.hash(parsed.data.password, 12);
   const user = await prisma.user.update({
@@ -569,6 +521,8 @@ export async function getRolesForSelect() {
  */
 export async function addUserRole(userId: string, roleId: string, reason: string) {
   const currentUser = await requirePermission(PERMISSIONS.USERS_EDIT);
+  const over = await refusalOver(currentUser, userId);
+  if (over) return { error: over };
 
   const note = reason.trim();
   if (note.length < 3) return { error: "Say why this person needs the extra role" };
@@ -617,6 +571,8 @@ export async function addUserRole(userId: string, roleId: string, reason: string
 /** Take an additional role away. The primary role is changed by editing it. */
 export async function removeUserRole(userId: string, roleId: string) {
   const currentUser = await requirePermission(PERMISSIONS.USERS_EDIT);
+  const over = await refusalOver(currentUser, userId);
+  if (over) return { error: over };
 
   const held = await prisma.userRole.findUnique({
     where: { userId_roleId: { userId, roleId } },
@@ -649,6 +605,7 @@ export async function removeUserRole(userId: string, roleId: string) {
 }
 
 export async function getDepartmentsForSelect() {
+  await requireAuth();
   return prisma.department.findMany({
     where: { isActive: true },
     select: { id: true, name: true },

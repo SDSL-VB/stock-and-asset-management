@@ -22,7 +22,7 @@ import type { Prisma } from "@prisma/client";
  */
 export const RECYCLE_BIN_DAYS = 30;
 
-export function recycleBinExpiry(from = new Date()): Date {
+function recycleBinExpiry(from = new Date()): Date {
   const d = new Date(from);
   d.setDate(d.getDate() + RECYCLE_BIN_DAYS);
   return d;

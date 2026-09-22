@@ -4,8 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/rbac/check";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import { departmentSchema } from "@/lib/validations/department";
-import { logActivity } from "./activity";
+import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
+import { refusalOver } from "@/lib/rbac/authority";
 
 /**
  * Departments — the unit that owns stock, people, and a site.
@@ -128,7 +129,10 @@ export async function getAssignableUsers(departmentId: string) {
 }
 
 export async function addUserToDepartment(userId: string, departmentId: string) {
-  await requirePermission(PERMISSIONS.USERS_EDIT);
+  const currentUser = await requirePermission(PERMISSIONS.USERS_EDIT);
+  // Moving someone changes which site they see — never yourself, never a senior
+  const over = await refusalOver(currentUser, userId);
+  if (over) return { error: over };
 
   const [user, department] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, select: { id: true, name: true } }),
@@ -154,7 +158,10 @@ export async function addUserToDepartment(userId: string, departmentId: string) 
 }
 
 export async function removeUserFromDepartment(userId: string) {
-  await requirePermission(PERMISSIONS.USERS_EDIT);
+  const currentUser = await requirePermission(PERMISSIONS.USERS_EDIT);
+  // Moving someone changes which site they see — never yourself, never a senior
+  const over = await refusalOver(currentUser, userId);
+  if (over) return { error: over };
 
   const user = await prisma.user.findUnique({
     where: { id: userId },

@@ -7,7 +7,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -22,6 +21,22 @@ import { Shield, Users, Settings2, Plus, Trash2, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { createRole, deleteRole } from "@/lib/actions/roles";
 import { toast } from "sonner";
+
+/**
+ * The Roles page grid: one card per role, with its permission count and how
+ * many people hold it.
+ *
+ * "In use" counts a role held two ways — as somebody's primary role and as one
+ * they hold on top of it — because either is a live holder and deleting the
+ * role would strip them.
+ *
+ * A role that is in use, or is a system role, cannot be deleted. The button is
+ * shown DISABLED with the reason rather than hidden, which is the one deliberate
+ * exception to "no permission, no button": the person does hold the permission,
+ * so the answer they need is "why not this one", not silence.
+ *
+ * `simplified` is the view for somebody who can read roles but not change them.
+ */
 
 interface Role {
   id: string;
@@ -46,7 +61,7 @@ interface Props {
 export function RoleCardList({ roles, simplified, canCreate, canDelete }: Props) {
   const router = useRouter();
   const [showCreate, setShowCreate] = useState(false);
-  const [createForm, setCreateForm] = useState({ name: "", description: "", isSystem: false });
+  const [createForm, setCreateForm] = useState({ name: "", description: "" });
   const [isPending, startTransition] = useTransition();
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
 
@@ -59,7 +74,6 @@ export function RoleCardList({ roles, simplified, canCreate, canDelete }: Props)
       const result = await createRole({
         name: createForm.name.trim(),
         description: createForm.description.trim() || undefined,
-        isSystem: createForm.isSystem,
       });
       if ("error" in result) {
         toast.error(result.error);
@@ -67,7 +81,7 @@ export function RoleCardList({ roles, simplified, canCreate, canDelete }: Props)
       }
       toast.success(`Role "${createForm.name}" created`);
       setShowCreate(false);
-      setCreateForm({ name: "", description: "", isSystem: false });
+      setCreateForm({ name: "", description: "" });
       router.refresh();
     });
   }
@@ -210,21 +224,6 @@ export function RoleCardList({ roles, simplified, canCreate, canDelete }: Props)
                   setCreateForm({ ...createForm, description: e.target.value })
                 }
                 placeholder="Optional description"
-              />
-            </div>
-            <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
-              <div>
-                <Label htmlFor="roleSystem">System role</Label>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  System roles are protected — they can never be deleted.
-                </p>
-              </div>
-              <Switch
-                id="roleSystem"
-                checked={createForm.isSystem}
-                onCheckedChange={(v) =>
-                  setCreateForm({ ...createForm, isSystem: v })
-                }
               />
             </div>
           </div>

@@ -21,7 +21,7 @@ export default function AuthLayout({
                 STRAIGHT DRIVE SPORTS & LEISURE PVT. LTD.
               </h1>
               <p className="mt-2 text-caption font-bold tracking-[0.12em] text-brand-green uppercase">
-                STOCK INVENTORY MANAGEMENT (SIM)
+                (SIM) STOCK INVENTORY MANAGEMENT
               </p>
             </div>
           </div>
@@ -29,7 +29,8 @@ export default function AuthLayout({
 
         <div className="animate-in fade-in slide-in-from-left-4 space-y-6 delay-150 duration-700 fill-mode-both">
           <blockquote className="text-xl leading-relaxed font-light text-white/85">
-            &ldquo;A quote is to be mentioned (optional) &rdquo;
+            {/* &ldquo;All's well, that ends well... &nbsp; ; ) &rdquo; */}
+            &ldquo;“We want to turn our inventory faster than our people.” — James Sinegal&rdquo;
           </blockquote>
           {/* <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-green/20 ring-1 ring-brand-green/30">

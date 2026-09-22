@@ -31,6 +31,27 @@ import {
   Loader2,
 } from "lucide-react";
 
+/**
+ * Build runs: what is on the floor, what is finished, and what was closed short.
+ *
+ * Components leave central stock when work STARTS, not when it finishes, so a
+ * run sitting here in progress has already consumed them.
+ *
+ * How many are finished is never stored. It is the sum of the stock entries the
+ * run produced, which is why starting 10 and finishing 6 leaves 4 on the floor
+ * without a second number that could drift from the first.
+ *
+ * Three actions, three permissions:
+ *   canFinish    book finished units in; can be used repeatedly on one run
+ *   canSetBatch  type the batch those units carry — dispatch inherits it, so
+ *                this is the only place it is ever entered
+ *   canReverse   undo the run entirely, and only while nothing has moved or
+ *                been dispatched from any batch it produced
+ *
+ * Closing a run short does NOT return the components: they are in scrap or
+ * half-built units, not back on the shelf.
+ */
+
 type Build = {
   id: string;
   buildNumber: string;

@@ -14,7 +14,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { auth } from "@/auth";
-import { prisma } from "@/lib/prisma";
+import { attachRefusal, typeLimits } from "@/lib/attachment-rules";
 
 /** What the browser tells us about the upload it wants to make. */
 type UploadIntent = {
@@ -37,13 +37,9 @@ export async function POST(request: NextRequest) {
           throw new Error("You are not signed in");
         }
 
-        const permissions = session.user.permissions ?? [];
-        const canUpload = permissions.some(
-          (p) => p === "stock.create" || p === "stock.edit"
-        );
-        if (!canUpload) {
-          throw new Error("You do not have permission to add attachments");
-        }
+        // Somebody still on a password an admin chose must change it first,
+        // exactly as everywhere else (requireAuth)
+        if (session.user.mustChangePassword) throw new Error("Change your password first");
 
         if (!clientPayload) throw new Error("Missing upload details");
         const intent = JSON.parse(clientPayload) as UploadIntent;
@@ -51,31 +47,21 @@ export async function POST(request: NextRequest) {
           throw new Error("Missing upload details");
         }
 
-        const entry = await prisma.stockEntry.findUnique({
-          where: { id: intent.stockEntryId },
-          select: { status: true },
-        });
-        if (!entry) throw new Error("Stock entry not found");
-        if (entry.status !== "DRAFT" && entry.status !== "REJECTED") {
-          throw new Error("Cannot upload to submitted or approved entries");
-        }
-
-        const typeConfig = await prisma.attachmentTypeConfig.findUnique({
-          where: { name: intent.attachmentType },
-        });
-
-        // Blob enforces these two for us, and rejects the upload itself if the
-        // browser tries to exceed them — so the limits are not merely advisory.
-        const allowed = Array.isArray(typeConfig?.allowedMimeTypes)
-          ? (typeConfig.allowedMimeTypes as string[])
-          : [];
+        // Theirs (or they may edit any), visible to them, still editable, and a
+        // known document type — the same rule the record step applies
+        const refusal = await attachRefusal(session.user, intent.stockEntryId);
+        if (refusal) throw new Error(refusal);
+        const limits = await typeLimits(intent.attachmentType);
+        if ("error" in limits) throw new Error(limits.error);
 
         return {
           // Must match the store's own access mode, and the client's.
           access: "private",
           addRandomSuffix: true,
-          maximumSizeInBytes: typeConfig?.maxSizeBytes,
-          allowedContentTypes: allowed.length > 0 ? allowed : undefined,
+          // Blob enforces these two itself and refuses the upload if the browser
+          // tries to exceed them — so the limits are not merely advisory
+          maximumSizeInBytes: limits.maxSizeBytes,
+          allowedContentTypes: limits.allowed.length > 0 ? limits.allowed : undefined,
           // Comes back to onUploadCompleted below.
           tokenPayload: JSON.stringify({
             ...intent,

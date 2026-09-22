@@ -13,8 +13,8 @@ import type { Prisma } from "@prisma/client";
  * from every list.
  */
 
-export const DELETED_USER_EMAIL = "deleted-user@system.local";
-export const DELETED_USER_NAME = "Deleted user";
+const DELETED_USER_EMAIL = "deleted-user@system.local";
+const DELETED_USER_NAME = "Deleted user";
 
 /** Finds the tombstone account, creating it the first time it is needed. */
 export async function ensureDeletedUser(tx: Prisma.TransactionClient): Promise<string> {

@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArrowRight, ShieldCheck } from "lucide-react";
+import { statusPill } from "@/lib/design/status";
 
 type SummaryEntry = {
   id: string;
@@ -49,13 +50,6 @@ type SummaryEntry = {
   } | null;
   issues: Array<{ id: string; quantity: number; department: { name: string } }>;
   _count: { attachments: number; approvals: number };
-};
-
-const STATUS_STYLES: Record<SummaryEntry["status"], string> = {
-  DRAFT: "bg-gray-100 text-gray-700 border-gray-200",
-  SUBMITTED: "bg-amber-50 text-amber-700 border-amber-200",
-  APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  REJECTED: "bg-red-50 text-red-700 border-red-200",
 };
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -102,7 +96,7 @@ export function EntrySummaryDialog({
             <DialogHeader>
               <DialogTitle className="flex flex-wrap items-center gap-2">
                 <span className="font-mono">{entry.entryNumber}</span>
-                <Badge variant="outline" className={STATUS_STYLES[entry.status]}>
+                <Badge variant="outline" className={statusPill(entry.status)}>
                   {entry.status.charAt(0) + entry.status.slice(1).toLowerCase()}
                 </Badge>
               </DialogTitle>

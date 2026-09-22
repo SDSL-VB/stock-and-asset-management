@@ -17,6 +17,22 @@ import {
   ArrowDown,
 } from "lucide-react";
 
+/**
+ * Roles arranged by rank, and the controls that move one up or down.
+ *
+ * `hierarchyLevel` is a number where LOWER is stronger, and it decides one
+ * thing only: who may act on whose account. It is not a permission and grants
+ * nothing — a role's capabilities are entirely its permission list.
+ *
+ * Levels 0 and 1 are Super Admin and Admin. They are pinned and have no
+ * controls, because a hierarchy someone can promote themselves to the top of is
+ * not a hierarchy.
+ *
+ * Someone holding several roles takes the STRONGEST level of any of them, so a
+ * second role can promote but never demote — see `strongestHierarchy` in
+ * `src/auth.ts`.
+ */
+
 interface Role {
   id: string;
   name: string;
@@ -158,6 +174,8 @@ export function RoleHierarchy({ roles, canEdit }: Props) {
                                   isPending || role.hierarchyLevel <= 2
                                 }
                                 onClick={() => handleMoveUp(role)}
+                                title="Move up (more senior)"
+                                aria-label="Move up"
                               >
                                 {isRolePending ? (
                                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -171,6 +189,8 @@ export function RoleHierarchy({ roles, canEdit }: Props) {
                                 className="h-6 w-6"
                                 disabled={isPending}
                                 onClick={() => handleMoveDown(role)}
+                                title="Move down (more junior)"
+                                aria-label="Move down"
                               >
                                 {isRolePending ? (
                                   <Loader2 className="h-3 w-3 animate-spin" />

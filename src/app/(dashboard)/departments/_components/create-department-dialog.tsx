@@ -24,6 +24,17 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { Plus, Loader2 } from "lucide-react";
 
+/**
+ * Adding a department.
+ *
+ * Two fields carry real weight. The LOCATION is where this department's members
+ * will inherit their site from, and `isCentralStock` marks this as its site's
+ * central store — which is how stock entry operators and central stock managers
+ * acquire a site at all, and what widens them from one department's stock to
+ * their whole location's. See `visibleToDepartmentScope` in
+ * `src/lib/stock-visibility.ts`.
+ */
+
 export function CreateDepartmentDialog({
   locations = [],
 }: {

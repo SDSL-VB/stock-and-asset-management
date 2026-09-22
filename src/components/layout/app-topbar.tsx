@@ -25,11 +25,15 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
+import { NotificationBell } from "@/components/layout/notification-bell";
 import { cn } from "@/lib/utils";
-import { LogOut, UserCircle } from "lucide-react";
+import { PERMISSIONS } from "@/lib/rbac/permissions";
+import { LogOut, Settings, UserCircle } from "lucide-react";
 import Link from "next/link";
 import React from "react";
 
+// Breadcrumb words for each URL segment. Keep in step with the labels in
+// NAV_ITEMS (src/lib/constants.ts), so the crumb says what the menu said.
 const ROUTE_LABELS: Record<string, string> = {
   dashboard: "Dashboard",
   users: "Team Members",
@@ -40,18 +44,18 @@ const ROUTE_LABELS: Record<string, string> = {
   profile: "My Profile",
   new: "Add New",
   stock: "Stock Entries",
-  reports: "Reports",
+  reports: "Stock Report",
   configure: "Configuration",
-  products: "Catalog",
+  products: "Products",
   bom: "Bills of Materials",
   builds: "Builds",
   procurement: "Procurement",
-  fulfilment: "Fulfilment",
   "recycle-bin": "Recycle Bin",
   vendors: "Vendors",
   clients: "Clients",
   assets: "Assets",
   dispatch: "Dispatch",
+  wastage: "Wastage",
   edit: "Edit",
 };
 
@@ -71,6 +75,7 @@ function labelFor(segment: string): string {
 
 interface Props {
   session?: Session | null;
+
 }
 
 export function AppTopbar({ session }: Props) {
@@ -134,6 +139,7 @@ export function AppTopbar({ session }: Props) {
         </BreadcrumbList>
       </Breadcrumb>
 
+      {session?.user && <NotificationBell />}
       <ThemeToggle />
 
       <DropdownMenu>
@@ -171,6 +177,14 @@ export function AppTopbar({ session }: Props) {
             <UserCircle className="mr-2 h-4 w-4" />
             My Profile
           </DropdownMenuItem>
+          {/* Moved here from the sidebar: it is about this app and you, not
+              about stock, so it does not belong among the jobs on the left */}
+          {user?.permissions?.includes(PERMISSIONS.SETTINGS_VIEW) && (
+            <DropdownMenuItem render={<Link href="/settings" />} className="cursor-pointer">
+              <Settings className="mr-2 h-4 w-4" />
+              Settings
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => signOut({ callbackUrl: "/login" })}

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -39,9 +40,18 @@ import {
   updateCategoryPrefix,
   deleteProduct,
   deleteProductCategory,
+  createSubcategory,
+  updateSubcategory,
+  toggleSubcategoryActive,
+  deleteSubcategory,
 } from "@/lib/actions/products";
 import { SafeDeleteButton } from "@/components/shared/safe-delete-button";
-import { codePrefixOf, CODE_PREFIX_PATTERN } from "@/lib/product-codes";
+import { SuppliersDialog } from "@/components/shared/suppliers-dialog";
+import {
+  codeLeaderOf,
+  codeSuffixOf,
+  CODE_PREFIX_PATTERN,
+} from "@/lib/product-codes";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import {
@@ -55,6 +65,8 @@ import {
   Wrench,
   Boxes,
   Inbox,
+  Layers,
+  Trash2,
 } from "lucide-react";
 import {
   GROUP_LABEL,
@@ -70,6 +82,16 @@ import {
   type ProductGroup,
   type ProductKind,
 } from "@/lib/vocabulary";
+import { statusPill } from "@/lib/design/status";
+
+type Subcategory = {
+  id: string;
+  name: string;
+  /** Null means it adds nothing to a product code */
+  code: string | null;
+  isActive: boolean;
+  _count: { products: number };
+};
 
 type Category = {
   id: string;
@@ -77,6 +99,7 @@ type Category = {
   isActive: boolean;
   codePrefix: string | null;
   nextSequence: number;
+  subcategories: Subcategory[];
   _count: { products: number };
 };
 
@@ -84,10 +107,12 @@ type Product = {
   id: string;
   code: string;
   name: string;
+  description: string | null;
   kind: string;
   unit: string;
   isActive: boolean;
   category: { id: string; name: string };
+  subcategory: { id: string; name: string; code: string | null } | null;
   _count: { stockEntries: number; billsOfMaterials: number };
 };
 
@@ -105,11 +130,26 @@ interface Props {
   /** Adding something we *make* is its own grant, separate from a raw material */
   canCreateMade?: boolean;
   /**
+   * What this deployment insists on, from the catalog_config table. The
+   * form uses the same two booleans the server does, so a field the server
+   * would reject is marked required here rather than failing on submit.
+   */
+  rules?: { requireSubcategory: boolean; requireDescription: boolean };
+  /** vendors.edit, products.edit or stock.lowstock.manage — see suppliers.ts */
+  canEditSuppliers?: boolean;
+  /**
    * The request queue, as a fourth tab. Built by the page because it needs data
    * this component has no reason to know about. Null when the viewer can
    * neither ask for nor review one, and then the tab is absent entirely.
    */
-  requestsTab?: { pending: number; content: React.ReactNode } | null;
+  requestsTab?: {
+    pending: number;
+    /** Of those, the ones this viewer can approve — shown as an attention badge */
+    toReview: number;
+    content: React.ReactNode;
+  } | null;
+  /** Which tab opens first — "requests" when arriving from a review link */
+  defaultTab?: "raw" | "made" | "categories" | "requests";
 }
 
 export function ProductManager({
@@ -124,11 +164,14 @@ export function ProductManager({
   canDeleteProducts = false,
   canDeleteCategories = false,
   canCreateMade = false,
+  rules = { requireSubcategory: false, requireDescription: false },
+  canEditSuppliers = false,
   requestsTab = null,
+  defaultTab = "raw",
 }: Props) {
-  // Split by what a thing *is*: raw materials are bought in and consumed,
-  // products are assembled here. They were one flat list doing both jobs.
-  const rawMaterials = useMemo(
+  // Split by bought or made: procured items (raw materials, ready goods) never
+  // have a bill of materials; products made here always do.
+  const procuredItems = useMemo(
     () => products.filter((p) => groupOf(p.kind) === "BOUGHT_IN"),
     [products]
   );
@@ -138,11 +181,13 @@ export function ProductManager({
   );
 
   return (
-    <Tabs defaultValue="raw">
+    // Keyed on the tab so following a "?tab=requests" link from this page
+    // switches to it — defaultValue alone is read only on first render
+    <Tabs key={defaultTab} defaultValue={defaultTab}>
       <TabsList>
         <TabsTrigger value="raw">
           <Package className="mr-2 h-4 w-4" />
-          {GROUP_LABEL.BOUGHT_IN} ({rawMaterials.length})
+          {GROUP_LABEL.BOUGHT_IN} ({procuredItems.length})
         </TabsTrigger>
         <TabsTrigger value="made">
           <Wrench className="mr-2 h-4 w-4" />
@@ -155,15 +200,24 @@ export function ProductManager({
         {requestsTab && (
           <TabsTrigger value="requests">
             <Inbox className="mr-2 h-4 w-4" />
-            Requests{requestsTab.pending > 0 && ` (${requestsTab.pending})`}
+            Requests
+            {requestsTab.toReview > 0 ? (
+              <span className="ml-1.5 rounded-full bg-destructive px-1.5 text-[10px] font-semibold leading-4 text-white tabular-nums">
+                {requestsTab.toReview}
+              </span>
+            ) : (
+              requestsTab.pending > 0 && ` (${requestsTab.pending})`
+            )}
           </TabsTrigger>
         )}
       </TabsList>
 
       <TabsContent value="raw" className="space-y-4">
         <ProductTable
+          rules={rules}
+          canEditSuppliers={canEditSuppliers}
           group="BOUGHT_IN"
-          products={rawMaterials}
+          products={procuredItems}
           categories={categories}
           canCreate={canCreateProducts}
           canEdit={canEditProducts}
@@ -174,6 +228,8 @@ export function ProductManager({
 
       <TabsContent value="made" className="space-y-4">
         <ProductTable
+          rules={rules}
+          canEditSuppliers={canEditSuppliers}
           group="MADE"
           products={madeProducts}
           categories={categories}
@@ -187,7 +243,7 @@ export function ProductManager({
       <TabsContent value="categories" className="space-y-4">
         {canCreateCategories && (
           <div className="flex justify-end">
-            <CategoryDialog />
+            <CategoryDialog canSetSubcategoryCode={canEditPrefix} />
           </div>
         )}
         <Card>
@@ -198,14 +254,15 @@ export function ProductManager({
                   <TableHead>Category Name</TableHead>
                   <TableHead>Code Prefix</TableHead>
                   <TableHead>Code Pattern</TableHead>
+                  <TableHead>Subcategories</TableHead>
                   <TableHead>Products</TableHead>
-                  <TableHead className="w-[120px]"></TableHead>
+                  <TableHead className="w-[160px]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {categories.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                    <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
                       No categories yet. Add one to start building the catalog.
                     </TableCell>
                   </TableRow>
@@ -221,11 +278,40 @@ export function ProductManager({
                         )}
                       </TableCell>
                       <TableCell className="font-mono text-muted-foreground">
-                        {c.codePrefix ? `${c.codePrefix}-…` : "—"}
+                        {c.codePrefix
+                          ? `${c.codePrefix}-${c.subcategories.some((sub) => sub.code) ? "[sub]-" : ""}…`
+                          : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {c.subcategories.length === 0 ? (
+                          <span className="text-micro text-muted-foreground">None</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {c.subcategories.map((sub) => (
+                              <Badge
+                                key={sub.id}
+                                variant="outline"
+                                className={sub.isActive ? "" : "opacity-50"}
+                              >
+                                {sub.name}
+                                {sub.code ? ` (${sub.code})` : ""}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-muted-foreground">{c._count.products}</TableCell>
                       <TableCell>
                         <div className="flex items-center justify-end gap-1">
+                          {(canCreateCategories || canEditCategories) && (
+                            <SubcategoryDialog
+                              category={c}
+                              canCreate={canCreateCategories}
+                              canEdit={canEditCategories}
+                              canDelete={canDeleteCategories}
+                              canSetCode={canEditPrefix}
+                            />
+                          )}
                           {canEditPrefix && <PrefixDialog category={c} />}
                           {canEditCategories && <CategoryDialog category={c} />}
                           {canDeleteCategories && (
@@ -292,23 +378,23 @@ function ProductDialog({
   product,
   canOverrideCode = false,
   group,
+  rules,
 }: {
   categories: Category[];
   product?: Product;
   canOverrideCode?: boolean;
   /** Which tab this belongs to — decides what an Add creates */
   group: ProductGroup;
+  rules: { requireSubcategory: boolean; requireDescription: boolean };
 }) {
   const router = useRouter();
   const isEditing = !!product;
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState(product?.name ?? "");
+  const [description, setDescription] = useState(product?.description ?? "");
   const [categoryId, setCategoryId] = useState(product?.category.id ?? "");
-  // Only the half after the prefix is ever typed
-  const [codeSuffix, setCodeSuffix] = useState(
-    product?.code.includes("-") ? product.code.split("-").slice(1).join("-") : ""
-  );
+  const [subcategoryId, setSubcategoryId] = useState(product?.subcategory?.id ?? "");
   const [unit, setUnit] = useState(product?.unit ?? "pcs");
   // A raw material has only one kind; a product is either finished or complete
   const [kind, setKind] = useState<ProductKind>(
@@ -317,10 +403,37 @@ function ProductDialog({
   const kindChoices = GROUP_KINDS[group];
   const noun = GROUP_LABEL_SINGULAR[group];
 
-  // The category owns the front half; it is displayed, never entered
-  const prefix = codePrefixOf(categories.find((c) => c.id === categoryId));
+  const category = categories.find((c) => c.id === categoryId);
+  // Only what is still in use, plus whatever this product is already filed
+  // under — a retired subcategory stays visible on the product that uses it, or
+  // editing anything else about that product would silently move it.
+  const subcategories = (category?.subcategories ?? []).filter(
+    (sub) => sub.isActive || sub.id === product?.subcategory?.id
+  );
+  const subcategory = subcategories.find((sub) => sub.id === subcategoryId);
+
+  // Everything to the left of what the user types: "1004-" or "1004-PCB-".
+  const leader = codeLeaderOf(category, subcategory);
   // An existing product's code only becomes editable with the override key
   const codeLocked = isEditing && !canOverrideCode;
+  // Required only when the category actually has subcategories to choose from,
+  // which is the same allowance the server makes.
+  const subcategoryRequired = rules.requireSubcategory && subcategories.length > 0;
+
+  // Only the last part is ever typed. It is recovered by stripping the known
+  // leader rather than splitting on "-", because the typed part may contain
+  // hyphens of its own (1004-PCB-3W-CONTROL).
+  const [codeSuffix, setCodeSuffix] = useState(() =>
+    product
+      ? codeSuffixOf(
+          product.code,
+          codeLeaderOf(
+            categories.find((c) => c.id === product.category.id),
+            product.subcategory
+          )
+        )
+      : ""
+  );
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -329,7 +442,9 @@ function ProductDialog({
       const payload = {
         codeSuffix: codeLocked ? undefined : codeSuffix.trim(),
         name: name.trim(),
+        description: description.trim() || undefined,
         categoryId,
+        subcategoryId: subcategoryId || undefined,
         kind,
         unit: unit.trim() || "pcs",
       };
@@ -350,7 +465,9 @@ function ProductDialog({
       if (!isEditing) {
         setCodeSuffix("");
         setName("");
+        setDescription("");
         setCategoryId("");
+        setSubcategoryId("");
         setUnit("pcs");
       }
       router.refresh();
@@ -389,7 +506,12 @@ function ProductDialog({
                 value: c.id,
                 label: c.codePrefix ? `${c.name} (${c.codePrefix})` : c.name,
               }))}
-              onValueChange={(v) => setCategoryId((v as string) ?? "")}
+              onValueChange={(v) => {
+                setCategoryId((v as string) ?? "");
+                // A subcategory belongs to one category, so the old choice
+                // cannot survive the category changing under it.
+                setSubcategoryId("");
+              }}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Select category" />
@@ -404,6 +526,48 @@ function ProductDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {/* Second level. Absent entirely when the chosen category has none,
+              rather than shown as an empty dropdown. */}
+          {subcategories.length > 0 && (
+            <div className="space-y-2">
+              <Label>
+                Subcategory
+                {!subcategoryRequired && (
+                  <span className="ml-1 font-normal text-muted-foreground">(optional)</span>
+                )}
+              </Label>
+              <Select
+                value={subcategoryId}
+                items={[
+                  ...(subcategoryRequired ? [] : [{ value: "", label: "None" }]),
+                  ...subcategories.map((sub) => ({
+                    value: sub.id,
+                    label: sub.code ? `${sub.name} (${sub.code})` : sub.name,
+                  })),
+                ]}
+                onValueChange={(v) => setSubcategoryId((v as string) ?? "")}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select subcategory" />
+                </SelectTrigger>
+                <SelectContent>
+                  {!subcategoryRequired && <SelectItem value="">None</SelectItem>}
+                  {subcategories.map((sub) => (
+                    <SelectItem key={sub.id} value={sub.id}>
+                      {sub.name}
+                      {sub.code ? ` (${sub.code})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {subcategory?.code
+                  ? `Its code, ${subcategory.code}, goes into the middle of the product code.`
+                  : "This one adds nothing to the product code."}
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="product-code">Product Code</Label>
@@ -422,7 +586,7 @@ function ProductDialog({
                 {/* The category's prefix is fixed and shown; only the rest is typed */}
                 <div className="flex items-stretch rounded-md border focus-within:ring-2 focus-within:ring-ring">
                   <span className="flex select-none items-center rounded-l-md border-r bg-muted px-3 font-mono text-sm font-semibold text-muted-foreground">
-                    {prefix ?? "—"}
+                    {leader ?? "—"}
                   </span>
                   <Input
                     id="product-code"
@@ -436,7 +600,7 @@ function ProductDialog({
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {categoryId
-                    ? `The code will be ${prefix ?? ""}${codeSuffix || "…"}`
+                    ? `The code will be ${leader ?? ""}${codeSuffix || "…"}`
                     : "Choose a category and its code prefix fills in here."}
                 </p>
               </>
@@ -461,6 +625,8 @@ function ProductDialog({
                   >
                     {k === "KIT" ? (
                       <Boxes className={"mt-0.5 h-4 w-4 shrink-0 " + (kind === k ? "text-primary" : "text-muted-foreground")} />
+                    ) : k === "RAW" ? (
+                      <Package className={"mt-0.5 h-4 w-4 shrink-0 " + (kind === k ? "text-primary" : "text-muted-foreground")} />
                     ) : (
                       <Wrench className={"mt-0.5 h-4 w-4 shrink-0 " + (kind === k ? "text-primary" : "text-muted-foreground")} />
                     )}
@@ -499,9 +665,34 @@ function ProductDialog({
               id="product-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. English Willow Bat - Grade A"
+              placeholder="e.g. 3W_Control_Board"
               required
             />
+            <p className="text-xs text-muted-foreground">
+              The short handle people type and search for.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="product-description">
+              Description
+              {!rules.requireDescription && (
+                <span className="ml-1 font-normal text-muted-foreground">(optional)</span>
+              )}
+            </Label>
+            <Textarea
+              id="product-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="e.g. BLDC Control board"
+              rows={2}
+              maxLength={300}
+              required={rules.requireDescription}
+            />
+            <p className="text-xs text-muted-foreground">
+              What it actually is, in words — this is what tells somebody picking
+              from a list that they have the right thing.
+            </p>
           </div>
 
           <div className="flex justify-end gap-2">
@@ -514,6 +705,8 @@ function ProductDialog({
                 loading ||
                 !name.trim() ||
                 !categoryId ||
+                (subcategoryRequired && !subcategoryId) ||
+                (rules.requireDescription && !description.trim()) ||
                 (!codeLocked && !codeSuffix.trim())
               }
               className="bg-brand-green hover:bg-brand-green/90 text-brand-navy font-semibold"
@@ -528,7 +721,18 @@ function ProductDialog({
   );
 }
 
-function CategoryDialog({ category }: { category?: Category }) {
+/**
+ * Adding or renaming a category. When adding, its subcategories can be typed in
+ * the same form ("+ Add a subcategory"), each with an optional code for those
+ * allowed to set one; the server creates them together with the category.
+ */
+function CategoryDialog({
+  category,
+  canSetSubcategoryCode = false,
+}: {
+  category?: Category;
+  canSetSubcategoryCode?: boolean;
+}) {
   const router = useRouter();
   const isEditing = !!category;
   const [open, setOpen] = useState(false);
@@ -538,6 +742,8 @@ function CategoryDialog({ category }: { category?: Category }) {
   // afterwards is a separate act behind categories.prefix.edit (PrefixDialog).
   const [codePrefix, setCodePrefix] = useState("");
   const codeLooksValid = CODE_PREFIX_PATTERN.test(codePrefix.trim());
+  const [subs, setSubs] = useState<{ key: number; name: string; code: string }[]>([]);
+  const filledSubs = subs.filter((sub) => sub.name.trim());
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -548,17 +754,23 @@ function CategoryDialog({ category }: { category?: Category }) {
         : await createProductCategory({
             name: name.trim(),
             codePrefix: codePrefix.trim(),
+            subcategories: filledSubs.map((sub) => ({ name: sub.name.trim(), code: sub.code.trim() })),
           });
 
       if ("error" in result) {
         toast.error(result.error);
         return;
       }
-      toast.success(isEditing ? "Category updated" : `Category "${name}" added`);
+      toast.success(
+        isEditing
+          ? "Category updated"
+          : `Category "${name}" added${filledSubs.length ? ` with ${filledSubs.length} subcategor${filledSubs.length === 1 ? "y" : "ies"}` : ""}`
+      );
       setOpen(false);
       if (!isEditing) {
         setName("");
         setCodePrefix("");
+        setSubs([]);
       }
       router.refresh();
     } finally {
@@ -621,6 +833,60 @@ function CategoryDialog({ category }: { category?: Category }) {
               </p>
             </div>
           )}
+
+          {!isEditing && (
+            <div className="space-y-2">
+              <Label>Subcategories (optional)</Label>
+              {subs.map((sub) => (
+                <div key={sub.key} className="flex items-center gap-2">
+                  <Input
+                    value={sub.name}
+                    onChange={(e) =>
+                      setSubs((all) => all.map((x) => (x.key === sub.key ? { ...x, name: e.target.value } : x)))
+                    }
+                    placeholder="e.g. PCB"
+                    aria-label="Subcategory name"
+                  />
+                  {canSetSubcategoryCode && (
+                    <Input
+                      value={sub.code}
+                      onChange={(e) =>
+                        setSubs((all) => all.map((x) => (x.key === sub.key ? { ...x, code: e.target.value.toUpperCase() } : x)))
+                      }
+                      placeholder="Code"
+                      aria-label="Subcategory code"
+                      maxLength={8}
+                      className="w-28 font-mono"
+                    />
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Remove this subcategory"
+                    onClick={() => setSubs((all) => all.filter((x) => x.key !== sub.key))}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSubs((all) => [...all, { key: Date.now(), name: "", code: "" }])}
+              >
+                <Plus className="h-4 w-4" />
+                Add a subcategory
+              </Button>
+              {canSetSubcategoryCode && (
+                <p className="text-xs text-muted-foreground">
+                  A code is optional: it becomes the middle of the product code —{" "}
+                  <span className="font-mono">{codeLooksValid ? codePrefix.trim() : "1004"}-PCB-3W_CONTROL_BOARD</span>.
+                </p>
+              )}
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Cancel
@@ -671,6 +937,7 @@ function PrefixDialog({ category }: { category: Category }) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={<Button variant="ghost" size="sm" />}>
         <Hash className="h-4 w-4" />
+        <span className="text-xs">Code prefix</span>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
@@ -732,6 +999,8 @@ function ProductTable({
   canEdit,
   canDelete,
   canOverrideCode,
+  rules,
+  canEditSuppliers,
 }: {
   group: ProductGroup;
   products: Product[];
@@ -740,6 +1009,9 @@ function ProductTable({
   canEdit: boolean;
   canDelete: boolean;
   canOverrideCode: boolean;
+  rules: { requireSubcategory: boolean; requireDescription: boolean };
+  /** vendors.edit, products.edit or stock.lowstock.manage — see suppliers.ts */
+  canEditSuppliers: boolean;
 }) {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -749,11 +1021,21 @@ function ProductTable({
     return products.filter((p) => {
       if (categoryFilter !== "all" && p.category.id !== categoryFilter) return false;
       if (!q) return true;
-      return p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q);
+      // Matches what searchProducts() looks at, so filtering here and searching
+      // on the stock entry form find the same things.
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.code.toLowerCase().includes(q) ||
+        (p.description?.toLowerCase().includes(q) ?? false) ||
+        (p.subcategory?.name.toLowerCase().includes(q) ?? false)
+      );
     });
   }, [products, search, categoryFilter]);
 
   const isMade = group === "MADE";
+  // A kind column only earns its place where a tab mixes kinds — Procured holds
+  // raw materials and ready goods; Made here holds finished products only.
+  const showKind = GROUP_KINDS[group].length > 1;
 
   return (
     <>
@@ -765,7 +1047,7 @@ function ProductTable({
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name or code..."
+            placeholder="Search by name, code, subcategory or description..."
             className="pl-9"
           />
         </div>
@@ -791,6 +1073,7 @@ function ProductTable({
         </Select>
         {canCreate && (
           <ProductDialog
+            rules={rules}
             categories={categories}
             canOverrideCode={canOverrideCode}
             group={group}
@@ -806,7 +1089,7 @@ function ProductTable({
                 <TableHead>Code</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Category</TableHead>
-                {isMade && <TableHead>Kind</TableHead>}
+                {showKind && <TableHead>Kind</TableHead>}
                 <TableHead>{isMade ? "Bill of materials" : "Entries"}</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-[100px]"></TableHead>
@@ -816,7 +1099,7 @@ function ProductTable({
               {filtered.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={isMade ? 7 : 6}
+                    colSpan={showKind ? 7 : 6}
                     className="h-24 text-center text-muted-foreground"
                   >
                     {products.length === 0
@@ -828,11 +1111,25 @@ function ProductTable({
                 filtered.map((p) => (
                   <TableRow key={p.id}>
                     <TableCell className="font-mono font-semibold">{p.code}</TableCell>
-                    <TableCell className="font-medium">{p.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{p.category.name}</Badge>
+                    <TableCell className="font-medium">
+                      {p.name}
+                      {p.description && (
+                        <span className="mt-0.5 block text-micro font-normal text-muted-foreground">
+                          {p.description}
+                        </span>
+                      )}
                     </TableCell>
-                    {isMade && (
+                    <TableCell>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <Badge variant="outline">{p.category.name}</Badge>
+                        {p.subcategory && (
+                          <Badge variant="outline" className="text-muted-foreground">
+                            {p.subcategory.name}
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    {showKind && (
                       <TableCell>
                         <Badge
                           variant="outline"
@@ -861,20 +1158,22 @@ function ProductTable({
                     <TableCell>
                       <Badge
                         variant="outline"
-                        className={
-                          p.isActive
-                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "border-gray-200 bg-gray-100 text-gray-600"
-                        }
+                        className={statusPill(p.isActive ? "ACTIVE" : "INACTIVE")}
                       >
                         {p.isActive ? "Active" : "Inactive"}
                       </Badge>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center justify-end gap-1">
+                        {/* Things we buy have suppliers, each with its own lead
+                            time; things we make do not */}
+                        {!isMade && (
+                          <SuppliersDialog side={{ kind: "product", id: p.id, name: p.name }} canEdit={canEditSuppliers} />
+                        )}
                         {canEdit && (
                           <>
                             <ProductDialog
+                              rules={rules}
                               categories={categories}
                               product={p}
                               canOverrideCode={canOverrideCode}
@@ -903,5 +1202,214 @@ function ProductTable({
         </CardContent>
       </Card>
     </>
+  );
+}
+
+/**
+ * Managing one category's subcategories, without leaving the Categories tab.
+ *
+ * A dialog rather than a page because subcategories are only ever read in the
+ * context of their parent — "PCB" means nothing without "Electronics" above it,
+ * and the code it contributes is only valid inside that category.
+ *
+ * Retiring is offered ahead of deleting, for the same reason it is everywhere
+ * else in this app: a retired subcategory vanishes from the product form and
+ * keeps every product already filed under it, codes and all. Deleting is
+ * refused outright once anything is filed here — by the database as well as by
+ * the action, so there is no way to lose a product by tidying the catalog.
+ */
+function SubcategoryDialog({
+  category,
+  canCreate,
+  canEdit,
+  canDelete,
+  canSetCode,
+}: {
+  category: Category;
+  canCreate: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  /** The code is a code segment, so it follows categories.prefix.edit */
+  canSetCode: boolean;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  /** Null while adding; an id while renaming an existing one */
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  function reset() {
+    setEditingId(null);
+    setName("");
+    setCode("");
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = { categoryId: category.id, name: name.trim(), code: code.trim() || undefined };
+      const result = editingId
+        ? await updateSubcategory(editingId, payload)
+        : await createSubcategory(payload);
+
+      if ("error" in result) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success(editingId ? "Subcategory updated" : `"${name.trim()}" added`);
+      reset();
+      router.refresh();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleToggle(sub: Subcategory) {
+    const result = await toggleSubcategoryActive(sub.id);
+    if ("error" in result) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success(result.isActive ? `"${sub.name}" restored` : `"${sub.name}" retired`);
+    router.refresh();
+  }
+
+  async function handleDelete(sub: Subcategory) {
+    const result = await deleteSubcategory(sub.id);
+    if ("error" in result) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success(`"${sub.name}" deleted`);
+    router.refresh();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) reset();
+      }}
+    >
+      <DialogTrigger render={<Button variant="ghost" size="sm" />}>
+        <Layers className="h-4 w-4" />
+        <span className="text-xs">Subcategories</span>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Subcategories of {category.name}</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {category.subcategories.length === 0 ? (
+            <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+              None yet. A subcategory is the second level of the catalog —
+              Electronics holds PCB and Resistor, and a product is filed under
+              one of them.
+            </p>
+          ) : (
+            <ul className="divide-y rounded-md border">
+              {category.subcategories.map((sub) => (
+                <li key={sub.id} className="flex items-center gap-2 p-2.5">
+                  <span className="min-w-0 flex-1">
+                    <span className={"text-sm font-medium " + (sub.isActive ? "" : "text-muted-foreground line-through")}>
+                      {sub.name}
+                    </span>
+                    <span className="mt-0.5 block text-micro text-muted-foreground">
+                      {sub.code
+                        ? `Codes read ${category.codePrefix ?? "????"}-${sub.code}-…`
+                        : "Adds nothing to the product code"}
+                      {sub._count.products > 0 &&
+                        ` · ${sub._count.products} product${sub._count.products === 1 ? "" : "s"}`}
+                    </span>
+                  </span>
+                  {canEdit && (
+                    <>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setEditingId(sub.id);
+                          setName(sub.name);
+                          setCode(sub.code ?? "");
+                        }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => handleToggle(sub)}>
+                        {sub.isActive ? "Retire" : "Restore"}
+                      </Button>
+                    </>
+                  )}
+                  {/* Deleting is only ever offered for an empty one; anything
+                      else is a retire, and the action refuses regardless. */}
+                  {canDelete && sub._count.products === 0 && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => handleDelete(sub)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {(canCreate || (canEdit && editingId)) && (
+            <form onSubmit={handleSubmit} className="space-y-3 rounded-md border p-3">
+              <p className="text-sm font-medium">
+                {editingId ? "Rename subcategory" : "Add a subcategory"}
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="sub-name">Name</Label>
+                <Input
+                  id="sub-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. PCB"
+                  required
+                />
+              </div>
+
+              {canSetCode && (
+                <div className="space-y-2">
+                  <Label htmlFor="sub-code">
+                    Code <span className="font-normal text-muted-foreground">(optional)</span>
+                  </Label>
+                  <Input
+                    id="sub-code"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.toUpperCase())}
+                    placeholder="PCB"
+                    maxLength={8}
+                    className="max-w-[160px] font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {code
+                      ? `Products here will be coded ${category.codePrefix ?? "????"}-${code}-…`
+                      : `Leave it blank and products here stay ${category.codePrefix ?? "????"}-… , the original format.`}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                {editingId && (
+                  <Button type="button" variant="outline" onClick={reset}>
+                    Cancel
+                  </Button>
+                )}
+                <Button type="submit" disabled={loading || !name.trim()}>
+                  {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {editingId ? "Save" : "Add"}
+                </Button>
+              </div>
+            </form>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

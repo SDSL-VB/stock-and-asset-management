@@ -10,13 +10,7 @@ import {
   IndianRupee,
   Users,
   Building2,
-  Plus,
-  List,
   Edit,
-  Inbox,
-  Tags,
-  BarChart3,
-  Wrench,
   TrendingUp,
 } from "lucide-react";
 import { StatCard } from "@/components/dashboard/stat-card";
@@ -29,10 +23,9 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Reveal, Stagger, StaggerItem } from "@/components/motion";
 import { formatCurrency } from "@/lib/format";
+import { statusPill } from "@/lib/design/status";
 import {
   PERMISSIONS,
-  PRODUCT_MANAGE_PERMISSIONS,
-  STOCK_CONFIG_PERMISSIONS,
   resolveStockScope,
 } from "@/lib/rbac/permissions";
 import type { Trend } from "@/lib/actions/dashboard";
@@ -74,35 +67,6 @@ export type ReviewQueueItem = {
   amount?: number;
 };
 
-const REVIEW_KIND_META: Record<
-  ReviewQueueItem["kind"],
-  { label: string; badgeClass: string }
-> = {
-  STOCK_ENTRY: {
-    label: "Stock Entry",
-    badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  },
-  TRANSFER: {
-    label: "Stock Transfer Request",
-    badgeClass: "bg-blue-50 text-blue-700 border-blue-200",
-  },
-  PURCHASE_INTENT: {
-    label: "Purchase Need",
-    badgeClass: "bg-indigo-50 text-indigo-700 border-indigo-200",
-  },
-  SITE_REQUEST: {
-    label: "Site Request",
-    badgeClass: "bg-teal-50 text-teal-700 border-teal-200",
-  },
-  PRODUCT: {
-    label: "Product Request",
-    badgeClass: "bg-purple-50 text-purple-700 border-purple-200",
-  },
-  CATEGORY: {
-    label: "Category Request",
-    badgeClass: "bg-amber-50 text-amber-700 border-amber-200",
-  },
-};
 
 interface DeptOverview {
   id: string;
@@ -159,13 +123,6 @@ interface Props {
   departmentMemberCount: number | null;
 }
 
-const statusBadgeClasses: Record<string, string> = {
-  DRAFT: "bg-gray-100 text-gray-700 border-gray-200",
-  SUBMITTED: "bg-amber-50 text-amber-700 border-amber-200",
-  APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  REJECTED: "bg-red-50 text-red-700 border-red-200",
-};
-
 export function DynamicDashboard({
   greeting,
   role,
@@ -181,7 +138,6 @@ export function DynamicDashboard({
 }: Props) {
   const has = (p: string) => permissions.includes(p);
   const isAdmin = resolveStockScope({ role, permissions }) === "all";
-  const canManageCatalog = PRODUCT_MANAGE_PERMISSIONS.some(has);
 
   const rejectedEntries =
     has(PERMISSIONS.STOCK_CREATE) && stock
@@ -193,14 +149,23 @@ export function DynamicDashboard({
   const reviewCount = reviewQueue?.length ?? 0;
 
   // The hero surfaces the single most urgent thing this user can act on.
-  // Clicking it jumps straight to the one pending item, or to the combined
-  // review queue when several are waiting.
+  // Clicking it jumps straight to the one pending item, or — when several are
+  // waiting — opens a list of them, each linking to where it is dealt with.
   const highlight = (() => {
     if (reviewQueue && reviewCount > 0) {
       return {
         label: `${reviewCount} ${reviewCount === 1 ? "item needs" : "items need"} your review`,
         urgent: true,
-        href: reviewCount === 1 ? reviewQueue[0].href : "#review-queue",
+        href: reviewCount === 1 ? reviewQueue[0].href : undefined,
+        items:
+          reviewCount > 1
+            ? reviewQueue.map((item) => ({
+                id: `${item.kind}-${item.id}`,
+                title: item.title,
+                subtitle: item.subtitle,
+                href: item.href,
+              }))
+            : undefined,
       };
     }
     if (rejectedEntries.length > 0) {
@@ -216,7 +181,7 @@ export function DynamicDashboard({
     if (pendingCatalogRequests > 0) {
       return {
         label: `${pendingCatalogRequests} catalog ${pendingCatalogRequests === 1 ? "request" : "requests"}`,
-        href: "/stock/products",
+        href: "/stock/products?tab=requests",
       };
     }
     if (stock && has(PERMISSIONS.STOCK_CREATE) && stock.stats.drafts > 0) {
@@ -229,89 +194,13 @@ export function DynamicDashboard({
     return undefined;
   })();
 
-  // The one button offered up front. Reviewing beats creating: someone who can
-  // do both is waiting on other people's work, not making more of their own.
-  // const heroAction = has(PERMISSIONS.STOCK_APPROVE)
-  //   ? { label: "Review stock", href: "/stock" }
-  //   : has(PERMISSIONS.STOCK_CREATE)
-  //     ? { label: "New stock entry", href: "/stock/new" }
-  //     : has(PERMISSIONS.REPORTS_VIEW)
-  //       ? { label: "Open reports", href: "/reports" }
-  //       : undefined;
-  const heroAction = undefined;
-
-  // Quick actions, in priority order, filtered by permission
-  const quickActions = [
-    has(PERMISSIONS.STOCK_CREATE) && {
-      label: "New Entry",
-      description: "Record incoming stock",
-      href: "/stock/new",
-      icon: Plus,
-      tone: "approved" as const,
-    },
-    (has(PERMISSIONS.STOCK_VIEW) || has(PERMISSIONS.STOCK_CREATE)) && {
-      label: "Stock Entries",
-      description: "Browse all entries",
-      href: "/stock",
-      icon: List,
-      tone: "info" as const,
-    },
-    // Transfers live on Assets now, catalog requests on the Catalog page —
-    // each queue sits with the thing it is about.
-    has(PERMISSIONS.ASSETS_TRANSFER_REQUEST) ||
-    has(PERMISSIONS.ASSETS_TRANSFER_APPROVE)
-      ? {
-          label: "Transfers",
-          description: "Move stock into a department",
-          href: "/assets",
-          icon: Inbox,
-          tone: "info" as const,
-        }
-      : false,
-    canManageCatalog && {
-      label: "Product Catalog",
-      description: "Codes & categories",
-      href: "/stock/products",
-      icon: Tags,
-      tone: "info" as const,
-    },
-    has(PERMISSIONS.REPORTS_VIEW) && {
-      label: "Reports",
-      description: "Stock analytics",
-      href: "/reports",
-      icon: BarChart3,
-      tone: "info" as const,
-    },
-    has(PERMISSIONS.USERS_VIEW) && {
-      label: "Team Members",
-      description: "People & accounts",
-      href: "/users",
-      icon: Users,
-      tone: "info" as const,
-    },
-    STOCK_CONFIG_PERMISSIONS.some(has) && {
-      label: "Stock Config",
-      description: "Fields, flows, uploads",
-      href: "/configure",
-      icon: Wrench,
-      tone: "draft" as const,
-    },
-  ].filter(Boolean) as Array<{
-    label: string;
-    description: string;
-    href: string;
-    icon: typeof Plus;
-    tone: "info" | "approved" | "pending" | "draft";
-  }>;
-
   const hasAnything =
     stock ||
     reviewQueue ||
     team ||
     departments ||
     activity ||
-    dispatch ||
-    quickActions.length > 0;
+    dispatch;
 
   return (
     <div className="space-y-8">
@@ -328,12 +217,10 @@ export function DynamicDashboard({
                   : "Welcome to Straight Drive SIM."
           }
           highlight={highlight}
-          action={heroAction}
         />
       </Reveal>
 
       {/* Stock KPIs — anyone who can see or create stock */}
-      {stock && (<p>STOCK REVIEW</p>)}
       {stock && (
         <Stagger className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <StaggerItem>
@@ -407,7 +294,6 @@ export function DynamicDashboard({
       )}
 
       {/* Team KPIs — anyone who can see users/departments */}
-      {(team || departmentMemberCount !== null) && (<p>USER MANAGEMENT</p>)}
       {(team || departmentMemberCount !== null) && (
         <Stagger className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {departmentMemberCount !== null && (
@@ -463,97 +349,7 @@ export function DynamicDashboard({
         </Stagger>
       )}
 
-      {/* Quick actions */}
-      {/* {quickActions.length > 0 && (
-        <section>
-          <h2 className="mb-4 flex items-center gap-2 text-h2">
-            <Zap className="size-5 text-status-info" />
-            Quick Actions
-          </h2>
-          <Stagger className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            {quickActions.map((action) => (
-              <StaggerItem key={action.href}>
-                <QuickActionCard {...action} />
-              </StaggerItem>
-            ))}
-          </Stagger>
-        </section>
-      )} */}
 
-      {/* <div>
-        {reviewQueue && (
-          <Card id="review-queue" className="scroll-mt-6">
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <Clock className="size-4 text-status-pending" />
-                Needs Your Review
-                {reviewQueue.length > 0 && (
-                  <Badge
-                    variant="outline"
-                    className="bg-amber-50 text-amber-700 border-amber-200"
-                  >
-                    {reviewQueue.length}
-                  </Badge>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {reviewQueue.length === 0 ? (
-                <EmptyState
-                  emoji="✅"
-                  title="Nothing waiting on you"
-                  description="Stock entries and requests awaiting your approval will show up here."
-                  className="py-8"
-                />
-              ) : (
-                <Stagger className="space-y-3" stagger={0.04}>
-                  {reviewQueue.map((item) => {
-                    const meta = REVIEW_KIND_META[item.kind];
-                    return (
-                      <StaggerItem key={`${item.kind}-${item.id}`}>
-                        <div className="flex items-center justify-between gap-3 rounded-lg border p-3 transition-colors duration-200 hover:border-status-pending/40 hover:bg-muted/60">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <p className="truncate text-body font-semibold">
-                                {item.title}
-                              </p>
-                              <Badge
-                                variant="outline"
-                                className={`text-[10px] ${meta.badgeClass}`}
-                              >
-                                {meta.label}
-                              </Badge>
-                            </div>
-                            <p className="truncate text-caption text-muted-foreground">
-                              {item.subtitle}
-                              {item.kind === "STOCK_ENTRY" &&
-                                item.amount !== undefined &&
-                                has(PERMISSIONS.STOCK_VALUE_VIEW) &&
-                                ` · ${formatCurrency(item.amount)}`}
-                            </p>
-                          </div>
-                          <Button
-                            render={<Link href={item.href} />}
-                            nativeButton={false}
-                            variant="outline"
-                            size="sm"
-                            className="shrink-0"
-                          >
-                            <Eye />
-                            Review
-                          </Button>
-                        </div>
-                      </StaggerItem>
-                    );
-                  })}
-                </Stagger>
-              )}
-            </CardContent>
-          </Card>
-        )}
-      </div> */}
-
-      {dispatch && (<p>DISPATCH OVERVIEW</p>)}
       {/* Dispatch is a module in its own right — an operator holding only
           dispatch keys still lands on something useful. */}
       {dispatch && (
@@ -687,7 +483,7 @@ export function DynamicDashboard({
                         </div>
                         <Badge
                           variant="outline"
-                          className={statusBadgeClasses[entry.status] ?? ""}
+                          className={statusPill(entry.status)}
                         >
                           {entry.status}
                         </Badge>

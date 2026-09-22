@@ -4,6 +4,8 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { authConfig } from "@/auth.config";
 import { loginSchema } from "@/lib/validations/auth";
+import { AUTH_INCLUDE, unionPermissions, roleNames, strongestHierarchy, type AuthUser } from "@/lib/rbac/effective-user";
+import { clearFailures, isThrottled, recordFailure } from "@/lib/login-throttle";
 
 /**
  * Sign-in, and the one place a person's capabilities are worked out.
@@ -16,82 +18,6 @@ import { loginSchema } from "@/lib/validations/auth";
  * have, plus anything granted to them individually.
  */
 
-/** Everything needed to work out what one person may do. */
-const AUTH_INCLUDE = {
-  role: { include: { permissions: { include: { permission: { select: { key: true } } } } } },
-  // Roles held on top of the primary one — see the UserRole model
-  additionalRoles: {
-    include: {
-      role: {
-        select: {
-          name: true,
-          hierarchyLevel: true,
-          permissions: { select: { permission: { select: { key: true } } } },
-        },
-      },
-    },
-  },
-  department: { select: { locationId: true, isCentralStock: true } },
-  extraPermissions: {
-    select: { expiresAt: true, permission: { select: { key: true } } },
-  },
-} as const;
-
-type AuthUser = {
-  id: string;
-  name: string;
-  email: string;
-  avatar: string | null;
-  departmentId: string | null;
-  role: { name: string; hierarchyLevel: number; permissions: { permission: { key: string } }[] };
-  additionalRoles: {
-    role: { name: string; hierarchyLevel: number; permissions: { permission: { key: string } }[] };
-  }[];
-  department: { locationId: string | null; isCentralStock: boolean } | null;
-  extraPermissions: { expiresAt: Date | null; permission: { key: string } }[];
-  mustChangePassword: boolean;
-};
-
-/**
- * What a person can do: every permission from every role they hold, plus
- * anything granted to them individually.
- *
- * Grants are add-only, so this is a union and never a subtraction — which is
- * what makes "why can't she do this?" always answerable from her roles. An
- * expired grant simply drops out here, so expiry needs nothing on a schedule.
- */
-function unionPermissions(user: AuthUser): string[] {
-  const keys = new Set<string>();
-
-  for (const rp of user.role.permissions) keys.add(rp.permission.key);
-  for (const held of user.additionalRoles) {
-    for (const rp of held.role.permissions) keys.add(rp.permission.key);
-  }
-
-  const now = Date.now();
-  for (const grant of user.extraPermissions) {
-    if (grant.expiresAt && grant.expiresAt.getTime() <= now) continue;
-    keys.add(grant.permission.key);
-  }
-
-  return [...keys];
-}
-
-/** Every role name held, primary first — for the badge and the directory. */
-function roleNames(user: AuthUser): string[] {
-  return [user.role.name, ...user.additionalRoles.map((h) => h.role.name)];
-}
-
-/**
- * The strongest rank held. Lower is stronger, so holding a second role can
- * promote someone but never demote them.
- */
-function strongestHierarchy(user: AuthUser): number {
-  return user.additionalRoles.reduce(
-    (best, held) => Math.min(best, held.role.hierarchyLevel),
-    user.role.hierarchyLevel
-  );
-}
 
 /** The session shape, built from a freshly-read user row. */
 function toSessionUser(user: AuthUser) {
@@ -110,51 +36,23 @@ function toSessionUser(user: AuthUser) {
     inCentralStock: user.department?.isCentralStock ?? false,
     hierarchyLevel: strongestHierarchy(user),
     mustChangePassword: user.mustChangePassword,
+    // When the password was last set. A session carrying an older stamp ends
+    // at its next refresh — so setting a new password signs out everywhere.
+    credentialStamp: user.passwordSetAt?.getTime() ?? 0,
   };
 }
 
-/* -------------------------------------------------------------------------
-   Slowing down password guessing.
+/**
+ * Compared against when the email is unknown, so a wrong email takes as long
+ * to refuse as a wrong password and the form cannot be used to find out which
+ * addresses have accounts. (A bcrypt hash of a random string, cost 12.)
+ */
+const NO_SUCH_USER_HASH = "$2a$12$C6UzMDM.H6dfI/f/IKcEeO5A3v6ZbmmKjT.Ynx.RMnVzr2VJtN5Hu";
 
-   Held in memory, keyed by email address. That is a deliberate, limited
-   choice: it costs nothing, needs no table, and stops the obvious attack —
-   one account hammered with a wordlist. What it does NOT stop is somebody
-   spreading their guesses across many addresses, and it resets when the
-   process restarts. If this system ever faces the open internet rather than a
-   test instance behind a proxy, move the counter into the database or put a
-   real limiter in front of the app.
-   ------------------------------------------------------------------------- */
-
-const MAX_ATTEMPTS = 8;
-const LOCKOUT_MS = 15 * 60 * 1000;
-
-const failures = new Map<string, { count: number; firstAt: number }>();
-
-function isLockedOut(email: string): boolean {
-  const record = failures.get(email);
-  if (!record) return false;
-
-  // The window is measured from the first failure, so a burst of eight wrong
-  // guesses buys fifteen minutes rather than a rolling extension.
-  if (Date.now() - record.firstAt > LOCKOUT_MS) {
-    failures.delete(email);
-    return false;
-  }
-
-  return record.count >= MAX_ATTEMPTS;
-}
-
-function recordFailure(email: string): void {
-  const record = failures.get(email);
-  if (!record || Date.now() - record.firstAt > LOCKOUT_MS) {
-    failures.set(email, { count: 1, firstAt: Date.now() });
-    return;
-  }
-  record.count += 1;
-}
-
-function clearFailures(email: string): void {
-  failures.delete(email);
+/** The caller's address, as the platform's proxy reports it. */
+function addressOf(request: Request | undefined): string {
+  const forwarded = request?.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded || request?.headers.get("x-real-ip") || "unknown";
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -173,6 +71,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.inCentralStock = user.inCentralStock;
         token.hierarchyLevel = user.hierarchyLevel;
         token.mustChangePassword = user.mustChangePassword;
+        token.credentialStamp = user.credentialStamp;
         token.refreshedAt = Date.now();
         return token;
       }
@@ -187,20 +86,29 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         where: { id: token.id as string },
         include: AUTH_INCLUDE,
       });
-      if (dbUser) {
-        const shaped = toSessionUser(dbUser);
-        token.name = shaped.name;
-        token.email = shaped.email;
-        token.role = shaped.role;
-        token.roles = shaped.roles;
-        token.permissions = shaped.permissions;
-        token.departmentId = shaped.departmentId;
-        token.locationId = shaped.locationId;
-        token.inCentralStock = shaped.inCentralStock;
-        token.hierarchyLevel = shaped.hierarchyLevel;
-        token.mustChangePassword = shaped.mustChangePassword;
-        token.refreshedAt = Date.now();
+      // The session ends — within 30 seconds, whatever the cookie says — when
+      // the account is gone or disabled, or its password was set again since
+      // this session signed in (so a reset throws out whoever had it).
+      if (
+        !dbUser ||
+        !dbUser.isActive ||
+        dbUser.isSystem ||
+        (dbUser.passwordSetAt?.getTime() ?? 0) !== ((token.credentialStamp as number | undefined) ?? 0)
+      ) {
+        return null;
       }
+      const shaped = toSessionUser(dbUser);
+      token.name = shaped.name;
+      token.email = shaped.email;
+      token.role = shaped.role;
+      token.roles = shaped.roles;
+      token.permissions = shaped.permissions;
+      token.departmentId = shaped.departmentId;
+      token.locationId = shaped.locationId;
+      token.inCentralStock = shaped.inCentralStock;
+      token.hierarchyLevel = shaped.hierarchyLevel;
+      token.mustChangePassword = shaped.mustChangePassword;
+      token.refreshedAt = Date.now();
       return token;
     },
   },
@@ -210,15 +118,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, request) {
         const parsed = loginSchema.safeParse(credentials);
         if (!parsed.success) return null;
 
         const { email, password } = parsed.data;
+        const address = addressOf(request);
 
-        // Refuse before touching the database, so a guessing run costs an
+        // Refuse before comparing passwords, so a guessing run costs an
         // attacker time rather than costing us a bcrypt comparison each try.
-        if (isLockedOut(email)) return null;
+        if (await isThrottled(email, address)) return null;
 
         const user = await prisma.user.findUnique({
           where: { email },
@@ -227,18 +136,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         // The system account exists only to own deleted people's records, so
         // that their history stays searchable. It can never sign in.
-        if (!user || !user.isActive || user.isSystem) {
-          recordFailure(email);
+        const usable = user && user.isActive && !user.isSystem;
+        const isValid = await bcrypt.compare(password, usable ? user.password : NO_SUCH_USER_HASH);
+        if (!usable || !isValid) {
+          await recordFailure(email, address);
           return null;
         }
 
-        const isValid = await bcrypt.compare(password, user.password);
-        if (!isValid) {
-          recordFailure(email);
-          return null;
-        }
-
-        clearFailures(email);
+        await clearFailures(email, address);
         return toSessionUser(user);
       },
     }),

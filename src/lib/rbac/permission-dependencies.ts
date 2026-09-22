@@ -12,14 +12,14 @@ import { PERMISSIONS, type PermissionKey } from "./permissions";
  * another rule to memorise.
  */
 
-export type Dependency = {
+type Dependency = {
   /** Must also be held for the key to be usable */
   requires: PermissionKey[];
   /** Plain English, shown in the prompt */
   reason: string;
 };
 
-export const PERMISSION_DEPENDENCIES: Partial<Record<PermissionKey, Dependency>> = {
+const PERMISSION_DEPENDENCIES: Partial<Record<PermissionKey, Dependency>> = {
   // ---- bills of materials -----------------------------------------------
   [PERMISSIONS.BOM_CREATE]: {
     requires: [PERMISSIONS.BOM_VIEW],
@@ -114,6 +114,29 @@ export const PERMISSION_DEPENDENCIES: Partial<Record<PermissionKey, Dependency>>
   [PERMISSIONS.STOCK_WARRANTY_EDIT]: {
     requires: [PERMISSIONS.STOCK_WARRANTY_VIEW],
     reason: "Recording warranty details means seeing the ones already there.",
+  },
+  // ---- write-offs --------------------------------------------------------
+  [PERMISSIONS.STOCK_WRITEOFF_CREATE]: {
+    requires: [PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_WRITEOFF_VIEW],
+    reason:
+      "Writing stock off means finding it on the stock list first, and seeing what has already been written off so the same damage is not reported twice.",
+  },
+  [PERMISSIONS.STOCK_WRITEOFF_DEPARTMENT]: {
+    requires: [PERMISSIONS.ASSETS_VIEW, PERMISSIONS.STOCK_WRITEOFF_VIEW],
+    reason:
+      "A department's losses are raised from what it holds, which is the Assets page.",
+  },
+  [PERMISSIONS.STOCK_LOWSTOCK_MANAGE]: {
+    requires: [PERMISSIONS.STOCK_LOWSTOCK_VIEW],
+    reason: "Setting what is watched means seeing what the alert then says.",
+  },
+  [PERMISSIONS.STOCK_WRITEOFF_APPROVE]: {
+    requires: [PERMISSIONS.STOCK_WRITEOFF_VIEW],
+    reason: "Deciding on a write-off means reading what was reported and why.",
+  },
+  [PERMISSIONS.STOCK_WRITEOFF_REVERSE]: {
+    requires: [PERMISSIONS.STOCK_WRITEOFF_VIEW],
+    reason: "Undoing a write-off means finding the one that was wrong.",
   },
   [PERMISSIONS.STOCK_BATCH_EDIT]: {
     requires: [PERMISSIONS.STOCK_VIEW],

@@ -168,6 +168,35 @@ Two errors both mean "the access mode does not match":
   returned no CORS headers, which is all the browser can see. Asking a private
   store for public access produces exactly this.
 
+### Checking a deployment is configured: /api/health
+
+`GET /api/health` reports the database plus the settings a deployment cannot run
+without, as booleans — never values:
+
+```json
+{ "status": "ok", "database": "ok",
+  "config": { "sessionSecretSet": true, "hostTrusted": true,
+              "nextAuthUrlSet": false,
+              "blobTokenSet": true, "blobTokenLooksValid": true } }
+```
+
+Open it first whenever something fails right after a deploy. It exists because
+these settings fail with messages that explain nothing:
+
+| What you see | What it means |
+| --- | --- |
+| Signing in returns 500, *"There was a problem with the server configuration"* | `sessionSecretSet` is false. Auth.js refuses every request before anything runs |
+| Signing in redirects to localhost | `nextAuthUrlSet` is true with a development value. On Vercel, leave it unset |
+| `"Failed to retrieve the client token"` when uploading | `blobTokenSet` or `blobTokenLooksValid` is false |
+
+`status` is `degraded` (503) whenever the database is unreachable or sign-in
+cannot work, so an uptime monitor catches a misconfigured deploy too.
+
+**Environment variables are baked in at build time.** Adding one to an existing
+deployment changes nothing until you redeploy — and check it is set for the
+right *Environment*, since a variable added only to Preview leaves Production
+without it.
+
 ### What you give up on the free tier
 
 * Neon suspends the database after a few minutes idle; the first request after a
@@ -176,6 +205,207 @@ Two errors both mean "the access mode does not match":
   large report might one day.
 * Blob storage and bandwidth have monthly allowances. Test invoices will not
   trouble them; check the dashboard before uploading anything in bulk.
+
+---
+
+## Moving onto one small VPS (1 GB RAM, 25 GB disk)
+
+**Why you would.** Not because Neon is slow — because of the distance to it.
+Measured from a laptop in India to the Neon project in `ap-southeast-1`: a raw
+TCP handshake took **269–550 ms**, a warm query round trip **716 ms**, and the
+connection failed outright often enough to be noticed. A page that makes eighty
+queries cannot be rescued from that by tuning any of them.
+
+**This affects local development far more than production**, because
+`vercel.json` already pins the functions to `sin1`, next to the database. Before
+moving anything, check whether the *deployed* site is slow too. If only
+`localhost` is slow, run Postgres locally (below) and change nothing else.
+
+### Is 1 GB enough? Yes, with two precautions
+
+The database is **11 MB**. The largest table is 208 kB. Nothing here is big.
+
+| | Needs | Note |
+|---|---|---|
+| Disk | well under 10 GB of your 25 GB | OS 3–5 GB, images ~1 GB, database 11 MB, room for uploads |
+| Postgres | ~150–250 MB RAM | The whole database fits in cache, so it never touches the disk |
+| The app (`next start`) | ~150–300 MB RAM | Production server only; nothing like a dev server |
+| Ubuntu | ~150–250 MB RAM | |
+| **Your existing website** | **unknown — the deciding number** | A static site on nginx is ~30 MB. WordPress with MySQL is 400 MB+ and changes the answer |
+
+**A measured example.** The brand-website droplet, before anything was added:
+
+```
+               total   used   free  shared  buff/cache  available
+Mem:             961    466    158       4         506        495
+Swap:              0      0      0
+/dev/vda1        24G   3.5G    20G  15% /
+```
+
+`available` — 495 MB — is the number that matters; it already counts the
+reclaimable cache. Against ~350–430 MB for Postgres plus the app, that fits with
+roughly 100 MB to spare. It works, but nothing about it is comfortable, and
+`Swap: 0` means an out-of-memory moment kills a process rather than slowing one
+down. **Add swap before adding the workload.**
+
+Before committing, find out what the existing usage actually is —
+`sudo smem -t -k -P .` reports PSS, which counts shared memory honestly where
+plain RSS double-counts it. If most of it turns out to be a MySQL instance
+behind a WordPress site, tuning its buffer pool down often frees 100–200 MB and
+changes the answer from "tight" to "comfortable".
+
+Disk is a non-issue. **RAM is the only real constraint**, and the two things
+that will bite you are:
+
+1. **`next build` will run out of memory on 1 GB.** Next builds routinely peak
+   over 1 GB. Build the image on your own machine and push it to a registry, or
+   add swap before building on the droplet.
+2. **Neon runs PostgreSQL 18; `docker-compose.yml` pins `postgres:16-alpine`.**
+   A dump taken from 18 can fail to restore into 16. Change the image to
+   `postgres:18-alpine` before you start, so both ends match.
+
+### 1. Prepare the droplet
+
+Swap is not optional on a 1 GB box — it is what turns an out-of-memory kill into
+a slow moment.
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+sudo sysctl -w vm.swappiness=10        # prefer RAM; use swap as a safety net
+echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+free -h                                 # confirm
+```
+
+Then Docker, if the droplet does not already have it:
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER          # log out and back in
+```
+
+### 2. Take a dump from Neon
+
+Two details matter and both are easy to get wrong:
+
+* Use the **direct** connection string, not the `-pooler` one. `pg_dump` through
+  pgbouncer produces broken dumps.
+* Use a **version 18** `pg_dump`. Running it inside a container is the simplest
+  way to guarantee that, whatever your laptop has installed.
+
+```bash
+docker run --rm postgres:18-alpine \
+  pg_dump --no-owner --no-privileges \
+  "postgresql://USER:PASSWORD@ep-....neon.tech/neondb?sslmode=require" \
+  > neon-backup.sql
+
+grep -c "" neon-backup.sql             # sanity check: not an empty file
+```
+
+`--no-owner --no-privileges` drops Neon's role names, which will not exist on
+your droplet. The dump carries the schema, the data, **and Prisma's
+`_prisma_migrations` table** — which is what makes the restored database
+already know which migrations have run.
+
+### 3. Bring the stack up
+
+Copy the repository (or `git clone` it) onto the droplet, then:
+
+```bash
+cp .env.example .env.production        # fill it in — see "Before anyone else
+                                        # can reach it" below
+docker compose --env-file .env.production up -d db
+```
+
+Restore into the empty database **before** starting the app:
+
+```bash
+cat neon-backup.sql | docker compose exec -T db psql -U sam -d straightdrive
+docker compose exec db psql -U sam -d straightdrive -c '\dt'   # tables present?
+```
+
+Do **not** run `npm run db:seed` — it wipes first. Do not run
+`prisma migrate deploy` either until you have confirmed the restore worked; the
+dump already brought the migration history with it.
+
+Then the app:
+
+```bash
+docker compose --env-file .env.production up -d app
+docker compose logs -f app
+```
+
+`DATABASE_URL` in the compose file already points at `db:5432` over Docker's
+internal network — **that is the whole point of the move.** The query round trip
+goes from ~700 ms to well under 1 ms, and the port is never published.
+
+### 4. Tune Postgres down for a small box
+
+The defaults assume a machine with more to spare. For an 11 MB database and a
+handful of users, add to the `db` service in `docker-compose.yml`:
+
+```yaml
+    command: >
+      postgres
+      -c max_connections=20
+      -c shared_buffers=96MB
+      -c effective_cache_size=256MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+```
+
+`max_connections` is the one that matters: every connection reserves memory
+whether or not it is used, and 100 of them on a 1 GB box is most of a gigabyte
+promised away. Twenty is generous for ten people.
+
+### 5. Backups are now yours
+
+This is the real cost of leaving Neon, and the step not to skip. Neon did
+point-in-time recovery for you; a droplet does nothing unless you ask.
+
+```bash
+sudo tee /etc/cron.daily/sam-backup >/dev/null <<'SH'
+#!/bin/sh
+cd /path/to/stock-asset-management || exit 1
+docker compose exec -T db pg_dump -U sam straightdrive \
+  | gzip > /var/backups/sam-$(date +%F).sql.gz
+find /var/backups -name 'sam-*.sql.gz' -mtime +14 -delete
+SH
+sudo chmod +x /etc/cron.daily/sam-backup
+```
+
+**A backup on the same droplet is not a backup.** Add an offsite copy — `rclone`
+to any object store, or `scp` to another machine — or a lost droplet is a lost
+database. Test a restore once, before you need one.
+
+### 6. Decide where uploads live
+
+Invoices currently go to **Vercel Blob**, which keeps working from anywhere: it
+is an HTTPS API, not a Vercel-only feature. Keep `BLOB_READ_WRITE_TOKEN` set and
+nothing changes. The alternative is the local `uploads` volume the compose file
+already defines — cheaper, but then it is one more thing your backup has to
+cover.
+
+### 7. Check it
+
+`GET /api/health` on the new host, as described above. Then sign in, open
+Reports, and watch the timing — that is the number this whole exercise was for.
+
+### If only local development is slow
+
+Do not move anything. Run Postgres on your own machine and leave production
+where it is:
+
+```bash
+docker compose up -d db                # add a ports mapping: "5432:5432"
+# point DATABASE_URL in .env at postgresql://sam:...@localhost:5432/straightdrive
+npx prisma migrate deploy
+npm run db:seed                        # empty database only
+```
+
+Ten minutes, no ops burden, no backups to own, and development queries drop from
+~700 ms to under a millisecond.
 
 ---
 

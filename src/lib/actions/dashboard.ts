@@ -8,6 +8,7 @@ import {
   heldQuantity,
   committingDispatchItemsWhere,
   committingBuildConsumptionsWhere,
+  centralWriteOffsWhere,
 } from "@/lib/stock-availability";
 import { getActivityLogs } from "./activity";
 
@@ -114,6 +115,9 @@ export async function getStockDashboardStats() {
       // What has left each entry, so the value tile counts what is still held
       dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
       buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
+      // The fifth drawdown. Central write-offs only — a department's losses
+      // come off its own holding, never off the entry as well.
+      writeOffs: { where: centralWriteOffsWhere, select: { quantity: true, status: true } },
     },
     orderBy: { createdAt: "desc" },
   });

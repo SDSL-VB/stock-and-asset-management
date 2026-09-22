@@ -257,17 +257,17 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   },
   {
     key: "products.create",
-    name: "Add a Raw Material",
+    name: "Add a Procured Item",
     module: "products",
     description:
-      "Can add a raw material — something we buy in and consume. Adding a product we make is products.create.made",
+      "Can add something we buy: a raw material that is used up making things, or ready goods (a TV) used or sold as they are. Adding a product we make is products.create.made",
   },
   {
     key: "products.create.made",
-    name: "Add a Product",
+    name: "Add a Product We Make",
     module: "products",
     description:
-      "Can add a finished or complete product — something we make. Adding a raw material we buy in is products.create",
+      "Can add a finished product — something we make, which gets a bill of materials. Adding something we buy (a raw material, or ready goods such as a TV) is products.create",
   },
   {
     key: "products.delete",
@@ -398,6 +398,20 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
       "Can see prices and monetary values of stock",
   },
   {
+    key: "stock.lowstock.view",
+    name: "See Low-Stock Alerts",
+    module: "stock",
+    description:
+      "Is told when a watched product falls to its reorder point at a site — how much is left, how fast it is being used, how long the vendor takes, and when to order — and can raise needs for it in one go",
+  },
+  {
+    key: "stock.lowstock.manage",
+    name: "Set Stock Minimums and Lead Times",
+    module: "stock",
+    description:
+      "Can choose which products are watched at each site and their minimum, and record which vendors supply a product and how many days they take",
+  },
+  {
     key: "stock.view",
     name: "View Stock Entries",
     module: "stock",
@@ -417,6 +431,41 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     module: "stock",
     description:
       "Can see warranty and registration details on a stock entry — purchase date, model and serial number, warranty expiry",
+  },
+  {
+    key: "stock.writeoff.approve",
+    name: "Approve Write-Offs",
+    module: "stock",
+    description:
+      "Can approve or decline a write-off. Approving is what actually removes the stock",
+  },
+  {
+    key: "stock.writeoff.create",
+    name: "Write Off Stock",
+    module: "stock",
+    description:
+      "Can mark central stock as damaged, lost or otherwise unusable. A manager still has to approve it",
+  },
+  {
+    key: "stock.writeoff.department",
+    name: "Write Off Department Stock",
+    module: "stock",
+    description:
+      "Can mark stock or assets already held by a department as unusable. A manager still has to approve it",
+  },
+  {
+    key: "stock.writeoff.reverse",
+    name: "Reverse Write-Offs",
+    module: "stock",
+    description:
+      "Can undo an approved write-off and put the stock back, with a reason",
+  },
+  {
+    key: "stock.writeoff.view",
+    name: "View Write-Offs",
+    module: "stock",
+    description:
+      "Can see stock that has been written off and the wastage report",
   },
 
   // ---- assets --------------------------------------------------------------
@@ -771,6 +820,13 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     module: "config",
     description:
       "Can decide whether a stated need must be verified before it can be ordered",
+  },
+  {
+    key: "config.catalog",
+    name: "Configure the Catalog Rules",
+    module: "config",
+    description:
+      "Can decide whether a product must be filed under a subcategory, whether a subcategory must carry a code, and whether a product must have a description",
   },
 
   // ---- settings ------------------------------------------------------------

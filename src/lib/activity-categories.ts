@@ -18,20 +18,33 @@ export const ACTIVITY_CATEGORIES = {
     entities: ["StockEntry", "StockEntryAttachment", "StockApproval"],
     permission: PERMISSIONS.ACTIVITY_VIEW_STOCK,
   },
+  dispatch: {
+    label: "Dispatch",
+    hint: "Goods arriving: entries, their documents and their approvals",
+    entities: ["Dispatch", "Client"],
+    permission: PERMISSIONS.ACTIVITY_VIEW_MOVEMENT,
+  },
   procurement: {
     label: "Buying",
-    hint: "What was asked for, and what was ordered",
-    entities: ["PurchaseIntent", "PurchaseOrder"],
+    hint: "What was asked for, what was ordered, and what is watched for running low",
+    entities: ["PurchaseIntent", "PurchaseOrder", "NeedList", "StockLevel", "ProductVendor"],
     permission: PERMISSIONS.ACTIVITY_VIEW_PROCUREMENT,
   },
   movement: {
     label: "Stock out",
-    hint: "Issues to departments, transfers, dispatches and site requests",
-    entities: ["StockIssue", "StockTransferRequest", "Dispatch", "SiteRequest"],
+    hint: "Issues to departments, transfers, dispatches, site requests and write-offs",
+    entities: [
+      "StockIssue",
+      "StockTransferRequest",
+      "Dispatch",
+      "SiteRequest",
+      // Stock leaving because it was damaged or lost is still stock leaving.
+      "StockWriteOff",
+    ],
     permission: PERMISSIONS.ACTIVITY_VIEW_MOVEMENT,
   },
-  making: {
-    label: "Making",
+  production: {
+    label: "Production",
     hint: "Bills of materials and builds",
     entities: ["BillOfMaterials", "Build"],
     permission: PERMISSIONS.ACTIVITY_VIEW_MAKING,
@@ -39,7 +52,7 @@ export const ACTIVITY_CATEGORIES = {
   catalog: {
     label: "Catalog",
     hint: "Products, categories, vendors and clients",
-    entities: ["Product", "ProductCategory", "ProductRequest", "Vendor", "Client"],
+    entities: ["Product", "ProductCategory", "ProductSubcategory", "ProductRequest", "Vendor", "Client"],
     permission: PERMISSIONS.ACTIVITY_VIEW_CATALOG,
   },
   people: {
@@ -57,9 +70,13 @@ export const ACTIVITY_CATEGORIES = {
       "ApprovalFlowConfig",
       "ApprovalFlowStep",
       "AttachmentTypeConfig",
-      "StockEntryFieldConfig",
+      // Configuration changes. Nothing writes these while the Configuration
+      // page is taken out, but past log lines carry them and still belong here.
+      // (Field changes were logged as "StockFieldConfig", not the model name.)
+      "StockFieldConfig",
       "BomFlowConfig",
       "ProcurementFlowConfig",
+      "CatalogConfig",
     ],
     permission: PERMISSIONS.ACTIVITY_VIEW_SECURITY,
   },

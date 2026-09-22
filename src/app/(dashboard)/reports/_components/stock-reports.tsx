@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ import {
   Boxes,
   Truck,
   ShoppingCart,
+  ChevronRight,
 } from "lucide-react";
 import {
   BarChart,
@@ -42,32 +43,17 @@ import {
   AreaChart,
 } from "recharts";
 import {
-  getStockReport,
-  exportStockReport,
   getInventoryOverview,
   getStockHoldings,
   type StockHoldingRow,
 } from "@/lib/actions/reports";
 import { cn } from "@/lib/utils";
 import { GROUP_LABEL } from "@/lib/vocabulary";
+import { formatCurrency, formatUnitPrice } from "@/lib/format";
+import { groupHoldings, hasMixedPrices, provenanceLabel } from "@/lib/stock-grouping";
 import { toast } from "sonner";
+import { toCsv } from "@/lib/csv";
 
-interface SummaryStats {
-  total: number;
-  approved: number;
-  rejected: number;
-  pending: number;
-  totalApprovedValue: number;
-  byDepartment: Array<{
-    departmentName: string;
-    count: number;
-    totalValue: number;
-  }>;
-  last30Days: Array<{
-    status: string;
-    count: number;
-  }>;
-}
 
 interface InventoryOverview {
   totalEntries: number;
@@ -103,38 +89,18 @@ interface InventoryOverview {
 }
 
 interface Props {
-  summaryStats: SummaryStats;
-  departments: { id: string; name: string }[];
   userPermissions: string[];
   inventoryOverview: InventoryOverview;
 }
 
-type ReportEntry = {
-  id: string;
-  entryNumber: string;
-  itemName: string;
-  supplierName: string;
-  quantity: number;
-  unitPrice: number;
-  totalPrice: number;
-  status: string;
-  invoiceNumber: string | null;
-  createdAt: Date;
-  location: { id: string; name: string } | null;
-  department: { name: string } | null;
-  createdBy: { name: string };
-  approvedBy: { name: string } | null;
-  issues: Array<{ quantity: number; department: { name: string } }>;
-};
 
-function formatCurrency(amount: number) {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
+/**
+ * Crore / lakh / thousand, hand-rolled on purpose.
+ *
+ * Intl's own compact notation abbreviates to "T" and "L" inconsistently across
+ * ICU versions, and a stat tile that says "12.4T" when it means twelve lakh is
+ * worse than no abbreviation at all. These four lines are predictable.
+ */
 function formatCompactCurrency(amount: number) {
   if (amount >= 10000000) return `${(amount / 10000000).toFixed(1)}Cr`;
   if (amount >= 100000) return `${(amount / 100000).toFixed(1)}L`;
@@ -142,7 +108,7 @@ function formatCompactCurrency(amount: number) {
   return amount.toString();
 }
 
-export function StockReports({ summaryStats, departments, userPermissions, inventoryOverview }: Props) {
+export function StockReports({ userPermissions, inventoryOverview }: Props) {
   // Monetary visibility is its own permission (stock.value.view)
   const canSeeValue = userPermissions.includes("stock.value.view");
   // Inventory state
@@ -160,12 +126,35 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
   // Raw materials we buy in versus products we make. Filtered here rather than
   // re-queried, because the holdings are already loaded.
   const [holdingsGroup, setHoldingsGroup] = useState<"all" | "BOUGHT_IN" | "MADE">("all");
+  /**
+   * One row per product, or one row per receipt.
+   *
+   * Consolidated is the default because "how many bearings do we have" is the
+   * question the reports page is asked. Buying the same product twice used to
+   * answer it with two rows the reader had to add up themselves.
+   */
+  const [holdingsView, setHoldingsView] = useState<"grouped" | "entries">("grouped");
+  /** Which consolidated rows have been unfolded to show their receipts */
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
   const [showGraphs, setShowGraphs] = useState(false);
+
+  function toggleExpanded(key: string) {
+    setExpandedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
 
   async function clearSelection() {
     setSelection(null);
     setHoldings(null);
     setHoldingsSearch("");
+    setExpandedKeys(new Set());
     setInventoryData(inventoryOverview);
   }
 
@@ -175,6 +164,7 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
     }
     setSelection({ type: "dept", id, name });
     setHoldingsSearch("");
+    setExpandedKeys(new Set());
     setInventoryLoading(true);
     setHoldingsLoading(true);
     try {
@@ -196,6 +186,7 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
     }
     setSelection({ type: "central", location, name });
     setHoldingsSearch("");
+    setExpandedKeys(new Set());
     setInventoryData(inventoryOverview);
     setHoldingsLoading(true);
     try {
@@ -221,6 +212,15 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
     );
   });
 
+  /**
+   * The same receipts, one row per product.
+   *
+   * Grouped from the FILTERED rows, so a search for a vendor narrows what each
+   * consolidated row is made of rather than showing a total that includes
+   * receipts the search excluded.
+   */
+  const groupedHoldings = groupHoldings(filteredHoldings);
+
   // Both totals side by side, so "what are we holding in raw materials" is
   // answerable without changing the filter
   const holdingTotals = (holdings ?? []).reduce(
@@ -235,35 +235,87 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
     }
   );
 
+  /** One row per receipt — the sheet this page has always exported. */
+  function entryHoldingsCsv() {
+    return {
+      headers: [
+        "Entry Number", "Item Code", "Item Name", "Kind", "Category", "Supplier",
+        "Batch",
+        "Quantity Here",
+        ...(canSeeValue ? ["Unit Price", "Value"] : []),
+        "Received At Location", "Client", "Received Date",
+      ],
+      rows: filteredHoldings.map((r) => [
+        r.entryNumber,
+        r.itemCode ?? "",
+        r.itemName,
+        r.kindLabel,
+        r.categoryName ?? "",
+        r.supplierName,
+        r.batchNumber ?? "",
+        r.quantity.toString(),
+        ...(canSeeValue ? [r.unitPrice.toFixed(2), r.value.toFixed(2)] : []),
+        r.location,
+        r.clientName ?? "",
+        new Date(r.receivedAt).toLocaleDateString("en-IN"),
+      ]),
+    };
+  }
+
+  /**
+   * One row per product. The price tiers become a single text column reading
+   * "350.00 x 4; 400.00 x 3" — a spreadsheet has no chips, and collapsing to a
+   * lone averaged price would throw away the very thing this view exists for.
+   */
+  function groupedHoldingsCsv() {
+    return {
+      headers: [
+        "Item Code", "Item Name", "Kind", "Category",
+        "Quantity Here",
+        ...(canSeeValue ? ["Unit Prices", "Average Unit Price", "Value"] : []),
+        "Receipts", "Batches", "Suppliers", "First Received", "Last Received",
+      ],
+      rows: groupedHoldings.map((g) => [
+        g.itemCode ?? "",
+        g.itemName,
+        g.kindLabel,
+        g.categoryName ?? "",
+        g.quantity.toString(),
+        ...(canSeeValue
+          ? [
+              g.tiers.map((t) => `${t.unitPrice.toFixed(2)} x ${t.quantity}`).join("; "),
+              g.avgUnitPrice.toFixed(2),
+              g.value.toFixed(2),
+            ]
+          : []),
+        g.entryCount.toString(),
+        g.batches.join("; "),
+        g.suppliers.join("; "),
+        new Date(g.oldestReceivedAt).toLocaleDateString("en-IN"),
+        new Date(g.latestReceivedAt).toLocaleDateString("en-IN"),
+      ]),
+    };
+  }
+
+  /**
+   * The CSV follows whichever view is on screen, so what downloads is what was
+   * being looked at.
+   */
   function exportHoldings() {
-    if (!selection || filteredHoldings.length === 0) return;
-    const headers = [
-      "Entry Number", "Item Code", "Item Name", "Kind", "Category", "Supplier",
-      "Quantity Here",
-      ...(canSeeValue ? ["Unit Price", "Value"] : []),
-      "Received At Location", "Client", "Received Date",
-    ];
-    const rows = filteredHoldings.map((r) => [
-      r.entryNumber,
-      r.itemCode ?? "",
-      r.itemName,
-      r.kindLabel,
-      r.categoryName ?? "",
-      r.supplierName,
-      r.quantity.toString(),
-      ...(canSeeValue ? [r.unitPrice.toFixed(2), r.value.toFixed(2)] : []),
-      r.location,
-      r.clientName ?? "",
-      new Date(r.receivedAt).toLocaleDateString("en-IN"),
-    ]);
-    const csv = [headers, ...rows]
-      .map((row) => row.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(","))
-      .join("\n");
+    if (!selection) return;
+
+    const { headers, rows } =
+      holdingsView === "grouped" ? groupedHoldingsCsv() : entryHoldingsCsv();
+    if (rows.length === 0) return;
+
+    const csv = toCsv(headers, rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const place = selection.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    const shape = holdingsView === "grouped" ? "by-product" : "by-entry";
     a.href = url;
-    a.download = `stock-holdings-${selection.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `stock-holdings-${shape}-${place}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success("Holdings exported");
@@ -272,13 +324,6 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
   const holdingsTotalQty = filteredHoldings.reduce((s, r) => s + r.quantity, 0);
   const holdingsTotalValue = filteredHoldings.reduce((s, r) => s + r.value, 0);
 
-  // Chart data
-  const statusData = [
-    { name: "Approved", value: summaryStats.approved, color: "#059669" },
-    { name: "Pending", value: summaryStats.pending, color: "#f59e0b" },
-    { name: "Rejected", value: summaryStats.rejected, color: "#ef4444" },
-    { name: "Draft", value: summaryStats.total - summaryStats.approved - summaryStats.pending - summaryStats.rejected, color: "#6b7280" },
-  ].filter((d) => d.value > 0);
 
   return (
     <Tabs defaultValue="inventory" className="space-y-6">
@@ -482,6 +527,37 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
                   ))}
                 </div>
 
+                {/*
+                  One row per product, or one row per receipt. Buying the same
+                  bearing twice is two receipts but one product, and "how many
+                  bearings do we have" is the question this table is asked — so
+                  consolidated is the default. The per-entry view is still here
+                  for anyone tracing a specific delivery.
+                */}
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      ["grouped", "Consolidated", groupedHoldings.length],
+                      ["entries", "Every entry", filteredHoldings.length],
+                    ] as const
+                  ).map(([value, label, count]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setHoldingsView(value)}
+                      className={cn(
+                        "rounded-full border px-3 py-1 text-caption transition-colors",
+                        holdingsView === value
+                          ? "border-brand-blue/40 bg-brand-blue/10 font-medium text-foreground"
+                          : "text-muted-foreground hover:bg-muted/60"
+                      )}
+                    >
+                      {label}
+                      <span className="ml-1.5 tabular-nums opacity-70">{count}</span>
+                    </button>
+                  ))}
+                </div>
+
                 {canSeeValue && (
                   <span className="text-caption text-muted-foreground tabular-nums">
                     {GROUP_LABEL.BOUGHT_IN} {formatCurrency(holdingTotals.BOUGHT_IN.value)} ·{" "}
@@ -495,6 +571,166 @@ export function StockReports({ summaryStats, departments, userPermissions, inven
                 <div className="flex items-center justify-center py-10">
                   <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                 </div>
+              ) : holdingsView === "grouped" ? (
+                /*
+                  One row per product. The price is the single figure it was
+                  bought at, or the range when bought at several; the row
+                  expands to the receipts behind it, each with its own price.
+                */
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Item</TableHead>
+                      <TableHead>Code</TableHead>
+                      <TableHead>Kind</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead className="text-right">Qty Here</TableHead>
+                      {canSeeValue && <TableHead className="text-right">Unit Price</TableHead>}
+                      {canSeeValue && <TableHead className="text-right">Value</TableHead>}
+                      <TableHead>Received</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {groupedHoldings.length === 0 ? (
+                      <TableRow>
+                        <TableCell
+                          colSpan={canSeeValue ? 8 : 6}
+                          className="h-24 text-center text-muted-foreground"
+                        >
+                          {holdings && holdings.length > 0
+                            ? "No items match your search."
+                            : "Nothing is currently held here."}
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      groupedHoldings.map((group) => {
+                        // A single receipt has nothing to unfold — the row is
+                        // already showing everything there is.
+                        const expandable = group.entryCount > 1;
+                        const expanded = expandable && expandedKeys.has(group.key);
+
+                        return (
+                          <Fragment key={group.key}>
+                            <TableRow
+                              className={cn(expandable && "cursor-pointer")}
+                              onClick={expandable ? () => toggleExpanded(group.key) : undefined}
+                            >
+                              <TableCell className="font-medium">
+                                <span className="flex items-start gap-1.5">
+                                  {expandable ? (
+                                    <ChevronRight
+                                      className={cn(
+                                        "mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                                        expanded && "rotate-90"
+                                      )}
+                                    />
+                                  ) : (
+                                    <span className="w-3.5 shrink-0" />
+                                  )}
+                                  <span>
+                                    {group.itemName}
+                                    <span className="block text-micro font-normal text-muted-foreground">
+                                      {provenanceLabel(group)}
+                                    </span>
+                                  </span>
+                                </span>
+                              </TableCell>
+                              <TableCell className="font-mono text-xs font-semibold">
+                                {group.itemCode ?? "—"}
+                              </TableCell>
+                              <TableCell>
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    "text-micro",
+                                    group.group === "MADE"
+                                      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                                      : "border-slate-200 bg-slate-100 text-slate-700"
+                                  )}
+                                >
+                                  {group.kindLabel}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>{group.categoryName ?? "—"}</TableCell>
+                              <TableCell className="text-right font-semibold tabular-nums">
+                                {group.quantity.toLocaleString("en-IN")}
+                              </TableCell>
+                              {canSeeValue && (
+                                <TableCell className="text-right">
+                                  <span className="tabular-nums">
+                                    {hasMixedPrices(group)
+                                      ? `${formatUnitPrice(group.minUnitPrice)} – ${formatUnitPrice(group.maxUnitPrice)}`
+                                      : formatUnitPrice(group.avgUnitPrice)}
+                                  </span>
+                                </TableCell>
+                              )}
+                              {canSeeValue && (
+                                <TableCell className="text-right font-semibold tabular-nums text-brand-green">
+                                  {formatCurrency(group.value)}
+                                </TableCell>
+                              )}
+                              <TableCell className="text-xs text-muted-foreground">
+                                {new Date(group.latestReceivedAt).toLocaleDateString("en-IN", {
+                                  day: "2-digit",
+                                  month: "short",
+                                  year: "numeric",
+                                })}
+                                {group.entryCount > 1 && (
+                                  <span className="block">
+                                    from{" "}
+                                    {new Date(group.oldestReceivedAt).toLocaleDateString("en-IN", {
+                                      day: "2-digit",
+                                      month: "short",
+                                      year: "numeric",
+                                    })}
+                                  </span>
+                                )}
+                              </TableCell>
+                            </TableRow>
+
+                            {/* The receipts this row was built from */}
+                            {expanded &&
+                              group.entries.map((row) => (
+                                <TableRow key={row.entryId} className="bg-muted/30">
+                                  <TableCell className="pl-9 text-xs text-muted-foreground">
+                                    <span className="font-mono">{row.entryNumber}</span>
+                                    <span className="block">
+                                      {row.supplierName}
+                                      {row.batchNumber ? ` · batch ${row.batchNumber}` : ""}
+                                    </span>
+                                  </TableCell>
+                                  <TableCell colSpan={3} className="text-xs text-muted-foreground">
+                                    {row.location}
+                                    {row.clientName ? ` · ${row.clientName}` : ""}
+                                  </TableCell>
+                                  <TableCell className="text-right text-xs tabular-nums">
+                                    {row.quantity.toLocaleString("en-IN")}
+                                  </TableCell>
+                                  {canSeeValue && (
+                                    <TableCell className="text-right text-xs tabular-nums">
+                                      {formatUnitPrice(row.unitPrice)}
+                                    </TableCell>
+                                  )}
+                                  {canSeeValue && (
+                                    <TableCell className="text-right text-xs tabular-nums">
+                                      {formatCurrency(row.value)}
+                                    </TableCell>
+                                  )}
+                                  <TableCell className="text-xs text-muted-foreground">
+                                    {new Date(row.receivedAt).toLocaleDateString("en-IN", {
+                                      day: "2-digit",
+                                      month: "short",
+                                      year: "numeric",
+                                    })}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                          </Fragment>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
               ) : (
                 <Table>
                   <TableHeader>

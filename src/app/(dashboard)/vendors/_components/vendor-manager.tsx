@@ -31,9 +31,24 @@ import {
   exportVendors,
 } from "@/lib/actions/vendors";
 import { SafeDeleteButton } from "@/components/shared/safe-delete-button";
+import { SuppliersDialog } from "@/components/shared/suppliers-dialog";
 import { ExportButton } from "@/components/shared/export-button";
 import { toast } from "sonner";
 import { Plus, Loader2, Pencil, Search } from "lucide-react";
+
+/**
+ * The vendor list — who we buy from.
+ *
+ * Maintained by admins so that stock entry operators can pick a supplier from a
+ * list instead of typing one, which is what keeps a consistent GST number and
+ * address on every invoice.
+ *
+ * A stock entry SNAPSHOTS the supplier's name at entry time as well as linking
+ * to the vendor, so renaming one here never rewrites history.
+ *
+ * Deactivating is offered before deleting, for the same reason as clients: it
+ * removes the vendor from the pickers and keeps every entry that named it.
+ */
 
 type Vendor = {
   id: string;
@@ -50,6 +65,8 @@ interface Props {
   canEdit?: boolean;
   canDelete?: boolean;
   canExport?: boolean;
+  /** vendors.edit, products.edit or stock.lowstock.manage — see suppliers.ts */
+  canEditSuppliers?: boolean;
 }
 
 export function VendorManager({
@@ -58,6 +75,7 @@ export function VendorManager({
   canEdit = false,
   canDelete = false,
   canExport = false,
+  canEditSuppliers = false,
 }: Props) {
   const [search, setSearch] = useState("");
 
@@ -145,6 +163,8 @@ export function VendorManager({
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center justify-end gap-1">
+                          {/* What this vendor supplies, each product with its own lead time */}
+                          <SuppliersDialog side={{ kind: "vendor", id: v.id, name: v.name }} canEdit={canEditSuppliers} />
                           {canEdit && (
                             <>
                               <VendorDialog vendor={v} />

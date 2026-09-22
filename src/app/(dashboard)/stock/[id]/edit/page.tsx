@@ -72,6 +72,7 @@ export default async function EditStockEntryPage({
           locationId: entry.locationId,
           clientId: entry.clientId,
           batchNumber: entry.batchNumber,
+          rackLocation: entry.rackLocation,
           warranty: entry.warranty,
           vendorId: entry.vendorId,
           clientName: entry.clientName,

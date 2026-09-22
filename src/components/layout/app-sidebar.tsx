@@ -20,6 +20,20 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { NAV_ITEMS, NAV_GROUPS } from "@/lib/constants";
 
+/**
+ * The left-hand navigation.
+ *
+ * Renders `NAV_ITEMS` from `src/lib/constants.ts`, filtered against the signed-in
+ * person's permissions — an item they cannot use is not drawn at all, never
+ * greyed out. That filter is the whole of this component's logic; the item list,
+ * the icons and the permission each one needs all live in constants.ts.
+ *
+ * Which means a page needs THREE things to appear and work: an item there, a
+ * route in `middleware.ts`, and a gate on the page itself, all naming the same
+ * keys. When they disagree somebody is either shown a page that bounces them or
+ * hidden from one they can use. `npm run audit:access` finds both.
+ */
+
 interface Props {
   session?: Session | null;
 }

@@ -41,6 +41,23 @@ import { ExportButton } from "@/components/shared/export-button";
 import { SafeDeleteButton } from "@/components/shared/safe-delete-button";
 import { toast } from "sonner";
 import { Plus, Loader2, Pencil, Search, MapPin } from "lucide-react";
+import { statusPill } from "@/lib/design/status";
+
+/**
+ * The client list — who we dispatch to.
+ *
+ * Searchable by name or by city, because "who do we ship to in Chennai" is a
+ * question people actually ask.
+ *
+ * Stock is never "client stock" in its own right: goods book in at a location
+ * and leave again as a dispatch addressed to a client. A client here is the
+ * address on that consignment.
+ *
+ * Deactivating is offered before deleting, and is usually the right answer: a
+ * deactivated client disappears from the pickers and keeps all its history.
+ * Deleting is recoverable for 30 days and re-points the stock entries that named
+ * the client on restore.
+ */
 
 type Client = {
   id: string;
@@ -179,11 +196,7 @@ export function ClientManager({
                       <TableCell>
                         <Badge
                           variant="outline"
-                          className={
-                            c.isActive
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : "bg-gray-100 text-gray-600 border-gray-200"
-                          }
+                          className={statusPill(c.isActive ? "ACTIVE" : "INACTIVE")}
                         >
                           {c.isActive ? "Active" : "Inactive"}
                         </Badge>

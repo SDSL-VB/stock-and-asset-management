@@ -26,6 +26,7 @@ import {
 import { createPurchaseOrder } from "@/lib/actions/procurement";
 import { toast } from "sonner";
 import { Plus, Loader2, Trash2, X } from "lucide-react";
+import { formatMoney } from "@/lib/format";
 
 type Orderable = {
   id: string;
@@ -53,6 +54,8 @@ type Line = {
   unit: string;
   quantity: string;
   unitPrice: string;
+  /** Days the vendor promised; blank means no due date for this line */
+  leadTimeDays: string;
 };
 
 interface Props {
@@ -60,14 +63,8 @@ interface Props {
   locations: { id: string; name: string }[];
   orderableIntents: Orderable[];
   requiresApproval: boolean;
-}
-
-function formatMoney(n: number) {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 2,
-  }).format(n);
+  /** Recorded lead time for each product from each vendor */
+  leadTimes: { productId: string; vendorId: string; leadTimeDays: number }[];
 }
 
 /**
@@ -76,12 +73,18 @@ function formatMoney(n: number) {
  * Needs are the starting point rather than a free-form product picker, because
  * an order that answers nobody's need is usually a mistake — and picking one
  * fills in the product, the quantity and often the vendor.
+ *
+ * Each line carries the lead time the vendor promises, started from what that
+ * vendor has on record for the product. It sets the date the line is due, and
+ * the Orders tab then shows every line as on time, late or overdue against it
+ * (src/lib/order-timing.ts).
  */
 export function NewOrderDialog({
   vendors,
   locations,
   orderableIntents,
   requiresApproval,
+  leadTimes,
 }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -89,8 +92,9 @@ export function NewOrderDialog({
 
   const [vendorId, setVendorId] = useState("");
   const [locationId, setLocationId] = useState("");
-  const [expectedDate, setExpectedDate] = useState("");
   const [notes, setNotes] = useState("");
+  // "Today", fixed when the dialog is created — due dates are counted from it
+  const [openedAt] = useState(() => Date.now());
   const [lines, setLines] = useState<Line[]>([]);
 
   // One order goes to one vendor, so once a vendor is chosen only the needs
@@ -102,9 +106,22 @@ export function NewOrderDialog({
     );
   }, [orderableIntents, lines, vendorId]);
 
+  /** What this vendor has on record for the product, as the line's starting lead time */
+  const recordedDays = (productId: string, forVendor: string) =>
+    leadTimes.find((t) => t.productId === productId && t.vendorId === forVendor)?.leadTimeDays;
+
+  /** Choosing (or changing) the vendor fills any lead time not typed yet */
+  function chooseVendor(next: string) {
+    setVendorId(next);
+    setLines((prev) =>
+      prev.map((l) => (l.leadTimeDays === "" ? { ...l, leadTimeDays: String(recordedDays(l.productId, next) ?? "") } : l))
+    );
+  }
+
   function addIntent(intent: Orderable) {
     // The first need chosen sets the vendor and site, so the common case is one
     // click rather than three.
+    const lineVendor = vendorId || intent.vendorId || "";
     if (!vendorId && intent.vendorId) setVendorId(intent.vendorId);
     if (!locationId && intent.locationId) setLocationId(intent.locationId);
     setLines((prev) => [
@@ -119,6 +136,7 @@ export function NewOrderDialog({
         unit: intent.unit,
         quantity: String(intent.quantity),
         unitPrice: "",
+        leadTimeDays: String((lineVendor && recordedDays(intent.productId, lineVendor)) ?? ""),
       },
     ]);
   }
@@ -134,7 +152,6 @@ export function NewOrderDialog({
   function reset() {
     setVendorId("");
     setLocationId("");
-    setExpectedDate("");
     setNotes("");
     setLines([]);
   }
@@ -157,13 +174,13 @@ export function NewOrderDialog({
       const result = await createPurchaseOrder({
         vendorId,
         locationId,
-        expectedDate: expectedDate || undefined,
         notes,
         lines: lines.map((l) => ({
           productId: l.productId,
           quantity: Number(l.quantity),
           unitPrice: Number(l.unitPrice),
           intentId: l.intentId,
+          leadTimeDays: l.leadTimeDays === "" ? undefined : Number(l.leadTimeDays),
         })),
       });
       if (result.error) {
@@ -198,13 +215,13 @@ export function NewOrderDialog({
         </DialogHeader>
 
         <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Vendor</Label>
               <Select
                 value={vendorId}
                 items={vendors.map((v) => ({ value: v.id, label: v.name }))}
-                onValueChange={(v) => setVendorId((v as string) ?? "")}
+                onValueChange={(v) => chooseVendor((v as string) ?? "")}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Choose a vendor" />
@@ -236,15 +253,6 @@ export function NewOrderDialog({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="po-expected">Expected (optional)</Label>
-              <Input
-                id="po-expected"
-                type="date"
-                value={expectedDate}
-                onChange={(e) => setExpectedDate(e.target.value)}
-              />
             </div>
           </div>
 
@@ -327,6 +335,22 @@ export function NewOrderDialog({
                         placeholder="0.00"
                         onChange={(e) => updateLine(l.key, { unitPrice: e.target.value })}
                       />
+                    </div>
+                    <div className="w-28 space-y-1">
+                      <Label className="text-xs">Lead time (days)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={l.leadTimeDays}
+                        placeholder="—"
+                        onChange={(e) => updateLine(l.key, { leadTimeDays: e.target.value })}
+                      />
+                      <p className="text-micro text-muted-foreground">
+                        {l.leadTimeDays !== "" && Number(l.leadTimeDays) >= 0
+                          ? `Due ${new Date(openedAt + Number(l.leadTimeDays) * 86_400_000).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`
+                          : "No due date"}
+                      </p>
                     </div>
                     <div className="w-24 shrink-0 text-right text-sm tabular-nums">
                       {formatMoney((Number(l.quantity) || 0) * (Number(l.unitPrice) || 0))}
