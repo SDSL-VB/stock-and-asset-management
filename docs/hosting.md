@@ -14,6 +14,34 @@ What the app needs, and why:
 
 ---
 
+## Why package.json pins next-auth's nodemailer
+
+`next-auth` lists `nodemailer` as an OPTIONAL peer and accepts only `^7 || ^8`.
+This app runs nodemailer 10, because every version up to and including 9.1.0
+carries five advisories — among them arbitrary file read and SSRF through the
+message-level `raw` option (GHSA-p6gq-j5cr-w38f), and a quadratic-time address
+parser that makes a denial of service cheap (GHSA-2x7j-588g-ccc2).
+
+npm refuses that combination and a deploy dies at `npm install`:
+
+    npm error ERESOLVE could not resolve
+    npm error Conflicting peer dependency: nodemailer@8.0.11
+
+So package.json says:
+
+    "overrides": { "next-auth": { "nodemailer": "$nodemailer" } }
+
+which tells npm to give next-auth whatever nodemailer the root project uses.
+Nothing is actually shimmed: next-auth wants nodemailer only for its Email
+sign-in provider, and this app does not use it — sign-in is Credentials
+(src/auth.ts) and the mail this app sends is its own
+(src/lib/notifications/mail.ts). The peer is optional and unused, so satisfying
+it on paper costs nothing.
+
+Prefer this to `legacy-peer-deps=true` in an .npmrc: that switch turns peer
+checking off for every package forever, and would hide the next real conflict.
+Revisit when next-auth 5 leaves beta and widens the range.
+
 ## The short version
 
 ```bash
