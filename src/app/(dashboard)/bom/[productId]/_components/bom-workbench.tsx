@@ -965,7 +965,7 @@ export function BomWorkbench({
                         className={cn("text-micro", statusPill(v.status))}
                       >
                         {v.isActive && v.status === "PUBLISHED"
-                          ? "in force"
+                          ? "current"
                           : (STATUS_LABELS[v.status] ?? v.status)}
                       </Badge>
                       {liveBuilds(v) > 0 && (

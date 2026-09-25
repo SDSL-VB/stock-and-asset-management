@@ -21,6 +21,7 @@ import {
   markDispatchReceived,
   lookupBatch,
   exportDispatchReport,
+  exportDispatchReceipt,
 } from "@/lib/actions/dispatch";
 import { NewDispatchDialog } from "./new-dispatch-dialog";
 import { toast } from "sonner";
@@ -37,8 +38,11 @@ import {
   X,
   Undo2,
   Download,
+  IndianRupee,
 } from "lucide-react";
 import { statusPill } from "@/lib/design/status";
+import { formatCurrency } from "@/lib/format";
+import { DISPATCH_STATUS_LABEL } from "@/lib/vocabulary";
 
 /**
  * The Dispatch page: consignments leaving, arriving, and going to clients.
@@ -73,6 +77,10 @@ type DispatchItem = {
   entryNumber: string;
   itemCode: string | null;
   itemName: string;
+  /** The price the goods were booked in at. Null without stock.value.view. */
+  unitPrice: number | null;
+  /** quantity × unitPrice */
+  value: number | null;
 };
 
 type DispatchRow = {
@@ -100,6 +108,8 @@ type DispatchRow = {
   } | null;
   canSeeClientDetail: boolean;
   items: DispatchItem[];
+  /** Every line's value added up. Null without stock.value.view. */
+  totalValue: number | null;
 };
 
 interface Props {
@@ -123,13 +133,8 @@ interface Props {
   canExport?: boolean;
 }
 
-const STATUS_LABELS: Record<DispatchRow["status"], string> = {
-  PENDING: "Awaiting acceptance",
-  IN_TRANSIT: "In transit",
-  RECEIVED: "Received",
-  REJECTED: "Rejected",
-  CANCELLED: "Cancelled",
-};
+/** The same words the printed receipt uses — see src/lib/vocabulary.ts */
+const STATUS_LABELS = DISPATCH_STATUS_LABEL;
 
 export function DispatchManager({
   dispatches,
@@ -323,6 +328,11 @@ function DispatchCards({
                 {d.items.length} line{d.items.length === 1 ? "" : "s"} ·{" "}
                 {d.items.reduce((s, i) => s + i.quantity, 0)} units · raised by{" "}
                 {d.createdByName}
+                {d.totalValue !== null && (
+                  <span className="ml-2 rounded-md bg-brand-green/10 px-1.5 py-0.5 font-semibold tabular-nums text-brand-green">
+                    {formatCurrency(d.totalValue)}
+                  </span>
+                )}
               </p>
             </button>
 
@@ -529,6 +539,47 @@ function DispatchActions({
   );
 }
 
+/**
+ * Takes the consignment away as a PDF receipt. Whoever can open the
+ * consignment can download it — the server builds the document and decides
+ * what goes in it, including whether it shows value at all.
+ */
+function ReceiptButton({ dispatchId, dispatchNumber }: { dispatchId: string; dispatchNumber: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="ml-auto"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const res = await exportDispatchReceipt(dispatchId);
+          if ("error" in res) {
+            toast.error(res.error);
+            return;
+          }
+          // The server sends the bytes as base64 text; turn them back into a file
+          const bytes = Uint8Array.from(atob(res.pdf), (c) => c.charCodeAt(0));
+          const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = res.fileName;
+          link.click();
+          URL.revokeObjectURL(url);
+          toast.success(`Receipt for ${dispatchNumber} downloaded`);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Download className="mr-1.5 h-4 w-4" />}
+      Receipt
+    </Button>
+  );
+}
+
 function DispatchDetailDialog({
   dispatch,
   onClose,
@@ -547,6 +598,8 @@ function DispatchDetailDialog({
                 <Badge variant="outline" className={statusPill(dispatch.status)}>
                   {STATUS_LABELS[dispatch.status]}
                 </Badge>
+                {/* The paper that travels with the goods, and gets signed */}
+                <ReceiptButton dispatchId={dispatch.id} dispatchNumber={dispatch.dispatchNumber} />
               </DialogTitle>
             </DialogHeader>
 
@@ -591,7 +644,16 @@ function DispatchDetailDialog({
                     <div key={i.id} className="rounded-lg border p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="font-medium">{i.itemName}</span>
-                        <span className="tabular-nums">{i.quantity} units</span>
+                        <span className="tabular-nums">
+                          {i.quantity} units
+                          {i.unitPrice !== null && (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              × {formatCurrency(i.unitPrice)} ={" "}
+                            </span>
+                          )}
+                          {i.value !== null && <span className="font-medium">{formatCurrency(i.value)}</span>}
+                        </span>
                       </div>
                       <p className="mt-1 flex flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
                         <span>{i.itemCode ?? "—"}</span>
@@ -611,6 +673,19 @@ function DispatchDetailDialog({
                     </div>
                   ))}
                 </div>
+                {/* The one number people look for on a consignment note, so
+                    it is not left to blend into the lines above it. */}
+                {dispatch.totalValue !== null && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-brand-green/40 bg-brand-green/10 px-3 py-2">
+                    <span className="flex items-center gap-1.5 text-sm font-medium">
+                      <IndianRupee className="h-4 w-4 text-brand-green" />
+                      Consignment total
+                    </span>
+                    <span className="text-lg font-bold tabular-nums text-brand-green">
+                      {formatCurrency(dispatch.totalValue)}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {dispatch.notes && (

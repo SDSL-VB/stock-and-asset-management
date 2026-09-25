@@ -20,9 +20,12 @@ import {
 } from "@/lib/validations/product";
 import {
   composeProductCode,
-  CODE_PREFIX_PATTERN,
+  categoryCodeError,
+  applyNameTag,
+  sequenceSuffix,
   CODE_SUFFIX_PATTERN,
 } from "@/lib/product-codes";
+import type { Prisma } from "@prisma/client";
 import { getCatalogRules } from "./catalog-config";
 import {
   createProductRequestSchema,
@@ -78,7 +81,7 @@ import { catalogDecided, catalogRequested } from "@/lib/notifications/events";
 async function resolveSubcategory(
   subcategoryId: string | undefined,
   categoryId: string
-): Promise<{ value: { id: string; code: string | null } | null } | { error: string }> {
+): Promise<{ value: { id: string; code: string | null; name: string } | null } | { error: string }> {
   if (!subcategoryId) return { value: null };
 
   const subcategory = await prisma.productSubcategory.findUnique({
@@ -92,7 +95,46 @@ async function resolveSubcategory(
   if (!subcategory.isActive) {
     return { error: `"${subcategory.name}" is no longer in use` };
   }
-  return { value: { id: subcategory.id, code: subcategory.code } };
+  return { value: { id: subcategory.id, code: subcategory.code, name: subcategory.name } };
+}
+
+/**
+ * The next free product number, taken inside the caller's transaction.
+ *
+ * Numbers run 001, 002, … within a SUBCATEGORY — Resistors are numbered
+ * separately from Capacitors — and within the category for a product filed
+ * under no subcategory. The counter is bumped by the same statement that reads
+ * it, so two people adding a product at the same moment cannot be handed the
+ * same number.
+ *
+ * The composed code is then checked, because a catalog that already has typed
+ * codes may hold the one the counter just reached; it walks on until it finds a
+ * free one rather than failing in front of the person adding the product.
+ */
+async function nextProductCode(
+  tx: Prisma.TransactionClient,
+  categoryCode: string,
+  category: { id: string },
+  subcategory: { id: string; code: string | null } | null
+): Promise<string> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const n = subcategory
+      ? (await tx.productSubcategory.update({
+          where: { id: subcategory.id },
+          data: { nextSequence: { increment: 1 } },
+          select: { nextSequence: true },
+        })).nextSequence - 1
+      : (await tx.productCategory.update({
+          where: { id: category.id },
+          data: { nextSequence: { increment: 1 } },
+          select: { nextSequence: true },
+        })).nextSequence - 1;
+
+    const code = composeProductCode(categoryCode, subcategory?.code, sequenceSuffix(n));
+    const taken = await tx.product.findUnique({ where: { code }, select: { id: true } });
+    if (!taken) return code;
+  }
+  throw new Error("NO_FREE_CODE");
 }
 
 // ---------- Read (operators + admins) ----------
@@ -225,7 +267,7 @@ export async function createProduct(data: unknown) {
   }
 
   const kind = parsed.data.kind ?? "RAW";
-  await requirePermission(
+  const user = await requirePermission(
     // Bought (raw materials, ready goods) and made are separate grants
     isMadeKind(kind) ? PERMISSIONS.PRODUCTS_CREATE_MADE : PERMISSIONS.PRODUCTS_CREATE
   );
@@ -261,14 +303,16 @@ export async function createProduct(data: unknown) {
   );
   if (ruleError) return { error: ruleError };
 
-  // A product code is the category's code, the subcategory's if it has one, and
-  // the part the user typed. Only the last comes from the client.
+  // The number is given out, not typed: 1001-RESI-001, then 002, within the
+  // subcategory. Somebody holding products.code.override may still say what the
+  // last part should be — for a part whose supplier code is worth keeping.
+  const typedSuffix = parsed.data.codeSuffix?.trim();
+  const mayOverride = !!typedSuffix && hasPermission(user.permissions, PERMISSIONS.PRODUCTS_CODE_OVERRIDE);
+
   const product = await prisma.$transaction(async (tx) => {
-    const code = composeProductCode(
-      categoryCode,
-      subcategory.value?.code,
-      parsed.data.codeSuffix
-    );
+    const code = mayOverride
+      ? composeProductCode(categoryCode, subcategory.value?.code, typedSuffix!)
+      : await nextProductCode(tx, categoryCode, category, subcategory.value);
 
     const existing = await tx.product.findUnique({ where: { code } });
     if (existing) {
@@ -278,7 +322,8 @@ export async function createProduct(data: unknown) {
     return tx.product.create({
       data: {
         code,
-        name: parsed.data.name.trim(),
+        // Every product under a subcategory carries its tag: …_RESI
+        name: applyNameTag(parsed.data.name, subcategory.value?.name),
         description: parsed.data.description?.trim() || null,
         categoryId: parsed.data.categoryId,
         subcategoryId: subcategory.value?.id ?? null,
@@ -388,7 +433,9 @@ export async function updateProduct(id: string, data: unknown) {
     where: { id },
     data: {
       code,
-      name: parsed.data.name.trim(),
+      // The subcategory's tag is reapplied here too, so moving a product
+      // between subcategories renames it rather than leaving the old tag on.
+      name: applyNameTag(parsed.data.name, subcategory.value?.name),
       description: parsed.data.description?.trim() || null,
       categoryId: parsed.data.categoryId,
       subcategoryId: subcategory.value?.id ?? null,
@@ -442,7 +489,7 @@ export async function toggleProductActive(id: string) {
  * with `categories.prefix.edit`, and a code required if the catalog says so.
  */
 export async function createProductCategory(data: unknown) {
-  const user = await requirePermission(PERMISSIONS.CATEGORIES_CREATE);
+  await requirePermission(PERMISSIONS.CATEGORIES_CREATE);
 
   const parsed = newCategorySchema.safeParse(data);
   if (!parsed.success) {
@@ -452,11 +499,10 @@ export async function createProductCategory(data: unknown) {
   const name = parsed.data.name.trim();
   const { codePrefix } = parsed.data;
 
-  // A code posted without the grant is dropped, as in createSubcategory
-  const maySetCode = user.permissions.includes(PERMISSIONS.CATEGORIES_PREFIX_EDIT);
+  // Codes come with the subcategories, as in createSubcategory
   const subcategories = parsed.data.subcategories.map((sub) => ({
     name: sub.name,
-    code: maySetCode ? sub.code ?? null : null,
+    code: sub.code ?? null,
   }));
   const seenNames = new Set<string>();
   const seenCodes = new Set<string>();
@@ -469,18 +515,15 @@ export async function createProductCategory(data: unknown) {
       seenCodes.add(sub.code);
     }
   }
+  const rules = await getCatalogRules();
+
+  // The shape of a code is fixed (letters and digits); its length is a setting
+  const codeError = categoryCodeError(codePrefix, rules.categoryCodeLength);
+  if (codeError) return { error: codeError };
+
   if (subcategories.length > 0) {
-    const { requireSubcategoryCode } = await prisma.catalogConfig.upsert({
-      where: { id: "singleton" },
-      update: {},
-      create: { id: "singleton" },
-    });
-    if (requireSubcategoryCode && subcategories.some((sub) => !sub.code)) {
-      return {
-        error: maySetCode
-          ? "This catalog requires every subcategory to have a code"
-          : "This catalog requires a subcategory code, and setting one needs the category code permission",
-      };
+    if (rules.requireSubcategoryCode && subcategories.some((sub) => !sub.code)) {
+      return { error: "This catalog requires every subcategory to have a code" };
     }
   }
 
@@ -526,22 +569,29 @@ export async function createProductCategory(data: unknown) {
  * These reuse the CATEGORY permissions rather than having their own. A
  * subcategory is the category tree, one level down, and a grant that let
  * somebody add "PCB" but not "Electronics" would be a distinction nobody in the
- * business actually wants to make. The subcategory's CODE follows the same
- * logic and is guarded by `categories.prefix.edit`, because it is a code
- * segment exactly as a category's prefix is.
+ * business actually wants to make.
+ *
+ * Its CODE is given when it is created, by whoever creates it. Changing that
+ * code afterwards is `categories.prefix.edit` and is refused outright once any
+ * product is filed under it, because the code is part of every product code
+ * beneath it — the risk is in altering a code in use, not in choosing one for
+ * something new.
  */
 export async function createSubcategory(data: unknown) {
-  const user = await requirePermission(PERMISSIONS.CATEGORIES_CREATE);
+  await requirePermission(PERMISSIONS.CATEGORIES_CREATE);
 
   const parsed = subcategorySchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
 
   const { categoryId, name, code } = parsed.data;
 
-  // Setting a code is its own grant, so a code posted without it is dropped
-  // rather than refused — the subcategory is still worth creating.
-  const maySetCode = user.permissions.includes(PERMISSIONS.CATEGORIES_PREFIX_EDIT);
-  const wantedCode = maySetCode ? code ?? null : null;
+  // Giving a NEW subcategory its code is part of creating one, not a second
+  // grant. It used to need categories.prefix.edit, which made the catalog
+  // unusable wherever a code is required: the same person was obliged to
+  // supply a field they were not allowed to fill. CHANGING a code afterwards
+  // is still categories.prefix.edit (updateSubcategory), and the category's own
+  // prefix is untouched by this — both of those alter codes already in use.
+  const wantedCode = code ?? null;
 
   const category = await prisma.productCategory.findUnique({
     where: { id: categoryId },
@@ -549,17 +599,9 @@ export async function createSubcategory(data: unknown) {
   });
   if (!category) return { error: "Category not found" };
 
-  const { requireSubcategoryCode } = await prisma.catalogConfig.upsert({
-    where: { id: "singleton" },
-    update: {},
-    create: { id: "singleton" },
-  });
+  const { requireSubcategoryCode } = await getCatalogRules();
   if (requireSubcategoryCode && !wantedCode) {
-    return {
-      error: maySetCode
-        ? "This catalog requires every subcategory to have a code"
-        : "This catalog requires a code, and setting one needs the category code permission",
-    };
+    return { error: "This catalog requires every subcategory to have a code" };
   }
 
   const clashingName = await prisma.productSubcategory.findFirst({
@@ -727,6 +769,9 @@ export async function updateCategoryPrefix(id: string, data: unknown) {
   }
 
   const { codePrefix } = parsed.data;
+  const { categoryCodeLength } = await getCatalogRules();
+  const codeError = categoryCodeError(codePrefix, categoryCodeLength);
+  if (codeError) return { error: codeError };
 
   const duplicate = await prisma.productCategory.findFirst({
     where: { codePrefix, id: { not: id } },
@@ -1020,16 +1065,19 @@ export async function getProductRequests() {
   });
 }
 
-// Approving a PRODUCT request creates the product (admin supplies the final
-// code); approving a CATEGORY request creates the category.
+// Approving a PRODUCT request creates the product (the reviewer supplies the
+// final code); approving a CATEGORY request creates the category.
+//
+// The permission is the only gate. A manager who asked for something and holds
+// the approve permission decides it themselves — the queue is there so that
+// people WITHOUT the permission have a way to ask, not to make everybody wait
+// for a second pair of eyes.
 export async function approveProductRequest(id: string, data: unknown) {
   const user = await requireAuth();
 
   const request = await prisma.productRequest.findUnique({ where: { id } });
   if (!request) return { error: "Request not found" };
   if (request.status !== "PENDING") return { error: "This request has already been processed" };
-  // Somebody else decides what gets added on your request
-  if (request.requestedById === user.id) return { error: "You asked for this, so someone else has to review it" };
 
   const neededPermission =
     request.type === "PRODUCT"
@@ -1054,9 +1102,10 @@ export async function approveProductRequest(id: string, data: unknown) {
 
     // The requester asked for a name; the code is the reviewer's to choose,
     // because they are the one who knows the numbering scheme.
-    const codePrefix = parsed.data.codePrefix?.trim();
-    if (!codePrefix || !CODE_PREFIX_PATTERN.test(codePrefix)) {
-      return { error: "Enter a 4-digit code for the new category (e.g. 1001)" };
+    const codePrefix = parsed.data.codePrefix?.trim().toUpperCase();
+    const codeError = categoryCodeError(codePrefix ?? "", (await getCatalogRules()).categoryCodeLength);
+    if (!codePrefix || codeError) {
+      return { error: codeError ?? "Enter a code for the new category (e.g. 1001)" };
     }
     const clash = await prisma.productCategory.findUnique({ where: { codePrefix } });
     if (clash) {
@@ -1100,12 +1149,11 @@ export async function approveProductRequest(id: string, data: unknown) {
   const category = await prisma.productCategory.findUnique({ where: { id: categoryId } });
   if (!category) return { error: "Category not found" };
 
-  // The reviewer types the second half; the prefix comes from the category.
+  // Left blank, the number is given out like any other product's. A reviewer
+  // who types one is saying "use this instead", which is the same override the
+  // product form offers.
   const suffix = parsed.data.code?.trim();
-  if (!suffix) {
-    return { error: "Enter the rest of the product code" };
-  }
-  if (!CODE_SUFFIX_PATTERN.test(suffix)) {
+  if (suffix && !CODE_SUFFIX_PATTERN.test(suffix)) {
     return { error: "Use letters, numbers, hyphens and underscores for the code" };
   }
 
@@ -1142,7 +1190,11 @@ export async function approveProductRequest(id: string, data: unknown) {
   if (ruleError) return { error: ruleError };
 
   const product = await prisma.$transaction(async (tx) => {
-    const code = composeProductCode(approvalPrefix, subcategory.value?.code, suffix);
+    // The reviewer may name the last part; otherwise it is the next number in
+    // the subcategory, exactly as adding a product directly gives out.
+    const code = suffix
+      ? composeProductCode(approvalPrefix, subcategory.value?.code, suffix)
+      : await nextProductCode(tx, approvalPrefix, { id: categoryId }, subcategory.value);
 
     const duplicate = await tx.product.findUnique({ where: { code } });
     if (duplicate) {
@@ -1152,7 +1204,7 @@ export async function approveProductRequest(id: string, data: unknown) {
     const created = await tx.product.create({
       data: {
         code,
-        name,
+        name: applyNameTag(name, subcategory.value?.name),
         description,
         categoryId,
         subcategoryId: subcategory.value?.id ?? null,
@@ -1196,8 +1248,6 @@ export async function rejectProductRequest(id: string, data: unknown) {
   const request = await prisma.productRequest.findUnique({ where: { id } });
   if (!request) return { error: "Request not found" };
   if (request.status !== "PENDING") return { error: "This request has already been processed" };
-  // Somebody else decides what gets added on your request
-  if (request.requestedById === user.id) return { error: "You asked for this, so someone else has to review it" };
 
   const neededPermission =
     request.type === "PRODUCT"

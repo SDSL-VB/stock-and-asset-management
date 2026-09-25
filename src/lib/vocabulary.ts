@@ -93,6 +93,32 @@ export const KIND_BADGE: Record<ProductKind, string> = {
 };
 
 /**
+ * What a consignment is called at each point in its life. Named here rather
+ * than in the dispatch page, because the printed receipt has to say the same
+ * word the screen does.
+ */
+export const DISPATCH_STATUS_LABEL: Record<string, string> = {
+  PENDING: "Awaiting acceptance",
+  IN_TRANSIT: "In transit",
+  RECEIVED: "Received",
+  REJECTED: "Rejected",
+  CANCELLED: "Cancelled",
+};
+
+/**
+ * The reason a need request carries, ready to show beside it.
+ *
+ * A request raised by hand is stored with "4 items." in front of whatever the
+ * person wrote, which is worth keeping in the document but reads as a stutter
+ * next to a row that already says how many items there are. One raised from a
+ * short build or a low-stock alert says something real ("Short for 5 ×
+ * BLDC_Controller at Bengaluru") and is left alone.
+ */
+export function requestReason(notes: string | null | undefined): string | null {
+  return notes?.replace(/^\d+ items\.?\s*/, "").trim() || null;
+}
+
+/**
  * What a need is called at each point in its life — on the Procurement page, in
  * a need request, and in the list's CSV and PDF, which must all read the same.
  */

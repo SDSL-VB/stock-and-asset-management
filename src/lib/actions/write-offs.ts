@@ -36,7 +36,7 @@ import {
   requireAnyPermission,
   resolveStockScope,
 } from "@/lib/rbac/check";
-import { PERMISSIONS } from "@/lib/rbac/permissions";
+import { PERMISSIONS, WRITE_OFF_RAISE_PERMISSIONS } from "@/lib/rbac/permissions";
 import {
   availabilityInclude,
   availableQuantity,
@@ -510,6 +510,119 @@ async function getWriteOffs(): Promise<WriteOffRow[]> {
       canDecide: canApprove && w.status === "PENDING" && w.raisedById !== user.id,
       canReverse: canReverse && w.status === "APPROVED",
     }));
+}
+
+/**
+ * What this person could report as lost, for the Wastage page's own "Report
+ * wastage" button.
+ *
+ * Reporting used to start from a stock entry or from a department's assets,
+ * which meant finding the goods first and the Wastage page could only ever
+ * show what others had raised. This lists both kinds of holding in one go:
+ *
+ *   entry  central stock, charged against the stock entry
+ *   issue  a department's holding, charged against that issue only
+ *
+ * The two are separate grants, so each kind is offered only to whoever may
+ * actually raise it — `stock.writeoff.create` for central stock,
+ * `stock.writeoff.department` for a department's holding. Nothing is listed
+ * that the create action would then refuse, which is the rule the review queue
+ * already follows: never render work somebody cannot do.
+ *
+ * Only what is genuinely free is offered — anything already dispatched, built
+ * with, moved or written off is gone, and `availableQuantity` / 
+ * `availableFromIssue` are the same functions the two create actions check
+ * against, so nothing offered here is refused on submit. Visibility is the
+ * stock list's own rule, so this can show nothing the person could not
+ * already open.
+ */
+export type WriteOffCandidate = {
+  /** Which action raises it — central stock, or a department's holding */
+  target: { kind: "entry"; stockEntryId: string } | { kind: "issue"; stockIssueId: string; departmentName: string };
+  key: string;
+  entryNumber: string;
+  itemCode: string | null;
+  itemName: string;
+  unit: string;
+  batchNumber: string | null;
+  place: string;
+  available: number;
+  isAsset: boolean;
+};
+
+export async function getWriteOffCandidates(): Promise<WriteOffCandidate[]> {
+  const user = await requireAnyPermission(WRITE_OFF_RAISE_PERMISSIONS);
+  const scope = resolveStockScope(user);
+  const mayRaiseCentral = user.permissions.includes(PERMISSIONS.STOCK_WRITEOFF_CREATE);
+  const mayRaiseDepartment = user.permissions.includes(PERMISSIONS.STOCK_WRITEOFF_DEPARTMENT);
+
+  const entries = await prisma.stockEntry.findMany({
+    where: { status: "APPROVED", ...stockCandidatesWhere(user, scope) },
+    include: {
+      ...availabilityInclude,
+      issues: {
+        select: {
+          id: true,
+          quantity: true,
+          departmentId: true,
+          issuedById: true,
+          department: { select: { name: true, locationId: true } },
+          ...issueWriteOffsInclude,
+        },
+      },
+      product: { select: { unit: true } },
+      location: { select: { name: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const candidates: WriteOffCandidate[] = [];
+  for (const entry of entries) {
+    if (!isStockVisible(entry, user, scope)) continue;
+    const unit = entry.product?.unit ?? "pcs";
+    const site = entry.location?.name ?? "Unassigned";
+
+    const central = round(availableQuantity(entry));
+    if (mayRaiseCentral && central > 0) {
+      candidates.push({
+        target: { kind: "entry", stockEntryId: entry.id },
+        key: `entry:${entry.id}`,
+        entryNumber: entry.entryNumber,
+        itemCode: entry.itemCode,
+        itemName: entry.itemName,
+        unit,
+        batchNumber: entry.batchNumber,
+        place: `Central Stock (${site})`,
+        available: central,
+        isAsset: entry.isAsset,
+      });
+    }
+
+    if (!mayRaiseDepartment) continue;
+    for (const issue of entry.issues) {
+      // The same three refusals createDepartmentWriteOff makes, so nothing is
+      // offered here that it would then turn down.
+      if (scope === "department" && issue.departmentId !== user.departmentId) continue;
+      if (scope === "location" && issue.department.locationId !== user.locationId) continue;
+      if (scope === "own" && issue.issuedById !== user.id) continue;
+
+      const held = round(availableFromIssue(issue));
+      if (held <= 0) continue;
+      candidates.push({
+        target: { kind: "issue", stockIssueId: issue.id, departmentName: issue.department.name },
+        key: `issue:${issue.id}`,
+        entryNumber: entry.entryNumber,
+        itemCode: entry.itemCode,
+        itemName: entry.itemName,
+        unit,
+        batchNumber: entry.batchNumber,
+        place: issue.department.name,
+        available: held,
+        isAsset: entry.isAsset,
+      });
+    }
+  }
+  return candidates;
 }
 
 /**

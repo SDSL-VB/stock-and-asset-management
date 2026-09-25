@@ -19,6 +19,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { HowTo } from "@/components/shared/how-to";
 import { ProductManager } from "./_components/product-manager";
 import { CatalogRequests } from "./_components/catalog-requests";
+import { CatalogSettingsDialog } from "./_components/catalog-settings-dialog";
 
 /**
  * The catalog: raw materials, products, categories — and the queue of things
@@ -88,6 +89,7 @@ export default async function ProductsPage({
         title="Catalog"
         description="Raw materials you buy in, products you make, and the categories both live in"
       >
+        {has(PERMISSIONS.CONFIG_CATALOG) && <CatalogSettingsDialog settings={rules} />}
         {canAskCategory && (
           <RequestProductDialog categories={[]} fixedType="CATEGORY" triggerLabel="Ask for a category" />
         )}
@@ -108,7 +110,7 @@ export default async function ProductsPage({
                 {
                   title: "Codes come from the category, and the subcategory",
                   description:
-                    "A category owns a fixed 4-digit prefix and a subcategory may add a segment of its own: Electronics (1004) + PCB + 3W_CONTROL_BOARD gives 1004-PCB-3W_CONTROL_BOARD. Neither is typed by hand — you type only the last part.",
+                    "A category owns a fixed code — letters, numbers or both — and a subcategory may add a segment of its own: Electronics (1004) + PCB + 3W_CONTROL_BOARD gives 1004-PCB-3W_CONTROL_BOARD. Neither is typed on the product form — you type only the last part. How long a category code may be is set in Catalog settings.",
                 },
                 {
                   title: "Name it short, describe it plainly",
@@ -157,6 +159,7 @@ export default async function ProductsPage({
           canCreateMade={has(PERMISSIONS.PRODUCTS_CREATE_MADE)}
           canDeleteProducts={has(PERMISSIONS.PRODUCTS_DELETE)}
           canDeleteCategories={has(PERMISSIONS.CATEGORIES_DELETE)}
+          canRequestCategories={has(PERMISSIONS.CATEGORIES_REQUEST_CREATE)}
           rules={rules}
           canEditSuppliers={
             has(PERMISSIONS.VENDORS_EDIT) || has(PERMISSIONS.PRODUCTS_EDIT) || has(PERMISSIONS.STOCK_LOWSTOCK_MANAGE)

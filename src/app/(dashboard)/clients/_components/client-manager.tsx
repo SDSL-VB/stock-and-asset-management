@@ -127,7 +127,7 @@ export function ClientManager({
           ]}
           onValueChange={(v) => setCityFilter((v as string) ?? "all")}
         >
-          <SelectTrigger className="w-[200px]">
+          <SelectTrigger className="w-auto min-w-[200px] max-w-full">
             <SelectValue placeholder="All cities" />
           </SelectTrigger>
           <SelectContent>

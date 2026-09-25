@@ -134,7 +134,7 @@ export function UserDirectory({ users, currentUserId }: Props) {
           ]}
           onValueChange={(v) => setRoleFilter((v as string) ?? "all")}
         >
-          <SelectTrigger className="w-[190px]">
+          <SelectTrigger className="w-auto min-w-[190px] max-w-full">
             <SelectValue placeholder="All roles" />
           </SelectTrigger>
           <SelectContent>
@@ -154,7 +154,7 @@ export function UserDirectory({ users, currentUserId }: Props) {
           ]}
           onValueChange={(v) => setDepartmentFilter((v as string) ?? "all")}
         >
-          <SelectTrigger className="w-[210px]">
+          <SelectTrigger className="w-auto min-w-[210px] max-w-full">
             <SelectValue placeholder="All departments" />
           </SelectTrigger>
           <SelectContent>

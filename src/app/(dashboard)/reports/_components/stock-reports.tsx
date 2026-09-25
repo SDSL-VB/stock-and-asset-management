@@ -53,6 +53,15 @@ import { formatCurrency, formatUnitPrice } from "@/lib/format";
 import { groupHoldings, hasMixedPrices, provenanceLabel } from "@/lib/stock-grouping";
 import { toast } from "sonner";
 import { toCsv } from "@/lib/csv";
+import { FilterSelect } from "@/components/shared/filter-select";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 
 interface InventoryOverview {
@@ -126,12 +135,20 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
   // Raw materials we buy in versus products we make. Filtered here rather than
   // re-queried, because the holdings are already loaded.
   const [holdingsGroup, setHoldingsGroup] = useState<"all" | "BOUGHT_IN" | "MADE">("all");
+  // Received between. Either end on its own is a valid question; the "to" day
+  // counts whole, so asking for the 23rd includes everything booked that day.
+  const [receivedFrom, setReceivedFrom] = useState("");
+  const [receivedTo, setReceivedTo] = useState("");
+  // By category, alongside the bought/made split. Built from what is actually
+  // held here, so the dropdown never offers a choice that returns nothing.
+  const [holdingsCategory, setHoldingsCategory] = useState("ALL");
   /**
    * One row per product, or one row per receipt.
    *
-   * Consolidated is the default because "how many bearings do we have" is the
-   * question the reports page is asked. Buying the same product twice used to
-   * answer it with two rows the reader had to add up themselves.
+   * Consolidated is the default because "how much 4C_WIRE do we have" is the
+   * question the reports page is asked, and the answer is one number: 30.
+   * Opening the row says what that 30 cost — 23 at ₹234 and 7 at ₹239 — and
+   * opening further shows the receipts behind each price.
    */
   const [holdingsView, setHoldingsView] = useState<"grouped" | "entries">("grouped");
   /** Which consolidated rows have been unfolded to show their receipts */
@@ -154,6 +171,9 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
     setSelection(null);
     setHoldings(null);
     setHoldingsSearch("");
+    setReceivedFrom("");
+    setReceivedTo("");
+    setHoldingsCategory("ALL");
     setExpandedKeys(new Set());
     setInventoryData(inventoryOverview);
   }
@@ -164,6 +184,9 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
     }
     setSelection({ type: "dept", id, name });
     setHoldingsSearch("");
+    setReceivedFrom("");
+    setReceivedTo("");
+    setHoldingsCategory("ALL");
     setExpandedKeys(new Set());
     setInventoryLoading(true);
     setHoldingsLoading(true);
@@ -186,6 +209,9 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
     }
     setSelection({ type: "central", location, name });
     setHoldingsSearch("");
+    setReceivedFrom("");
+    setReceivedTo("");
+    setHoldingsCategory("ALL");
     setExpandedKeys(new Set());
     setInventoryData(inventoryOverview);
     setHoldingsLoading(true);
@@ -199,8 +225,16 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
     }
   }
 
+  const holdingCategories = [
+    ...new Set((holdings ?? []).map((r) => r.categoryName).filter(Boolean)),
+  ].sort() as string[];
+
   const filteredHoldings = (holdings ?? []).filter((row) => {
     if (holdingsGroup !== "all" && row.group !== holdingsGroup) return false;
+    if (holdingsCategory !== "ALL" && row.categoryName !== holdingsCategory) return false;
+    const received = new Date(row.receivedAt).getTime();
+    if (receivedFrom && received < new Date(`${receivedFrom}T00:00:00`).getTime()) return false;
+    if (receivedTo && received > new Date(`${receivedTo}T23:59:59.999`).getTime()) return false;
     const q = holdingsSearch.trim().toLowerCase();
     if (!q) return true;
     return (
@@ -263,16 +297,17 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
   }
 
   /**
-   * One row per product. The price tiers become a single text column reading
-   * "350.00 x 4; 400.00 x 3" — a spreadsheet has no chips, and collapsing to a
-   * lone averaged price would throw away the very thing this view exists for.
+   * One row per product, exactly as the table shows it: the whole quantity on
+   * one line, with the prices behind it spelled out as "234.00 x 23; 239.00 x
+   * 7". A spreadsheet has no chevron, and collapsing to a lone averaged price
+   * would throw away the very thing that column exists for.
    */
   function groupedHoldingsCsv() {
     return {
       headers: [
         "Item Code", "Item Name", "Kind", "Category",
         "Quantity Here",
-        ...(canSeeValue ? ["Unit Prices", "Average Unit Price", "Value"] : []),
+        ...(canSeeValue ? ["Prices", "Value"] : []),
         "Receipts", "Batches", "Suppliers", "First Received", "Last Received",
       ],
       rows: groupedHoldings.map((g) => [
@@ -283,8 +318,7 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
         g.quantity.toString(),
         ...(canSeeValue
           ? [
-              g.tiers.map((t) => `${t.unitPrice.toFixed(2)} x ${t.quantity}`).join("; "),
-              g.avgUnitPrice.toFixed(2),
+              g.prices.map((level) => `${level.unitPrice.toFixed(2)} x ${level.quantity}`).join("; "),
               g.value.toFixed(2),
             ]
           : []),
@@ -488,75 +522,92 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
                   )}
                 </div>
               </div>
-              <div className="mt-2 flex flex-wrap items-center gap-3">
-                <div className="relative min-w-[220px] flex-1 sm:max-w-sm">
+              <div className="mt-2 flex flex-wrap items-end gap-3">
+                <div className="min-w-[220px] flex-1 space-y-1 sm:max-w-sm">
+                  <Label className="text-xs text-muted-foreground">Search</Label>
                   <Input
                     value={holdingsSearch}
                     onChange={(e) => setHoldingsSearch(e.target.value)}
-                    placeholder="Search by item, code, category, supplier..."
+                    placeholder="Item, code, category, supplier..."
+                    className="h-9"
                   />
                 </div>
 
-                {/*
-                  Raw materials and products, side by side. The counts come from
-                  everything held, not the filtered view, so switching between
-                  them never changes what the other one says.
-                */}
-                <div className="flex flex-wrap gap-1.5">
-                  {(
-                    [
-                      ["all", "Everything", (holdings ?? []).length],
-                      ["BOUGHT_IN", GROUP_LABEL.BOUGHT_IN, holdingTotals.BOUGHT_IN.count],
-                      ["MADE", GROUP_LABEL.MADE, holdingTotals.MADE.count],
-                    ] as const
-                  ).map(([value, label, count]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setHoldingsGroup(value)}
-                      className={cn(
-                        "rounded-full border px-3 py-1 text-caption transition-colors",
-                        holdingsGroup === value
-                          ? "border-primary/40 bg-primary/10 font-medium text-foreground"
-                          : "text-muted-foreground hover:bg-muted/60"
-                      )}
-                    >
-                      {label}
-                      <span className="ml-1.5 tabular-nums opacity-70">{count}</span>
-                    </button>
-                  ))}
+                {holdingCategories.length > 0 && (
+                  <FilterSelect
+                    label="Category"
+                    value={holdingsCategory}
+                    onChange={setHoldingsCategory}
+                    options={[
+                      { value: "ALL", label: "Any category" },
+                      ...holdingCategories.map((name) => ({ value: name, label: name })),
+                    ]}
+                  />
+                )}
+
+                {/* Received between. The export follows this, like every other
+                    filter here — what downloads is what is on screen. */}
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Received between</Label>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="date"
+                      value={receivedFrom}
+                      max={receivedTo || undefined}
+                      onChange={(e) => setReceivedFrom(e.target.value)}
+                      className="h-9 w-[9.5rem]"
+                      aria-label="Received from"
+                    />
+                    <span className="text-caption text-muted-foreground">to</span>
+                    <Input
+                      type="date"
+                      value={receivedTo}
+                      min={receivedFrom || undefined}
+                      onChange={(e) => setReceivedTo(e.target.value)}
+                      className="h-9 w-[9.5rem]"
+                      aria-label="Received until"
+                    />
+                    {(receivedFrom || receivedTo) && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setReceivedFrom("");
+                          setReceivedTo("");
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 {/*
-                  One row per product, or one row per receipt. Buying the same
-                  bearing twice is two receipts but one product, and "how many
-                  bearings do we have" is the question this table is asked — so
-                  consolidated is the default. The per-entry view is still here
-                  for anyone tracing a specific delivery.
+                  Two dropdowns rather than two rows of chips: what to include,
+                  and how to count it. The counts ride in the labels so nothing
+                  is lost, and a row of filters reads the same way everywhere —
+                  a label, a control, a value.
                 */}
-                <div className="flex flex-wrap gap-1.5">
-                  {(
-                    [
-                      ["grouped", "Consolidated", groupedHoldings.length],
-                      ["entries", "Every entry", filteredHoldings.length],
-                    ] as const
-                  ).map(([value, label, count]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setHoldingsView(value)}
-                      className={cn(
-                        "rounded-full border px-3 py-1 text-caption transition-colors",
-                        holdingsView === value
-                          ? "border-brand-blue/40 bg-brand-blue/10 font-medium text-foreground"
-                          : "text-muted-foreground hover:bg-muted/60"
-                      )}
-                    >
-                      {label}
-                      <span className="ml-1.5 tabular-nums opacity-70">{count}</span>
-                    </button>
-                  ))}
-                </div>
+                <FilterSelect
+                  label="Show"
+                  value={holdingsGroup}
+                  onChange={(v) => setHoldingsGroup(v as typeof holdingsGroup)}
+                  options={[
+                    { value: "all", label: `Everything (${(holdings ?? []).length})` },
+                    { value: "BOUGHT_IN", label: `${GROUP_LABEL.BOUGHT_IN} (${holdingTotals.BOUGHT_IN.count})` },
+                    { value: "MADE", label: `${GROUP_LABEL.MADE} (${holdingTotals.MADE.count})` },
+                  ]}
+                />
+
+                <FilterSelect
+                  label="Rows"
+                  value={holdingsView}
+                  onChange={(v) => setHoldingsView(v as typeof holdingsView)}
+                  options={[
+                    { value: "grouped", label: `One per product (${groupedHoldings.length})` },
+                    { value: "entries", label: `One per receipt (${filteredHoldings.length})` },
+                  ]}
+                />
 
                 {canSeeValue && (
                   <span className="text-caption text-muted-foreground tabular-nums">
@@ -573,9 +624,9 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
                 </div>
               ) : holdingsView === "grouped" ? (
                 /*
-                  One row per product. The price is the single figure it was
-                  bought at, or the range when bought at several; the row
-                  expands to the receipts behind it, each with its own price.
+                  One row per product. Where it was bought at several prices
+                  the column shows the range, never an average — the real
+                  prices are one level down, inside the row.
                 */
                 <Table>
                   <TableHeader>
@@ -604,9 +655,9 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
                       </TableRow>
                     ) : (
                       groupedHoldings.map((group) => {
-                        // A single receipt has nothing to unfold — the row is
-                        // already showing everything there is.
-                        const expandable = group.entryCount > 1;
+                        // A single receipt at a single price has nothing to
+                        // unfold — the row already shows everything there is.
+                        const expandable = group.entryCount > 1 || group.prices.length > 1;
                         const expanded = expandable && expandedKeys.has(group.key);
 
                         return (
@@ -660,7 +711,7 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
                                   <span className="tabular-nums">
                                     {hasMixedPrices(group)
                                       ? `${formatUnitPrice(group.minUnitPrice)} – ${formatUnitPrice(group.maxUnitPrice)}`
-                                      : formatUnitPrice(group.avgUnitPrice)}
+                                      : formatUnitPrice(group.minUnitPrice)}
                                   </span>
                                 </TableCell>
                               )}
@@ -688,42 +739,74 @@ export function StockReports({ userPermissions, inventoryOverview }: Props) {
                               </TableCell>
                             </TableRow>
 
-                            {/* The receipts this row was built from */}
+                            {/* What the row is made of: one line per price —
+                                everything bought at ₹234 added together — and
+                                under it the receipts that made up that price. */}
                             {expanded &&
-                              group.entries.map((row) => (
-                                <TableRow key={row.entryId} className="bg-muted/30">
-                                  <TableCell className="pl-9 text-xs text-muted-foreground">
-                                    <span className="font-mono">{row.entryNumber}</span>
-                                    <span className="block">
-                                      {row.supplierName}
-                                      {row.batchNumber ? ` · batch ${row.batchNumber}` : ""}
-                                    </span>
-                                  </TableCell>
-                                  <TableCell colSpan={3} className="text-xs text-muted-foreground">
-                                    {row.location}
-                                    {row.clientName ? ` · ${row.clientName}` : ""}
-                                  </TableCell>
-                                  <TableCell className="text-right text-xs tabular-nums">
-                                    {row.quantity.toLocaleString("en-IN")}
-                                  </TableCell>
-                                  {canSeeValue && (
-                                    <TableCell className="text-right text-xs tabular-nums">
-                                      {formatUnitPrice(row.unitPrice)}
+                              group.prices.map((level) => (
+                                <Fragment key={`${group.key}@${level.unitPrice}`}>
+                                  <TableRow className="bg-muted/40">
+                                    <TableCell colSpan={4} className="pl-9 text-xs font-medium">
+                                      {canSeeValue
+                                        ? `Bought at ${formatUnitPrice(level.unitPrice)}`
+                                        : "Bought together"}
+                                      <span className="ml-1.5 font-normal text-muted-foreground">
+                                        {level.entryCount} receipt{level.entryCount === 1 ? "" : "s"}
+                                        {level.batches.length > 0 ? ` · ${level.batches.length} batch${level.batches.length === 1 ? "" : "es"}` : ""}
+                                      </span>
                                     </TableCell>
-                                  )}
-                                  {canSeeValue && (
-                                    <TableCell className="text-right text-xs tabular-nums">
-                                      {formatCurrency(row.value)}
+                                    <TableCell className="text-right text-xs font-semibold tabular-nums">
+                                      {level.quantity.toLocaleString("en-IN")}
                                     </TableCell>
-                                  )}
-                                  <TableCell className="text-xs text-muted-foreground">
-                                    {new Date(row.receivedAt).toLocaleDateString("en-IN", {
-                                      day: "2-digit",
-                                      month: "short",
-                                      year: "numeric",
-                                    })}
-                                  </TableCell>
-                                </TableRow>
+                                    {canSeeValue && (
+                                      <TableCell className="text-right text-xs tabular-nums">
+                                        {formatUnitPrice(level.unitPrice)}
+                                      </TableCell>
+                                    )}
+                                    {canSeeValue && (
+                                      <TableCell className="text-right text-xs font-semibold tabular-nums">
+                                        {formatCurrency(level.value)}
+                                      </TableCell>
+                                    )}
+                                    <TableCell />
+                                  </TableRow>
+
+                                  {level.entries.map((row) => (
+                                    <TableRow key={row.entryId} className="bg-muted/20">
+                                      <TableCell className="pl-14 text-xs text-muted-foreground">
+                                        <span className="font-mono">{row.entryNumber}</span>
+                                        <span className="block">
+                                          {row.supplierName}
+                                          {row.batchNumber ? ` · batch ${row.batchNumber}` : ""}
+                                        </span>
+                                      </TableCell>
+                                      <TableCell colSpan={3} className="text-xs text-muted-foreground">
+                                        {row.location}
+                                        {row.clientName ? ` · ${row.clientName}` : ""}
+                                      </TableCell>
+                                      <TableCell className="text-right text-xs tabular-nums">
+                                        {row.quantity.toLocaleString("en-IN")}
+                                      </TableCell>
+                                      {canSeeValue && (
+                                        <TableCell className="text-right text-xs tabular-nums">
+                                          {formatUnitPrice(row.unitPrice)}
+                                        </TableCell>
+                                      )}
+                                      {canSeeValue && (
+                                        <TableCell className="text-right text-xs tabular-nums">
+                                          {formatCurrency(row.value)}
+                                        </TableCell>
+                                      )}
+                                      <TableCell className="text-xs text-muted-foreground">
+                                        {new Date(row.receivedAt).toLocaleDateString("en-IN", {
+                                          day: "2-digit",
+                                          month: "short",
+                                          year: "numeric",
+                                        })}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </Fragment>
                               ))}
                           </Fragment>
                         );

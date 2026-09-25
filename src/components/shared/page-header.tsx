@@ -43,8 +43,11 @@ export function PageHeader({
             <p className="mt-1 text-body text-muted-foreground">{description}</p>
           )}
         </div>
+        {/* Wraps, and does not shrink the title to make room: pages here
+            carry three or four actions, and on a narrow screen they belong on
+            a second line rather than off the edge of it. */}
         {children && (
-          <div className="flex shrink-0 items-center gap-2">{children}</div>
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end">{children}</div>
         )}
       </div>
 

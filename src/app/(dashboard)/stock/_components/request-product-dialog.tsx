@@ -109,7 +109,7 @@ export function RequestProductDialog({ categories, defaultCategoryId, fixedType,
                 ? "Create Product / Category"
                 : "Request Product / Category")}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>
             {fixedType === "PRODUCT"

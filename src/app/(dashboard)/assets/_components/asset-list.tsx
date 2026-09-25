@@ -119,7 +119,7 @@ export function AssetList({ assets, canSeeValue = false, canWriteOff = false }: 
           ]}
           onValueChange={(v) => setDepartmentFilter((v as string) ?? "all")}
         >
-          <SelectTrigger className="w-[220px]">
+          <SelectTrigger className="w-auto min-w-[220px] max-w-full">
             <SelectValue placeholder="All departments" />
           </SelectTrigger>
           <SelectContent>

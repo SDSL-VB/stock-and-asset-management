@@ -30,10 +30,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { approveProductRequest, rejectProductRequest } from "@/lib/actions/products";
-import { codeLeaderOf, CODE_PREFIX_PATTERN } from "@/lib/product-codes";
+import { codeLeaderOf, categoryCodeError } from "@/lib/product-codes";
 import { toast } from "sonner";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Loader2, Search, X } from "lucide-react";
 import { statusPill } from "@/lib/design/status";
+import type { CatalogRules } from "@/lib/validations/product";
 
 /**
  * The request queue on the Catalog page.
@@ -83,7 +84,7 @@ interface Props {
    * asker — approving is what creates the product, so this is the form the
    * rules are enforced against.
    */
-  rules: { requireSubcategory: boolean; requireDescription: boolean };
+  rules: CatalogRules;
 }
 
 function StatusBadge({ status }: { status: CatalogRequest["status"] }) {
@@ -104,9 +105,42 @@ export function CatalogRequests({
   viewerId,
   rules,
 }: Props) {
+  // Searchable like every other tab of the Catalog page: the queue grows and
+  // "did anyone ask for this already?" is the question people arrive with.
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+  const shown = q
+    ? requests.filter(
+        (r) =>
+          r.name.toLowerCase().includes(q) ||
+          (r.description ?? "").toLowerCase().includes(q) ||
+          (r.notes ?? "").toLowerCase().includes(q) ||
+          r.requestedBy.name.toLowerCase().includes(q) ||
+          (r.category?.name ?? "").toLowerCase().includes(q) ||
+          r.status.toLowerCase().includes(q) ||
+          (r.type === "PRODUCT" ? "product" : "category").includes(q)
+      )
+    : requests;
+
   return (
     <Card>
       <CardContent className="p-0">
+        <div className="flex flex-wrap items-center gap-3 border-b p-3">
+          <div className="relative min-w-[220px] flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by what was asked for, who asked, category or status..."
+              className="pl-9"
+            />
+          </div>
+          {q && (
+            <span className="text-sm text-muted-foreground">
+              Showing {shown.length} of {requests.length}
+            </span>
+          )}
+        </div>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -120,15 +154,16 @@ export function CatalogRequests({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {requests.length === 0 ? (
+              {shown.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
-                    Nothing has been asked for. Requests raised here or from the stock
-                    entry form appear here.
+                    {requests.length === 0
+                      ? "Nothing has been asked for. Requests raised here or from the stock entry form appear here."
+                      : "No request matches that."}
                   </TableCell>
                 </TableRow>
               ) : (
-                requests.map((request) => {
+                shown.map((request) => {
                   const isMine = request.requestedBy.id === viewerId;
                   const canReview =
                     request.status === "PENDING" &&
@@ -200,7 +235,7 @@ function ReviewActions({
   categories: ReviewCategory[];
   /** Unused here: the reviewer types the code either way. Kept for the caller. */
   canOverrideCode: boolean;
-  rules: { requireSubcategory: boolean; requireDescription: boolean };
+  rules: CatalogRules;
 }) {
   const router = useRouter();
   const [approveOpen, setApproveOpen] = useState(false);
@@ -211,6 +246,7 @@ function ReviewActions({
   // Category requests carry only a name, so the reviewer chooses the code the
   // new category will hand out. Nothing generates one.
   const [categoryCode, setCategoryCode] = useState("");
+  const categoryCodeProblem = categoryCodeError(categoryCode, rules.categoryCodeLength);
   const [name, setName] = useState(request.name);
   const [categoryId, setCategoryId] = useState(request.category?.id ?? "");
   // Pre-filled with what the asker suggested, so a reviewer who agrees does not
@@ -238,7 +274,7 @@ function ReviewActions({
         categoryId: isProduct ? categoryId : undefined,
         subcategoryId: isProduct ? subcategoryId || undefined : undefined,
         description: isProduct ? description.trim() || undefined : undefined,
-        codePrefix: isProduct ? undefined : categoryCode.trim(),
+        codePrefix: isProduct ? undefined : categoryCode.trim().toUpperCase(),
       });
       if ("error" in result) {
         toast.error(result.error);
@@ -285,7 +321,7 @@ function ReviewActions({
       </Button>
 
       <Dialog open={approveOpen} onOpenChange={setApproveOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>
               {isProduct ? "Approve & add product" : "Approve & add category"}
@@ -358,7 +394,10 @@ function ReviewActions({
                 )}
 
                 <div className="space-y-2">
-                  <Label htmlFor={`code-${request.id}`}>Product code *</Label>
+                  <Label htmlFor={`code-${request.id}`}>
+                    Product code
+                    <span className="ml-1 font-normal text-muted-foreground">(optional)</span>
+                  </Label>
                   <div className="flex items-stretch rounded-md border focus-within:ring-2 focus-within:ring-ring">
                     <span className="flex select-none items-center rounded-l-md border-r bg-muted px-3 font-mono text-sm font-semibold text-muted-foreground">
                       {leader ?? "—"}
@@ -367,15 +406,17 @@ function ReviewActions({
                       id={`code-${request.id}`}
                       value={code}
                       onChange={(e) => setCode(e.target.value.toUpperCase())}
-                      placeholder={categoryId ? "TV55" : "Pick a category first"}
+                      placeholder={categoryId ? "001 — left blank, numbered automatically" : "Pick a category first"}
                       className="rounded-l-none border-0 font-mono shadow-none focus-visible:ring-0"
                       disabled={!categoryId}
                     />
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {categoryId
-                      ? `The code will be ${leader ?? ""}${code || "…"}`
-                      : "Choose a category and its code prefix fills in here."}
+                    {!categoryId
+                      ? "Choose a category and its code prefix fills in here."
+                      : code.trim()
+                        ? `The code will be ${leader ?? ""}${code.trim()}`
+                        : "Leave it blank and it takes the next number in this subcategory — 001, then 002."}
                   </p>
                 </div>
 
@@ -414,17 +455,20 @@ function ReviewActions({
                 <Input
                   id={`catcode-${request.id}`}
                   value={categoryCode}
-                  onChange={(e) => setCategoryCode(e.target.value)}
-                  placeholder="e.g. 1001"
-                  inputMode="numeric"
-                  maxLength={4}
+                  onChange={(e) => setCategoryCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. 1001 or ELEC"
+                  maxLength={rules.categoryCodeLength}
                   className="font-mono"
                   required
                 />
                 <p className="text-xs text-muted-foreground">
-                  Exactly 4 digits, unused by any other category. Every product
-                  code in it will start with this.
+                  Letters, numbers or both, up to {rules.categoryCodeLength} character
+                  {rules.categoryCodeLength === 1 ? "" : "s"}, unused by any other
+                  category. Every product code in it will start with this.
                 </p>
+                {categoryCode.trim() && categoryCodeProblem && (
+                  <p className="text-xs text-destructive">{categoryCodeProblem}</p>
+                )}
               </div>
             )}
 
@@ -438,8 +482,8 @@ function ReviewActions({
                   approving ||
                   !name.trim() ||
                   (isProduct
-                    ? !categoryId || !code.trim()
-                    : !CODE_PREFIX_PATTERN.test(categoryCode.trim()))
+                    ? !categoryId
+                    : !!categoryCodeProblem)
                 }
                 className="bg-brand-green hover:bg-brand-green/90 text-brand-navy font-semibold"
               >
@@ -452,7 +496,7 @@ function ReviewActions({
       </Dialog>
 
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Decline request</DialogTitle>
           </DialogHeader>

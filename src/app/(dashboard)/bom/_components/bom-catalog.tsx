@@ -104,7 +104,7 @@ export function BomCatalog({ products, canEdit, canCreate, canApprove }: Props) 
           items={STATE_FILTER_ITEMS}
           onValueChange={(v) => setStateFilter((v as string) ?? "all")}
         >
-          <SelectTrigger className="w-[210px]">
+          <SelectTrigger className="w-auto min-w-[210px] max-w-full">
             <SelectValue placeholder="All products" />
           </SelectTrigger>
           <SelectContent>

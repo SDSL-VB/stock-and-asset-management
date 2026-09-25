@@ -1,9 +1,19 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { BellRing, Layers, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  BellRing,
+  ChevronDown,
+  ChevronRight,
+  Layers,
+  Loader2,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -37,6 +47,12 @@ import type { StockLevelRow } from "@/lib/low-stock";
  * "Raise needs" opens the "What do you need?" dialog filled in with every
  * "order now" item at that site — the suggested quantity and the preferred
  * vendor — for the person to check, date and send as one need request.
+ *
+ * Within a site the components are grouped by the BILL OF MATERIALS they are
+ * watched for, so a Machine Power Component and a BLDC panel are two things to
+ * read rather than thirty loose parts. Each group opens to its components.
+ * Products watched by hand are not part of any BOM and are listed on their own
+ * at the end.
  *
  * The reorder point is daily use × lead time + minimum; src/lib/low-stock.ts
  * holds the rule. A product with no use yet reorders at its minimum alone.
@@ -223,6 +239,47 @@ function WatchDialog({
   );
 }
 
+/**
+ * One bill of materials' components at one site, or the hand-watched ones.
+ *
+ * Grouped by the BOM each component is watched FOR, which is the one whose
+ * requirement set its minimum (src/lib/low-stock-bom.ts) — so a component used
+ * by two products appears once, under the product that needs the most of it.
+ */
+type LowStockGroup = {
+  key: string;
+  /** Null for the "watched by hand" group, which is nobody's BOM */
+  bomProductName: string | null;
+  rows: StockLevelRow[];
+  toOrder: number;
+};
+
+function groupByBom(locationId: string, rows: StockLevelRow[]): LowStockGroup[] {
+  const byBom = new Map<string, LowStockGroup>();
+  const byHand: StockLevelRow[] = [];
+
+  for (const row of rows) {
+    if (!row.bom) {
+      byHand.push(row);
+      continue;
+    }
+    const key = `${locationId}:${row.bom.id}`;
+    const group = byBom.get(key) ?? { key, bomProductName: row.bom.productName, rows: [], toOrder: 0 };
+    group.rows.push(row);
+    byBom.set(key, group);
+  }
+
+  const groups = [...byBom.values()].sort((a, b) =>
+    (a.bomProductName ?? "").localeCompare(b.bomProductName ?? "")
+  );
+  if (byHand.length > 0) {
+    groups.push({ key: `${locationId}:by-hand`, bomProductName: null, rows: byHand, toOrder: 0 });
+  }
+  for (const group of groups) group.toOrder = group.rows.filter((r) => r.needsAction).length;
+  // Whatever needs ordering first, so the urgent group is at the top
+  return groups.sort((a, b) => b.toOrder - a.toOrder);
+}
+
 export function LowStockPanel({
   rows,
   form,
@@ -240,15 +297,27 @@ export function LowStockPanel({
   const [dialog, setDialog] = useState<{ editing: StockLevelRow | null } | null>(null);
   const [asking, setAsking] = useState<NeedPrefill | null>(null);
   const [syncing, startSync] = useTransition();
+  // Which BOM groups are open. Collapsed to start: the header already says how
+  // many of its components need ordering, so nothing urgent is hidden.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
 
-  // One block per site: the alert is per site, and so is raising needs
+  const toggleGroup = (key: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+
+  // One block per site: the alert is per site, and so is raising needs. Within
+  // it, one group per bill of materials, then whatever is watched by hand.
   const sites = useMemo(() => {
-    const bySite = new Map<string, { name: string; rows: StockLevelRow[] }>();
+    const bySite = new Map<string, { name: string; rows: StockLevelRow[]; groups: LowStockGroup[] }>();
     for (const r of rows) {
-      const site = bySite.get(r.locationId) ?? { name: r.locationName, rows: [] };
+      const site = bySite.get(r.locationId) ?? { name: r.locationName, rows: [], groups: [] };
       site.rows.push(r);
       bySite.set(r.locationId, site);
     }
+    for (const [locationId, site] of bySite) site.groups = groupByBom(locationId, site.rows);
     return [...bySite.entries()].sort(([, a], [, b]) => a.name.localeCompare(b.name));
   }, [rows]);
 
@@ -347,67 +416,109 @@ export function LowStockPanel({
                     </tr>
                   </thead>
                   <tbody>
-                    {site.rows.map((r) => (
-                      <tr key={r.stockLevelId} className="border-t align-top">
-                        <td className="px-3 py-2">
-                          <span className="font-mono text-xs text-muted-foreground">{r.code}</span>{" "}
-                          {r.name}
-                          {r.fromBom && (
-                            <Badge variant="outline" className="ml-1.5 gap-1 text-micro" title="Watched because it is in a BOM">
-                              <Layers className="h-3 w-3" />
-                              From BOM
-                            </Badge>
-                          )}
-                          {r.description && <span className="block text-micro text-muted-foreground">{r.description}</span>}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums">{qty(r.available)} {r.unit}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {qty(r.reorderPoint)}
-                          <span className="block text-micro text-muted-foreground">min {qty(r.minimum)}</span>
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {r.dailyUse === null ? <span className="text-micro text-muted-foreground">no use yet</span> : qty(r.dailyUse)}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-start gap-1">
-                            <div className="min-w-0 flex-1">
-                              {r.vendor ? (
-                                <>
-                                  {r.vendor.name}
-                                  <span className="block text-micro text-muted-foreground">{r.leadTimeDays} days</span>
-                                </>
-                              ) : (
-                                <span className="text-micro text-muted-foreground">not recorded</span>
-                              )}
-                            </div>
-                            <SuppliersDialog side={{ kind: "product", id: r.productId, name: r.name }} canEdit={canManage} />
-                          </div>
-                        </td>
-                        <td className="px-3 py-2"><StatusCell row={r} /></td>
-                        {canManage && (
-                          <td className="px-3 py-2">
-                            <div className="flex justify-end gap-1">
-                              <Button variant="ghost" size="sm" aria-label="Edit" onClick={() => setDialog({ editing: r })}>
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                aria-label="Stop watching"
-                                onClick={async () => {
-                                  const res = await removeStockLevel(r.stockLevelId);
-                                  if ("error" in res) return toast.error(res.error);
-                                  toast.success(`Stopped watching ${r.name} at ${r.locationName}`);
-                                  router.refresh();
-                                }}
+                    {site.groups.map((group) => {
+                      const open = openGroups.has(group.key);
+                      const columns = canManage ? 7 : 6;
+                      return (
+                        <Fragment key={group.key}>
+                          {/* The bill of materials this lot is watched for.
+                              Click it to see the components. */}
+                          <tr className="border-t bg-muted/30">
+                            <td colSpan={columns} className="px-0 py-0">
+                              <button
+                                type="button"
+                                onClick={() => toggleGroup(group.key)}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/60"
                               >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        )}
-                      </tr>
-                    ))}
+                                {open ? (
+                                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                )}
+                                <span className="min-w-0 flex-1">
+                                  <span className="text-sm font-medium">
+                                    {group.bomProductName ?? "Watched by hand"}
+                                  </span>
+                                  <span className="ml-1.5 text-micro text-muted-foreground">
+                                    {group.bomProductName
+                                      ? `${group.rows.length} component${group.rows.length === 1 ? "" : "s"}`
+                                      : `${group.rows.length} product${group.rows.length === 1 ? "" : "s"}`}
+                                  </span>
+                                </span>
+                                {group.toOrder > 0 && (
+                                  <Badge variant="outline" className={toneStyles("rejected").pill}>
+                                    {group.toOrder} to order
+                                  </Badge>
+                                )}
+                              </button>
+                            </td>
+                          </tr>
+
+                          {open &&
+                            group.rows.map((r) => (
+                              <tr key={r.stockLevelId} className="border-t align-top">
+                                <td className="px-3 py-2">
+                                  <span className="font-mono text-xs text-muted-foreground">{r.code}</span>{" "}
+                                  {r.name}
+                                  {r.fromBom && (
+                                    <Badge variant="outline" className="ml-1.5 gap-1 text-micro" title="Watched because it is in a BOM">
+                                      <Layers className="h-3 w-3" />
+                                      From BOM
+                                    </Badge>
+                                  )}
+                                  {r.description && <span className="block text-micro text-muted-foreground">{r.description}</span>}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums">{qty(r.available)} {r.unit}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">
+                                  {qty(r.reorderPoint)}
+                                  <span className="block text-micro text-muted-foreground">min {qty(r.minimum)}</span>
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums">
+                                  {r.dailyUse === null ? <span className="text-micro text-muted-foreground">no use yet</span> : qty(r.dailyUse)}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <div className="flex items-start gap-1">
+                                    <div className="min-w-0 flex-1">
+                                      {r.vendor ? (
+                                        <>
+                                          {r.vendor.name}
+                                          <span className="block text-micro text-muted-foreground">{r.leadTimeDays} days</span>
+                                        </>
+                                      ) : (
+                                        <span className="text-micro text-muted-foreground">not recorded</span>
+                                      )}
+                                    </div>
+                                    <SuppliersDialog side={{ kind: "product", id: r.productId, name: r.name }} canEdit={canManage} />
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2"><StatusCell row={r} /></td>
+                                {canManage && (
+                                  <td className="px-3 py-2">
+                                    <div className="flex justify-end gap-1">
+                                      <Button variant="ghost" size="sm" aria-label="Edit" onClick={() => setDialog({ editing: r })}>
+                                        <Pencil className="h-4 w-4" />
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        aria-label="Stop watching"
+                                        onClick={async () => {
+                                          const res = await removeStockLevel(r.stockLevelId);
+                                          if ("error" in res) return toast.error(res.error);
+                                          toast.success(`Stopped watching ${r.name} at ${r.locationName}`);
+                                          router.refresh();
+                                        }}
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    </div>
+                                  </td>
+                                )}
+                              </tr>
+                            ))}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

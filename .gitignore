@@ -52,3 +52,6 @@ next-env.d.ts
 *probe.log
 # Database dumps: contain password hashes, never commit
 backups/
+
+# Scratch space for testing — not part of the app (see temp-testing/README.md)
+temp-testing/

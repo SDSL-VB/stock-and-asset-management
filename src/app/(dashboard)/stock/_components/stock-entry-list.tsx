@@ -23,11 +23,14 @@ import {
   EntryFilters,
   SOURCE_LABEL,
   sourceOf,
+  withinDates,
   type Filters,
 } from "./entry-filters";
 import { KIND_LABEL } from "@/lib/vocabulary";
 import { heldQuantity } from "@/lib/stock-availability";
 import { formatMoney } from "@/lib/format";
+import { toCsv } from "@/lib/csv";
+import { toast } from "sonner";
 import { statusPill } from "@/lib/design/status";
 
 /**
@@ -117,6 +120,8 @@ interface Props {
   /** Read from the URL by the page, so a shared link opens the same view */
   initialFilters?: {
     status?: string;
+    from?: string;
+    to?: string;
     source?: string;
     kind?: string;
     category?: string;
@@ -363,6 +368,8 @@ export function StockEntryList({
     category: initialFilters?.category ?? "ALL",
     site: initialFilters?.site ?? "ALL",
     holding: oneOf(initialFilters?.holding, ["ALL", "STOCK", "ASSET"] as const, "ALL"),
+    from: initialFilters?.from ?? "",
+    to: initialFilters?.to ?? "",
   });
   const [summaryEntry, setSummaryEntry] = useState<StockEntry | null>(null);
   const [docsEntry, setDocsEntry] = useState<StockEntry | null>(null);
@@ -387,6 +394,8 @@ export function StockEntryList({
     if (next.category !== "ALL") params.set("category", next.category);
     if (next.site !== "ALL") params.set("site", next.site);
     if (next.holding !== "ALL") params.set("holding", next.holding);
+    if (next.from) params.set("from", next.from);
+    if (next.to) params.set("to", next.to);
     const query = params.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
@@ -431,8 +440,52 @@ export function StockEntryList({
     if (filters.category !== "ALL" && e.product?.category.id !== filters.category) return false;
     if (filters.site !== "ALL" && e.location?.id !== filters.site) return false;
     if (filters.holding !== "ALL" && (e.isAsset ? "ASSET" : "STOCK") !== filters.holding) return false;
+    if (!withinDates(e.createdAt, filters)) return false;
     return true;
   });
+
+  /**
+   * Take away exactly what is on screen — the status tab, every filter and the
+   * dates, in the order the table shows them. Built here from rows already
+   * loaded rather than asked of the server, so what downloads cannot differ
+   * from what was being looked at. Money columns follow stock.value.view.
+   */
+  function exportFiltered() {
+    const headers = [
+      "Entry Number", "Booked In", "Status", "Item Code", "Item", "Supplier",
+      "How It Arrived", "Quantity", "Still Here", "Unit",
+      ...(canSeeValue ? ["Unit Price", "Total Price"] : []),
+      "Site", "Rack", "Department", "Batch Number", "Invoice Number", "Asset", "Booked In By",
+    ];
+    const rows = filtered.map((e) => [
+      e.entryNumber,
+      new Date(e.createdAt).toLocaleDateString("en-IN"),
+      e.status,
+      e.itemCode ?? "",
+      e.itemName,
+      e.supplierName,
+      SOURCE_LABEL[sourceOf(e)],
+      e.quantity.toString(),
+      leftOf(e).toString(),
+      e.product?.kind ? KIND_LABEL[e.product.kind] : "",
+      ...(canSeeValue ? [e.unitPrice.toFixed(2), e.totalPrice.toFixed(2)] : []),
+      e.location?.name ?? "",
+      e.rackLocation ?? "",
+      e.department?.name ?? "",
+      e.batchNumber ?? "",
+      e.invoiceNumber ?? "",
+      e.isAsset ? "Yes" : "No",
+      e.createdBy.name,
+    ]);
+
+    const blob = new Blob([toCsv(headers, rows)], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `stock-entries-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    toast.success(`Exported ${rows.length} ${rows.length === 1 ? "entry" : "entries"}`);
+  }
 
   // How many the status tab alone would show, so "showing 3 of 9" compares
   // like with like rather than against the whole company's stock.
@@ -475,6 +528,7 @@ export function StockEntryList({
         options={options}
         showing={filtered.length}
         total={beforeFilters}
+        onExport={exportFiltered}
       />
 
       <DataTable

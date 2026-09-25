@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import { stockLevelReport } from "@/lib/low-stock";
+import { bomOwnerOf } from "@/lib/low-stock-bom";
 import { deliveredEntriesWhere } from "@/lib/procurement-delivery";
 import { formatDateTime } from "@/lib/format";
 import { notify, notifyHolders } from "./notify";
@@ -36,16 +37,40 @@ export async function runWatchChecks(options: { force?: boolean } = {}): Promise
   await Promise.all([announceLowStock(), announceLateOrders()]);
 }
 
+/**
+ * Every watched product that needs ordering, told to the people who can see
+ * that site — and only them. Somebody who cannot open Hyderabad's stock is not
+ * told what Hyderabad is short of, even when the watch came from a bill of
+ * materials they work with.
+ *
+ * Components of one BOM at one site are tagged with the same group, so the
+ * bell shows "4 components low for BLDC_Controller at Bengaluru" and opens to
+ * the four. They stay four notifications: each is a separate thing to order,
+ * to read and to mark read.
+ */
 async function announceLowStock() {
   const rows = (await stockLevelReport()).filter((r) => r.needsAction);
+  const owners = await bomOwnerOf([...new Set(rows.map((r) => r.productId))]);
+
   for (const r of rows) {
-    await notifyHolders(PERMISSIONS.STOCK_LOWSTOCK_VIEW, {}, {
-      kind: "LOW_STOCK",
-      title: `${r.name} needs ordering at ${r.locationName}`,
-      body: `${r.available} ${r.unit} left${r.lowSince ? `, low since ${formatDateTime(r.lowSince.at)}` : ""} — ask for ${r.suggestedQuantity} ${r.unit}`,
-      href: "/procurement#low-stock",
-      dedupeKey: `low:${r.stockLevelId}:${r.lowSince?.at.toISOString() ?? "unknown"}`,
-    });
+    const owner = owners.get(r.productId);
+    await notifyHolders(
+      PERMISSIONS.STOCK_LOWSTOCK_VIEW,
+      { locationId: r.locationId },
+      {
+        kind: "LOW_STOCK",
+        title: `${r.name} needs ordering at ${r.locationName}`,
+        body: `${r.available} ${r.unit} left${r.lowSince ? `, low since ${formatDateTime(r.lowSince.at)}` : ""} — ask for ${r.suggestedQuantity} ${r.unit}`,
+        href: "/procurement#low-stock",
+        dedupeKey: `low:${r.stockLevelId}:${r.lowSince?.at.toISOString() ?? "unknown"}`,
+        ...(owner
+          ? {
+              groupKey: `bom:${owner.bomId}:${r.locationId}`,
+              groupLabel: `${owner.productName} at ${r.locationName}`,
+            }
+          : {}),
+      }
+    );
   }
 }
 

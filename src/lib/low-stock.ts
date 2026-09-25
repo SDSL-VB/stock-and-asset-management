@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { bomOwnerOf } from "@/lib/low-stock-bom";
 import { deliveredEntriesWhere } from "@/lib/procurement-delivery";
 import {
   availableQuantity,
@@ -66,6 +67,13 @@ export type StockLevelRow = {
   stockLevelId: string;
   /** Watched because it is in a published BOM, with a minimum kept from it */
   fromBom: boolean;
+  /**
+   * The bill of materials this component is watched FOR — the one whose
+   * requirement set its minimum. Null for a product watched by hand. The
+   * low-stock card and the bell both group by it, so the parts of a BLDC panel
+   * read as one thing rather than as eleven unrelated shortages.
+   */
+  bom: { id: string; productName: string } | null;
   productId: string;
   code: string;
   name: string;
@@ -256,7 +264,7 @@ export async function stockLevelReport(
   const productIds = [...new Set(watched.map((l) => l.productId))];
   const locationIds = [...new Set(watched.map((l) => l.locationId))];
 
-  const [entries, coming] = await Promise.all([
+  const [entries, coming, bomOwners] = await Promise.all([
     prisma.stockEntry.findMany({
       where: {
         productId: { in: productIds },
@@ -294,6 +302,8 @@ export async function stockLevelReport(
       },
     }),
     onTheWay(productIds, locationIds),
+    // Which BOM each watched component belongs to, for the grouping
+    bomOwnerOf(productIds),
   ]);
 
   // productId|locationId → what is free, what left recently, and since when
@@ -375,9 +385,12 @@ export async function stockLevelReport(
     const stillShort = reorderPoint - available - onTheWay;
     const needsAction = isLow && stillShort >= 0;
 
+    const owner = bomOwners.get(level.productId);
+
     return {
       stockLevelId: level.id,
       fromBom: level.fromBom,
+      bom: owner ? { id: owner.bomId, productName: owner.productName } : null,
       productId: level.productId,
       code: level.product.code,
       name: level.product.name,

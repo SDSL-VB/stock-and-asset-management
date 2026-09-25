@@ -22,6 +22,8 @@ import { revalidatePath } from "next/cache";
 import { lockEntries } from "@/lib/stock-locks";
 import { NO_SITE } from "@/lib/stock-visibility";
 import { toCsv } from "@/lib/csv";
+import { DISPATCH_STATUS_LABEL } from "@/lib/vocabulary";
+import { renderDispatchReceiptPdf } from "@/lib/dispatch-receipt-pdf";
 
 /**
  * FLOW: goods leaving — to another site, or to a client.
@@ -61,6 +63,9 @@ export async function getDispatches() {
   }
 
   const canSeeClientDetail = user.permissions.includes(PERMISSIONS.CLIENTS_VIEW);
+  // What the consignment is worth is its own grant, exactly as on a stock
+  // entry: quantities are readable by everyone who can see the consignment.
+  const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
 
   const dispatches = await prisma.dispatch.findMany({
     where,
@@ -76,7 +81,7 @@ export async function getDispatches() {
       items: {
         include: {
           stockEntry: {
-            select: { id: true, entryNumber: true, itemCode: true, itemName: true },
+            select: { id: true, entryNumber: true, itemCode: true, itemName: true, unitPrice: true },
           },
         },
       },
@@ -112,6 +117,10 @@ export async function getDispatches() {
         }
       : null,
     canSeeClientDetail,
+    // What it is worth: each line at the price the goods were booked in at,
+    // and the consignment as the sum. Taken from the source entry rather than
+    // stored, so it cannot drift from what the entry says — the same price
+    // markDispatchReceived() gives the entry it creates at the far end.
     items: d.items.map((i) => ({
       id: i.id,
       batchNumber: i.batchNumber,
@@ -121,7 +130,12 @@ export async function getDispatches() {
       entryNumber: i.stockEntry.entryNumber,
       itemCode: i.stockEntry.itemCode,
       itemName: i.stockEntry.itemName,
+      unitPrice: canSeeValue ? i.stockEntry.unitPrice : null,
+      value: canSeeValue ? i.quantity * i.stockEntry.unitPrice : null,
     })),
+    totalValue: canSeeValue
+      ? d.items.reduce((sum, i) => sum + i.quantity * i.stockEntry.unitPrice, 0)
+      : null,
   }));
 }
 
@@ -637,6 +651,9 @@ export async function lookupBatch(batchNumber: string) {
   }
 
   const canSeeClientDetail = user.permissions.includes(PERMISSIONS.CLIENTS_VIEW);
+  // What the consignment is worth is its own grant, exactly as on a stock
+  // entry: quantities are readable by everyone who can see the consignment.
+  const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
 
   // One batch legitimately goes to several customers, so a recall needs the
   // whole list, not the first row.
@@ -673,13 +690,98 @@ export async function lookupBatch(batchNumber: string) {
 }
 
 /**
+ * One consignment as a PDF receipt — what travels with the goods and what a
+ * client signs.
+ *
+ * Reading the consignment is enough to take the receipt: it carries nothing the
+ * screen does not already show the same person. Value follows stock.value.view
+ * exactly as it does on screen, and is left out of the document entirely
+ * without it, so the layout never has to decide anything.
+ */
+export async function exportDispatchReceipt(id: string) {
+  const user = await requireAnyPermission(DISPATCH_PERMISSIONS);
+  const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
+  const canSeeClientDetail = user.permissions.includes(PERMISSIONS.CLIENTS_VIEW);
+
+  const dispatch = await prisma.dispatch.findUnique({
+    where: { id },
+    include: {
+      originLocation: { select: { name: true } },
+      toLocation: { select: { name: true } },
+      client: { select: { name: true, city: true, gstNumber: true, address: true } },
+      createdBy: { select: { name: true } },
+      receivedBy: { select: { name: true } },
+      items: {
+        include: {
+          stockEntry: {
+            select: { entryNumber: true, itemCode: true, itemName: true, unitPrice: true },
+          },
+        },
+      },
+    },
+  });
+  if (!dispatch) return { error: "That consignment does not exist" };
+
+  // Seen exactly as the list decides: a site's own consignments, or every one
+  // for somebody who sees every site. Not visible is reported as not existing.
+  const scope = resolveStockScope(user);
+  if (scope !== "all") {
+    const site = user.locationId ?? NO_SITE;
+    if (dispatch.originLocationId !== site && dispatch.toLocationId !== site) {
+      return { error: "That consignment does not exist" };
+    }
+  }
+
+  const lines = dispatch.items.map((i) => ({
+    entryNumber: i.stockEntry.entryNumber,
+    itemCode: i.stockEntry.itemCode,
+    itemName: i.stockEntry.itemName,
+    batchNumber: i.batchNumber,
+    quantity: i.quantity,
+    isAsset: i.isAsset,
+    unitPrice: canSeeValue ? i.stockEntry.unitPrice : null,
+    value: canSeeValue ? i.quantity * i.stockEntry.unitPrice : null,
+  }));
+
+  const bytes = await renderDispatchReceiptPdf({
+    dispatchNumber: dispatch.dispatchNumber,
+    status: DISPATCH_STATUS_LABEL[dispatch.status] ?? dispatch.status,
+    raisedOn: dispatch.createdAt,
+    raisedBy: dispatch.createdBy.name,
+    from: dispatch.originLocation.name,
+    to: dispatch.destination === "CLIENT" ? (dispatch.client?.name ?? "Client") : (dispatch.toLocation?.name ?? "-"),
+    toKind: dispatch.destination === "CLIENT" ? "Client" : "Site",
+    clientCity: dispatch.client?.city ?? null,
+    clientGst: canSeeClientDetail ? (dispatch.client?.gstNumber ?? null) : null,
+    clientAddress: canSeeClientDetail ? (dispatch.client?.address ?? null) : null,
+    receivedOn: dispatch.receivedAt,
+    receivedBy: dispatch.receivedBy?.name ?? null,
+    notes: dispatch.notes,
+    lines,
+    totalValue: canSeeValue ? lines.reduce((sum, l) => sum + (l.value ?? 0), 0) : null,
+  });
+
+  await logActivity(
+    "EXPORTED",
+    "Dispatch",
+    dispatch.id,
+    `Downloaded the receipt for ${dispatch.dispatchNumber}`
+  );
+
+  return { pdf: Buffer.from(bytes).toString("base64"), fileName: `${dispatch.dispatchNumber}.pdf` };
+}
+
+/**
  * Dispatch report as CSV. Its own permission, because downloading a movement
- * history is a different act from reading the screen. No monetary columns —
- * dispatch never shows value anywhere, and an export should not be the hole in
- * that rule.
+ * history is a different act from reading the screen.
+ *
+ * Money follows the screen exactly: the unit price and line value columns are
+ * there for whoever holds stock.value.view and absent for everyone else, so an
+ * export can never be the hole in that rule.
  */
 export async function exportDispatchReport() {
   const user = await requirePermission(PERMISSIONS.DISPATCH_EXPORT);
+  const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
 
   const scope = resolveStockScope(user);
   const site = user.locationId ?? NO_SITE;
@@ -697,7 +799,7 @@ export async function exportDispatchReport() {
       receivedBy: { select: { name: true } },
       items: {
         include: {
-          stockEntry: { select: { entryNumber: true, itemCode: true, itemName: true } },
+          stockEntry: { select: { entryNumber: true, itemCode: true, itemName: true, unitPrice: true } },
         },
       },
     },
@@ -716,6 +818,7 @@ export async function exportDispatchReport() {
     "Item Code",
     "Item",
     "Quantity",
+    ...(canSeeValue ? ["Unit Price", "Line Value"] : []),
     "Asset",
     "Batch Number",
     "Raised By",
@@ -739,6 +842,9 @@ export async function exportDispatchReport() {
       i.stockEntry.itemCode ?? "",
       i.stockEntry.itemName,
       i.quantity.toString(),
+      ...(canSeeValue
+        ? [i.stockEntry.unitPrice.toFixed(2), (i.quantity * i.stockEntry.unitPrice).toFixed(2)]
+        : []),
       i.isAsset ? "Yes" : "No",
       i.batchNumber ?? "",
       d.createdBy.name,

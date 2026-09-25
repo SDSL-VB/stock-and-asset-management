@@ -101,8 +101,9 @@ export async function getIntents() {
       location: { select: { name: true } },
       requestedBy: { select: { name: true } },
       reviewedBy: { select: { name: true } },
-      // Raised as part of a list — the Needs table opens it from here
-      needList: { select: { id: true, listNumber: true } },
+      // Raised as part of a list — the Needs table clubs its needs into one
+      // row from here, and opens the list itself from the same place
+      needList: { select: { id: true, listNumber: true, notes: true } },
       orderLines: {
         select: { purchaseOrder: { select: { id: true, poNumber: true, status: true } } },
       },
@@ -130,8 +131,6 @@ export async function approveIntent(id: string, data: unknown = {}) {
   if (intent.status !== "PENDING") {
     return { error: `This has already been ${intent.status.toLowerCase()}` };
   }
-  // Nobody signs off their own request
-  if (intent.requestedById === user.id) return { error: "You raised this need, so someone else has to review it" };
 
   await prisma.purchaseIntent.update({
     where: { id },
@@ -173,8 +172,6 @@ export async function rejectIntent(id: string, data: unknown) {
   if (intent.status !== "PENDING") {
     return { error: `This has already been ${intent.status.toLowerCase()}` };
   }
-  // Nobody signs off their own request
-  if (intent.requestedById === user.id) return { error: "You raised this need, so someone else has to review it" };
 
   await prisma.purchaseIntent.update({
     where: { id },
@@ -256,6 +253,8 @@ export async function getOrderableIntents() {
       department: { select: { name: true } },
       location: { select: { id: true, name: true } },
       requestedBy: { select: { name: true } },
+      // Needs raised together are offered together — see the order dialog
+      needList: { select: { id: true, listNumber: true, notes: true } },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -271,9 +270,13 @@ export async function getOrderableIntents() {
     vendorId: i.vendor?.id ?? null,
     vendorName: i.vendor?.name ?? null,
     locationId: i.location?.id ?? null,
+    locationName: i.location?.name ?? null,
     departmentName: i.department?.name ?? null,
     requestedByName: i.requestedBy.name,
     neededBy: i.neededBy,
+    needListId: i.needList?.id ?? null,
+    listNumber: i.needList?.listNumber ?? null,
+    listReason: i.needList?.notes ?? null,
   }));
 }
 
@@ -307,7 +310,16 @@ export async function createPurchaseOrder(data: unknown) {
   const intents = intentIds.length
     ? await prisma.purchaseIntent.findMany({
         where: { id: { in: intentIds } },
-        select: { id: true, intentNumber: true, status: true, productId: true, requestedById: true, product: { select: { name: true } } },
+        select: {
+          id: true,
+          intentNumber: true,
+          status: true,
+          productId: true,
+          locationId: true,
+          requestedById: true,
+          product: { select: { name: true } },
+          location: { select: { name: true } },
+        },
       })
     : [];
   for (const line of lines) {
@@ -322,6 +334,14 @@ export async function createPurchaseOrder(data: unknown) {
       };
     }
     if (intent.productId !== line.productId) return { error: `${intent.intentNumber} is for a different product` };
+    // The order delivers to ONE site, so a need raised for another would be
+    // quietly redirected — the goods would land where nobody asked for them.
+    // A need with no site named suits wherever the order is going.
+    if (intent.locationId && intent.locationId !== locationId) {
+      return {
+        error: `${intent.intentNumber} was raised for ${intent.location?.name ?? "another site"}, but this order delivers to ${location.name}`,
+      };
+    }
   }
 
   const poNumber = await nextReference("PO");

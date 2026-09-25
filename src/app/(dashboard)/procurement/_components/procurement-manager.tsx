@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -34,14 +34,23 @@ import {
 } from "@/lib/actions/procurement";
 import { NeedDialog, type NeedProduct } from "@/components/shared/need-dialog";
 import { NeedListDialog } from "./need-list-dialog";
-import { NewOrderDialog } from "./new-order-dialog";
+import { NewOrderDialog, type Orderable } from "./new-order-dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ClipboardList, PackageSearch, Check, X, Undo2, Loader2 } from "lucide-react";
+import {
+  ClipboardList,
+  PackageSearch,
+  Check,
+  X,
+  Undo2,
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { toneStyles, type StatusTone } from "@/lib/design/status";
 import { updateLeadTimeFromOrder } from "@/lib/actions/suppliers";
-import { NEED_STATUS_LABEL } from "@/lib/vocabulary";
+import { NEED_STATUS_LABEL, requestReason } from "@/lib/vocabulary";
 
 /**
  * The Procurement page: stated needs, and the orders raised against them.
@@ -79,7 +88,8 @@ type Intent = {
   requestedBy: { name: string };
   reviewedBy: { name: string } | null;
   order: { id: string; poNumber: string; status: string } | null;
-  needList: { id: string; listNumber: string } | null;
+  /** Set when this need was raised alongside others in one request */
+  needList: { id: string; listNumber: string; notes: string | null } | null;
 };
 
 type OrderLine = {
@@ -132,21 +142,7 @@ interface Props {
     vendors: { id: string; name: string }[];
     locations: { id: string; name: string }[];
   } | null;
-  orderableIntents: {
-    id: string;
-    intentNumber: string;
-    quantity: number;
-    productId: string;
-    productCode: string;
-    productName: string;
-    unit: string;
-    vendorId: string | null;
-    vendorName: string | null;
-    locationId: string | null;
-    departmentName: string | null;
-    requestedByName: string;
-    neededBy: Date | null;
-  }[];
+  orderableIntents: Orderable[];
   orderForm: {
     vendors: { id: string; name: string }[];
     locations: { id: string; name: string }[];
@@ -284,6 +280,9 @@ function IntentTable({
   const [pending, startTransition] = useTransition();
   const [rejecting, setRejecting] = useState<Intent | null>(null);
   const [note, setNote] = useState("");
+  // Which clubbed request is open. One at a time, as on the Builds list.
+  const [openList, setOpenList] = useState<string | null>(null);
+  const rows = useMemo(() => clubByRequest(intents), [intents]);
 
   if (intents.length === 0) {
     return (
@@ -335,102 +334,45 @@ function IntentTable({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {intents.map((i) => (
-                <TableRow key={i.id}>
-                  <TableCell className="font-mono text-xs">
-                    {i.intentNumber}
-                    {i.needList && (
-                      <div>
-                        <NeedListDialog list={i.needList} canDownload={canDownloadLists} />
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{i.product.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">{i.product.code}</p>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {i.quantity} {i.product.unit}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap">
-                    <div className="min-w-0">
-                      <p className="truncate">{i.requestedBy.name}</p>
-                      {i.department && (
-                        <p className="truncate text-xs text-muted-foreground">
-                          {i.department.name}
-                        </p>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                    {i.vendor?.name ?? "—"}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                    {formatDate(i.neededBy)}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-col items-start gap-1">
-                      <Badge variant="outline" className={cn(INTENT_STATUS[i.status].className)}>
-                        {INTENT_STATUS[i.status].label}
-                      </Badge>
-                      {i.order && (
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {i.order.poNumber}
-                        </span>
-                      )}
-                      {i.reviewNote && i.status === "REJECTED" && (
-                        <span className="text-xs text-muted-foreground">{i.reviewNote}</span>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      {canApprove && i.status === "PENDING" && (
-                        <>
-                          <Button
-                            size="sm"
-                            disabled={pending}
-                            onClick={() => run(() => approveIntent(i.id), `Verified ${i.intentNumber}`)}
-                          >
-                            {pending ? (
-                              <Loader2 className="size-4 animate-spin" />
-                            ) : (
-                              <Check className="size-4" />
-                            )}
-                            Verify
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={pending}
-                            onClick={() => setRejecting(i)}
-                          >
-                            <X className="size-4" />
-                            Decline
-                          </Button>
-                        </>
-                      )}
-                      {canRaise &&
-                        i.requestedById === currentUserId &&
-                        (i.status === "PENDING" || i.status === "APPROVED") && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={pending}
-                            onClick={() =>
-                              run(() => cancelIntent(i.id), `Withdrew ${i.intentNumber}`)
-                            }
-                          >
-                            <Undo2 className="size-4" />
-                            Withdraw
-                          </Button>
-                        )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {rows.map((row) =>
+                row.kind === "need" ? (
+                  <IntentRow
+                    key={row.intent.id}
+                    i={row.intent}
+                    canApprove={canApprove}
+                    canRaise={canRaise}
+                    canDownloadLists={canDownloadLists}
+                    currentUserId={currentUserId}
+                    pending={pending}
+                    run={run}
+                    onDecline={setRejecting}
+                  />
+                ) : (
+                  <Fragment key={row.id}>
+                    <RequestRow
+                      row={row}
+                      expanded={openList === row.id}
+                      onToggle={() => setOpenList(openList === row.id ? null : row.id)}
+                      canDownloadLists={canDownloadLists}
+                    />
+                    {openList === row.id &&
+                      row.needs.map((need) => (
+                        <IntentRow
+                          key={need.id}
+                          i={need}
+                          inRequest
+                          canApprove={canApprove}
+                          canRaise={canRaise}
+                          canDownloadLists={canDownloadLists}
+                          currentUserId={currentUserId}
+                          pending={pending}
+                          run={run}
+                          onDecline={setRejecting}
+                        />
+                      ))}
+                  </Fragment>
+                )
+              )}
             </TableBody>
           </Table>
         </CardContent>
@@ -476,6 +418,227 @@ function IntentTable({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * Needs raised in one request, clubbed into one row.
+ *
+ * The clubbing is by REQUEST — the need list a submission created — and never
+ * by product: two people asking for the same thing are two asks, and each has
+ * to be verified, declined or ordered on its own. A request down to a single
+ * need is left as a plain row, because a group of one only adds a chevron.
+ */
+type NeedRow =
+  | { kind: "need"; intent: Intent }
+  | {
+      kind: "request";
+      id: string;
+      listNumber: string;
+      reason: string | null;
+      needs: Intent[];
+    };
+
+function clubByRequest(intents: Intent[]): NeedRow[] {
+  const rows: NeedRow[] = [];
+  const groups = new Map<string, Extract<NeedRow, { kind: "request" }>>();
+  for (const intent of intents) {
+    if (!intent.needList) {
+      rows.push({ kind: "need", intent });
+      continue;
+    }
+    let group = groups.get(intent.needList.id);
+    if (!group) {
+      group = {
+        kind: "request",
+        id: intent.needList.id,
+        listNumber: intent.needList.listNumber,
+        reason: requestReason(intent.needList.notes),
+        needs: [],
+      };
+      groups.set(intent.needList.id, group);
+      rows.push(group);
+    }
+    group.needs.push(intent);
+  }
+  return rows.map((row) => (row.kind === "request" && row.needs.length === 1 ? { kind: "need", intent: row.needs[0] } : row));
+}
+
+/** The clubbed row: what the request was for, and how its needs are getting on. */
+function RequestRow({
+  row,
+  expanded,
+  onToggle,
+  canDownloadLists,
+}: {
+  row: Extract<NeedRow, { kind: "request" }>;
+  expanded: boolean;
+  onToggle: () => void;
+  canDownloadLists: boolean;
+}) {
+  const first = row.needs[0];
+  const vendors = [...new Set(row.needs.map((n) => n.vendor?.name).filter(Boolean))] as string[];
+  const dates = row.needs.map((n) => n.neededBy).filter(Boolean) as Date[];
+  const earliest = dates.length ? new Date(Math.min(...dates.map((d) => new Date(d).getTime()))) : null;
+  const sameDate = dates.length === row.needs.length && new Set(dates.map((d) => new Date(d).toDateString())).size === 1;
+
+  // One badge when the whole request is at the same stage, a count each when
+  // it has split — some ordered, some still waiting.
+  const counts = new Map<Intent["status"], number>();
+  for (const need of row.needs) counts.set(need.status, (counts.get(need.status) ?? 0) + 1);
+
+  return (
+    <TableRow className="cursor-pointer bg-muted/40 hover:bg-muted/60" onClick={onToggle}>
+      <TableCell className="font-mono text-xs">
+        <span className="flex items-center gap-1">
+          {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+          {row.listNumber}
+        </span>
+        {/* The download sits inside a clickable row, so its own clicks stop here */}
+        <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+          <NeedListDialog list={{ id: row.id, listNumber: row.listNumber }} canDownload={canDownloadLists} />
+        </div>
+      </TableCell>
+      <TableCell>
+        <div className="min-w-0">
+          <p className="truncate font-medium">{row.needs.length} items in one request</p>
+          {row.reason && <p className="truncate text-xs text-muted-foreground">{row.reason}</p>}
+        </div>
+      </TableCell>
+      <TableCell className="text-right text-sm text-muted-foreground">—</TableCell>
+      <TableCell className="whitespace-nowrap">
+        <div className="min-w-0">
+          <p className="truncate">{first.requestedBy.name}</p>
+          {first.department && (
+            <p className="truncate text-xs text-muted-foreground">{first.department.name}</p>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+        {vendors.length === 0 ? "—" : vendors.length === 1 ? vendors[0] : `${vendors.length} vendors`}
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+        {earliest ? `${formatDate(earliest)}${sameDate ? "" : " (earliest)"}` : formatDate(null)}
+      </TableCell>
+      <TableCell>
+        <div className="flex flex-col items-start gap-1">
+          {[...counts].map(([status, count]) => (
+            <Badge key={status} variant="outline" className={cn(INTENT_STATUS[status].className)}>
+              {counts.size === 1 ? INTENT_STATUS[status].label : `${count} ${INTENT_STATUS[status].label.toLowerCase()}`}
+            </Badge>
+          ))}
+        </div>
+      </TableCell>
+      <TableCell className="text-right text-xs text-muted-foreground">
+        {expanded ? "Hide items" : "Show items"}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/** One need: on its own, or as a line of the request clubbed above it. */
+function IntentRow({
+  i,
+  inRequest = false,
+  canApprove,
+  canRaise,
+  canDownloadLists,
+  currentUserId,
+  pending,
+  run,
+  onDecline,
+}: {
+  i: Intent;
+  /** Shown under its clubbed request, which already names the list */
+  inRequest?: boolean;
+  canApprove: boolean;
+  canRaise: boolean;
+  canDownloadLists: boolean;
+  currentUserId: string;
+  pending: boolean;
+  run: (fn: () => Promise<{ error?: string }>, ok: string) => void;
+  onDecline: (intent: Intent) => void;
+}) {
+  return (
+    <TableRow>
+      <TableCell className={cn("font-mono text-xs", inRequest && "pl-8")}>
+        {i.intentNumber}
+        {i.needList && !inRequest && (
+          <div>
+            <NeedListDialog list={i.needList} canDownload={canDownloadLists} />
+          </div>
+        )}
+      </TableCell>
+      <TableCell>
+        <div className="min-w-0">
+          <p className="truncate font-medium">{i.product.name}</p>
+          <p className="truncate text-xs text-muted-foreground">{i.product.code}</p>
+        </div>
+      </TableCell>
+      <TableCell className="text-right tabular-nums">
+        {i.quantity} {i.product.unit}
+      </TableCell>
+      <TableCell className="whitespace-nowrap">
+        <div className="min-w-0">
+          <p className="truncate">{i.requestedBy.name}</p>
+          {i.department && (
+            <p className="truncate text-xs text-muted-foreground">{i.department.name}</p>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+        {i.vendor?.name ?? "—"}
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+        {formatDate(i.neededBy)}
+      </TableCell>
+      <TableCell>
+        <div className="flex flex-col items-start gap-1">
+          <Badge variant="outline" className={cn(INTENT_STATUS[i.status].className)}>
+            {INTENT_STATUS[i.status].label}
+          </Badge>
+          {i.order && (
+            <span className="font-mono text-xs text-muted-foreground">{i.order.poNumber}</span>
+          )}
+          {i.reviewNote && i.status === "REJECTED" && (
+            <span className="text-xs text-muted-foreground">{i.reviewNote}</span>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="text-right">
+        <div className="flex justify-end gap-2">
+          {canApprove && i.status === "PENDING" && (
+            <>
+              <Button
+                size="sm"
+                disabled={pending}
+                onClick={() => run(() => approveIntent(i.id), `Verified ${i.intentNumber}`)}
+              >
+                {pending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+                Verify
+              </Button>
+              <Button size="sm" variant="outline" disabled={pending} onClick={() => onDecline(i)}>
+                <X className="size-4" />
+                Decline
+              </Button>
+            </>
+          )}
+          {canRaise &&
+            i.requestedById === currentUserId &&
+            (i.status === "PENDING" || i.status === "APPROVED") && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={pending}
+                onClick={() => run(() => cancelIntent(i.id), `Withdrew ${i.intentNumber}`)}
+              >
+                <Undo2 className="size-4" />
+                Withdraw
+              </Button>
+            )}
+        </div>
+      </TableCell>
+    </TableRow>
   );
 }
 

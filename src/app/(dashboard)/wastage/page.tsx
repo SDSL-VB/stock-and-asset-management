@@ -1,9 +1,14 @@
 import { requireAnyPermission } from "@/lib/rbac/check";
-import { PERMISSIONS, WASTAGE_PAGE_PERMISSIONS } from "@/lib/rbac/permissions";
+import {
+  PERMISSIONS,
+  WASTAGE_PAGE_PERMISSIONS,
+  WRITE_OFF_RAISE_PERMISSIONS,
+} from "@/lib/rbac/permissions";
 import { getWastageSummary } from "@/lib/actions/write-offs";
 import { PageHeader } from "@/components/shared/page-header";
 import { HowTo } from "@/components/shared/how-to";
 import { WastageBoard } from "./_components/wastage-board";
+import { RecordWastageDialog } from "./_components/record-wastage-dialog";
 
 /**
  * Stock that stopped being stock: damaged, lost, expired, obsolete.
@@ -26,6 +31,9 @@ export default async function WastagePage() {
         title="Wastage"
         description="Stock reported unusable, what a manager decided, and what it cost"
       >
+        {/* Reporting a loss starts here too, not only from the stock entry it
+            came off — this is the page people open when something breaks. */}
+        {WRITE_OFF_RAISE_PERMISSIONS.some((p) => user.permissions.includes(p)) && <RecordWastageDialog />}
         <HowTo
           title="How a write-off works"
           intro="Nothing leaves stock until a manager agrees it should."
@@ -35,7 +43,7 @@ export default async function WastagePage() {
                 {
                   title: "Someone reports it",
                   description:
-                    "A quantity, a reason, and a note saying what happened — raised from the stock entry, or from what a department holds.",
+                    "A quantity, a reason, and a note saying what happened — from \"Report wastage\" here, from the stock entry, or from what a department holds.",
                 },
                 {
                   title: "It is frozen, not removed",

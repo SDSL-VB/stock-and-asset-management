@@ -13,15 +13,38 @@
  * reissued nothing. Whether a subcategory must have a code at all is a stored
  * setting (`catalog_config`), not a rule in here.
  *
- * The category half is never accepted from the browser. Every form shows it
- * locked in front of the input and the server re-reads it from the category, so
- * a posted code cannot claim to belong to a category it does not.
+ * The category half is typed when the category is created — letters, digits or
+ * both, up to the length set in Catalog settings — and is never accepted from
+ * the browser afterwards. Every form shows it locked in front of the input and
+ * the server re-reads it from the category, so a posted code cannot claim to
+ * belong to a category it does not.
  *
  * Everything here is a pure helper, safe to import from client components.
  */
 
-/** A category code is exactly four digits */
-export const CODE_PREFIX_PATTERN = /^\d{4}$/;
+/**
+ * A category code is letters, digits or both — 1001, ELEC, EL01. How LONG it
+ * may be is a stored setting (`catalog_config.categoryCodeLength`), so the
+ * shape is checked here and the length by `categoryCodeError()`, which is given
+ * the setting.
+ */
+export const CATEGORY_CODE_PATTERN = /^[A-Za-z0-9]+$/;
+/** The longest the setting itself may be set to */
+export const CATEGORY_CODE_CEILING = 12;
+
+/** What is wrong with a typed category code, or null when nothing is. */
+export function categoryCodeError(code: string, maxLength: number): string | null {
+  const value = code.trim();
+  if (!value) return "Enter a category code";
+  if (!CATEGORY_CODE_PATTERN.test(value)) {
+    return "A category code is letters and digits only — no spaces, hyphens or symbols";
+  }
+  if (value.length > maxLength) {
+    return `A category code may be at most ${maxLength} character${maxLength === 1 ? "" : "s"} long`;
+  }
+  return null;
+}
+
 /** What a person may type as the last part of a code */
 export const CODE_SUFFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-_]*$/;
 /**
@@ -91,4 +114,54 @@ export function codeSuffixOf(code: string, leader: string | null): string {
   // subcategory being given one.
   const dash = code.indexOf("-");
   return dash === -1 ? code : code.slice(dash + 1);
+}
+
+/**
+ * The tag a subcategory puts on the end of every product name filed under it —
+ * the first four letters of its name, in capitals.
+ *
+ *   "Resistor"  → RESI      12K Resistor      → 12K Resistor_RESI
+ *   "PCB"       → PCB       3W Control Board  → 3W Control Board_PCB
+ *
+ * Spaces and punctuation are dropped first, so "Power Supply" tags as POWE
+ * rather than "POW ". A subcategory whose name is shorter than four letters
+ * contributes what it has.
+ */
+export function nameTagOf(subcategoryName: string): string {
+  return subcategoryName.replace(/[^A-Za-z0-9]/g, "").slice(0, 4).toUpperCase();
+}
+
+/**
+ * A product's name with its subcategory's tag on the end, whatever was typed.
+ *
+ * Applied by the server on every create and edit, so the rule holds however the
+ * product was added — by hand, by approving a request, or in a bulk upload. A
+ * name that already carries the right tag is left alone rather than growing a
+ * second one, which is what makes re-saving a product safe. A product filed
+ * under no subcategory keeps the name as typed.
+ */
+export function applyNameTag(
+  name: string,
+  subcategoryName: string | null | undefined
+): string {
+  const typed = name.trim();
+  if (!subcategoryName) return typed;
+  const tag = nameTagOf(subcategoryName);
+  if (!tag) return typed;
+  return typed.toUpperCase().endsWith(`_${tag}`) ? typed : `${typed}_${tag}`;
+}
+
+/**
+ * A product's number within its subcategory, as it appears in the code: 1 is
+ * 001. Numbers past 999 simply get longer rather than wrapping or colliding.
+ *
+ * A missing or nonsense number reads as 001 rather than "undefined". This is
+ * shown in a preview before anything is saved, and a counter that has not
+ * reached the browser yet — an older page, a pending migration — should look
+ * like the first number, not like a fault. The real number is always allocated
+ * by the server inside the transaction that creates the product.
+ */
+export function sequenceSuffix(n: number | null | undefined): string {
+  const value = typeof n === "number" && Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+  return String(value).padStart(3, "0");
 }

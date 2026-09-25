@@ -25,13 +25,13 @@ export const ACTIVITY_CATEGORIES = {
     permission: PERMISSIONS.ACTIVITY_VIEW_MOVEMENT,
   },
   procurement: {
-    label: "Buying",
+    label: "Procurement",
     hint: "What was asked for, what was ordered, and what is watched for running low",
     entities: ["PurchaseIntent", "PurchaseOrder", "NeedList", "StockLevel", "ProductVendor"],
     permission: PERMISSIONS.ACTIVITY_VIEW_PROCUREMENT,
   },
   movement: {
-    label: "Stock out",
+    label: "Stock movement",
     hint: "Issues to departments, transfers, dispatches, site requests and write-offs",
     entities: [
       "StockIssue",

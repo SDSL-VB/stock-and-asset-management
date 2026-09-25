@@ -232,7 +232,7 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     name: "Edit Code Prefixes",
     module: "products",
     description:
-      "Can change the fixed 4-digit code prefix a category assigns to its products (e.g. 1001)",
+      "Can change a category's own code (e.g. 1001), and change a subcategory's code after it has been created. Choosing the code of a NEW subcategory comes with being allowed to add one.",
   },
   {
     key: "categories.request.approve",
@@ -719,7 +719,7 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
   },
   {
     key: "activity.view.movement",
-    name: "Activity: Stock Out",
+    name: "Activity: Stock Movement",
     module: "activity",
     description:
       "Can read log entries about issues, transfers and dispatches",
@@ -826,7 +826,7 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     name: "Configure the Catalog Rules",
     module: "config",
     description:
-      "Can decide whether a product must be filed under a subcategory, whether a subcategory must carry a code, and whether a product must have a description",
+      "Can open Catalog settings: whether a product must be filed under a subcategory, whether a subcategory must carry a code, whether a product must have a description, and how long a category code may be",
   },
 
   // ---- settings ------------------------------------------------------------

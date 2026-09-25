@@ -112,3 +112,57 @@ export async function syncBomWatches(): Promise<{ added: number; updated: number
 
   return { added: creates.length, updated: updates.length, removed: removals.length };
 }
+
+/**
+ * Which bill of materials a component is watched FOR — the one whose
+ * requirement set its minimum.
+ *
+ * A component used by several products takes the largest requirement
+ * (`quantityPerUnit × lowStockBuilds`), so that BOM is the one the alert is
+ * really about, and it is the one the low-stock notifications are grouped
+ * under. Same arithmetic as the sync above, deliberately: the grouping would
+ * be a lie if it named a different BOM from the one that set the number.
+ *
+ * Returns componentProductId → the product that BOM makes. A component in no
+ * published BOM is absent, which is how a watch added by hand stays ungrouped.
+ */
+export async function bomOwnerOf(
+  componentProductIds: string[]
+): Promise<Map<string, { bomId: string; productId: string; productName: string }>> {
+  if (componentProductIds.length === 0) return new Map();
+
+  const boms = await prisma.billOfMaterials.findMany({
+    where: {
+      status: "PUBLISHED",
+      isActive: true,
+      product: { isActive: true },
+      lines: { some: { componentProductId: { in: componentProductIds } } },
+    },
+    select: {
+      id: true,
+      lowStockBuilds: true,
+      productId: true,
+      product: { select: { name: true } },
+      lines: { select: { componentProductId: true, quantityPerUnit: true } },
+    },
+  });
+
+  const owner = new Map<string, { bomId: string; productId: string; productName: string; needed: number }>();
+  for (const bom of boms) {
+    const builds = Math.max(1, bom.lowStockBuilds);
+    for (const line of bom.lines) {
+      if (!componentProductIds.includes(line.componentProductId)) continue;
+      const needed = line.quantityPerUnit * builds;
+      const held = owner.get(line.componentProductId);
+      if (!held || needed > held.needed) {
+        owner.set(line.componentProductId, {
+          bomId: bom.id,
+          productId: bom.productId,
+          productName: bom.product.name,
+          needed,
+        });
+      }
+    }
+  }
+  return new Map([...owner].map(([id, o]) => [id, { bomId: o.bomId, productId: o.productId, productName: o.productName }]));
+}

@@ -392,6 +392,9 @@ model ProductSubcategory {
   // code. Null means this subcategory adds nothing to a product code.
   code       String?
   isActive   Boolean  @default(true)
+  // The next product number to hand out under this subcategory: 001, 002, …
+  // Products are numbered within their subcategory, not across the catalog.
+  nextSequence Int    @default(1)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -1364,6 +1367,9 @@ model CatalogConfig {
   requireSubcategoryCode Boolean  @default(false)
   // Must a product say, in words, what it is?
   requireDescription     Boolean  @default(false)
+  // How long a category code may be. The code itself is letters, digits or
+  // both — "1004", "ELEC", "EL01" — and is typed, never generated.
+  categoryCodeLength     Int      @default(4)
   updatedById            String?
   updatedAt              DateTime @updatedAt
 
@@ -1457,6 +1463,11 @@ model Notification {
   href       String?
   // Stops one condition being announced twice — "low:<product>:<site>:<since>"
   dedupeKey  String?
+  // Notifications that belong together are shown as one line that opens:
+  // every low component of one bill of materials, at one site. Null stands
+  // alone. The label is what that line reads — "BLDC_Controller at Bengaluru".
+  groupKey   String?
+  groupLabel String?
   readAt     DateTime?
   emailedAt  DateTime?
   digestedAt DateTime?

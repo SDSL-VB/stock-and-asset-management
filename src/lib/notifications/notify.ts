@@ -28,6 +28,9 @@ type Message = {
   body?: string;
   href?: string;
   dedupeKey?: string;
+  /** Shown as one line that opens — see the Notification model */
+  groupKey?: string;
+  groupLabel?: string;
 };
 
 export async function notify(userIds: string[], message: Message): Promise<void> {

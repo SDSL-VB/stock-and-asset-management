@@ -117,7 +117,7 @@ export function ActivityTable({
   const categoryOptions = [
     // "All" only means something when there is more than one to combine
     ...(allowedCategories.length > 1
-      ? [{ value: "all", label: "Everything you can see" }]
+      ? [{ value: "all", label: "All activities" }]
       : []),
     ...allowedCategories.map((key) => ({
       value: key,
@@ -160,7 +160,7 @@ export function ActivityTable({
             items={categoryOptions}
             onValueChange={(v) => applyFilters(v ?? "all", departmentId)}
           >
-            <SelectTrigger className="w-[210px]">
+            <SelectTrigger className="w-auto min-w-[210px] max-w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -184,7 +184,7 @@ export function ActivityTable({
               ]}
               onValueChange={(v) => applyFilters(category, v ?? "all")}
             >
-              <SelectTrigger className="w-[190px]">
+              <SelectTrigger className="w-auto min-w-[190px] max-w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

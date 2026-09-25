@@ -2,7 +2,9 @@
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { X } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Download, X } from "lucide-react";
 import { KIND_LABEL, type ProductKind } from "@/lib/vocabulary";
 
 /**
@@ -37,6 +39,9 @@ export type Filters = {
   category: string;
   site: string;
   holding: "ALL" | "STOCK" | "ASSET";
+  /** When it was booked in. "YYYY-MM-DD", or "" for no bound. */
+  from: string;
+  to: string;
 };
 
 const NO_FILTERS: Filters = {
@@ -45,7 +50,21 @@ const NO_FILTERS: Filters = {
   category: "ALL",
   site: "ALL",
   holding: "ALL",
+  from: "",
+  to: "",
 };
+
+/**
+ * Is this entry within the dates asked for? Both bounds are inclusive, and the
+ * "to" day counts whole — somebody asking for the 23rd means the whole of it,
+ * not up to midnight at its start.
+ */
+export function withinDates(bookedAt: Date, filters: Filters): boolean {
+  const at = new Date(bookedAt).getTime();
+  if (filters.from && at < new Date(`${filters.from}T00:00:00`).getTime()) return false;
+  if (filters.to && at > new Date(`${filters.to}T23:59:59.999`).getTime()) return false;
+  return true;
+}
 
 /** What an entry counts as, for the source filter. */
 export function sourceOf(entry: {
@@ -73,6 +92,8 @@ interface Props {
   };
   showing: number;
   total: number;
+  /** Takes the rows currently on screen away as a CSV */
+  onExport?: () => void;
 }
 
 /** One dropdown, or nothing at all when there is nothing to choose between. */
@@ -112,13 +133,15 @@ function FilterSelect({
   );
 }
 
-export function EntryFilters({ filters, onChange, options, showing, total }: Props) {
+export function EntryFilters({ filters, onChange, options, showing, total, onExport }: Props) {
   const active =
     filters.source !== "ALL" ||
     filters.kind !== "ALL" ||
     filters.category !== "ALL" ||
     filters.site !== "ALL" ||
-    filters.holding !== "ALL";
+    filters.holding !== "ALL" ||
+    filters.from !== "" ||
+    filters.to !== "";
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -153,6 +176,32 @@ export function EntryFilters({ filters, onChange, options, showing, total }: Pro
         onValueChange={(v) => onChange({ ...filters, holding: v as Filters["holding"] })}
       />
 
+      {/* Booked in between two dates. Either end on its own is a valid
+          question — "anything since the 1st" needs no closing date. */}
+      <div className="flex items-center gap-1.5">
+        <Label htmlFor="entries-from" className="text-xs text-muted-foreground">
+          Booked in
+        </Label>
+        <Input
+          id="entries-from"
+          type="date"
+          value={filters.from}
+          max={filters.to || undefined}
+          onChange={(e) => onChange({ ...filters, from: e.target.value })}
+          className="h-9 w-[9.5rem]"
+          aria-label="Booked in from"
+        />
+        <span className="text-xs text-muted-foreground">to</span>
+        <Input
+          type="date"
+          value={filters.to}
+          min={filters.from || undefined}
+          onChange={(e) => onChange({ ...filters, to: e.target.value })}
+          className="h-9 w-[9.5rem]"
+          aria-label="Booked in until"
+        />
+      </div>
+
       {active && (
         <>
           <span className="text-sm text-muted-foreground">
@@ -167,6 +216,13 @@ export function EntryFilters({ filters, onChange, options, showing, total }: Pro
             Clear
           </Button>
         </>
+      )}
+
+      {onExport && (
+        <Button variant="outline" size="sm" className="ml-auto" onClick={onExport} disabled={showing === 0}>
+          <Download className="mr-1 h-3.5 w-3.5" />
+          Export {showing} to CSV
+        </Button>
       )}
     </div>
   );

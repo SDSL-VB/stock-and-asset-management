@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
-import { requirePermission } from "@/lib/rbac/check";
+import { requirePermission, resolveStockScope } from "@/lib/rbac/check";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import { stockLevelReport } from "@/lib/low-stock";
 import { syncBomWatches } from "@/lib/low-stock-bom";
@@ -23,14 +23,31 @@ import { logActivity } from "@/lib/activity-log";
  *   4. (raise needs)      the card's "Raise needs" opens the "What do you
  *                         need?" dialog filled in; requestNeeds() in needs.ts.
  *
- * Every site is shown to whoever holds stock.lowstock.view. The alert carries
- * counts, never prices, and a buyer cannot restock a site they cannot see —
- * the same reasoning that shows every site's availability on the Plan tab.
+ * A low-stock alert follows the same sites as the stock itself. Somebody who
+ * cannot open Hyderabad's stock is not shown what Hyderabad is running out of,
+ * whether the watch was added by hand or came from a bill of materials they
+ * work with — knowing a site is short is knowing what that site holds.
+ * Only stock.scope.all sees every site. The notifications follow the same rule
+ * (src/lib/notifications/checks.ts).
  */
 
+/**
+ * The sites whose low stock this person may see: every site, or their own.
+ * Someone scoped to a site but with no site on record sees none, rather than
+ * all — the same choice the dispatch list makes.
+ */
+function visibleSites(user: {
+  role: string;
+  permissions: string[];
+  locationId?: string | null;
+}): { locationIds?: string[] } {
+  if (resolveStockScope(user) === "all") return {};
+  return { locationIds: user.locationId ? [user.locationId] : [] };
+}
+
 export async function getStockLevels() {
-  await requirePermission(PERMISSIONS.STOCK_LOWSTOCK_VIEW);
-  return stockLevelReport();
+  const user = await requirePermission(PERMISSIONS.STOCK_LOWSTOCK_VIEW);
+  return stockLevelReport(visibleSites(user));
 }
 
 /** What the "Watch a product" form offers. */

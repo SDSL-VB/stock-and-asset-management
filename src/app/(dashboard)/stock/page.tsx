@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StockEntryList } from "./_components/stock-entry-list";
 import { Button } from "@/components/ui/button";
 import { HowTo } from "@/components/shared/how-to";
-import { PackageOpen, Plus } from "lucide-react";
+import { FileUp, PackageOpen, Plus } from "lucide-react";
 import Link from "next/link";
 import { hasPermission } from "@/lib/rbac/check";
 
@@ -47,7 +47,7 @@ export default async function StockPage({
           sections={[
             {
               steps: [
-                { title: "Create the entry", description: "Pick the product from the catalog, enter supplier, quantity, price, and the location where stock was received." },
+                { title: "Create the entry", description: "Pick the product from the catalog, enter supplier, quantity, price, and the location where stock was received. For several items at once, use New Delivery — its lines can be filled from a CSV." },
                 { title: "Attach documents & submit", description: "Upload the required documents (e.g. invoice) and submit for approval." },
                 { title: "Approval", description: "Approvers work through the configured steps. Rejected entries can be edited and resubmitted." },
                 { title: "Stock lands in central stock", description: "Approved quantity sits in central stock for its location until it is moved." },
@@ -72,6 +72,17 @@ export default async function StockPage({
             </Button>
           </Link>
         )}
+        {/* Bulk entry IS a delivery — several lines on one invoice — so this
+            goes to the same form rather than being a third way to book stock
+            in. The form's own "Upload a CSV" strip fills the lines. */}
+        {canCreate && (
+          <Link href="/stock/new?mode=delivery">
+            <Button variant="outline">
+              <FileUp className="mr-2 h-4 w-4" />
+              Upload a list (CSV)
+            </Button>
+          </Link>
+        )}
       </PageHeader>
 
       <StockEntryList
@@ -86,6 +97,8 @@ export default async function StockPage({
           category: one("category"),
           site: one("site"),
           holding: one("holding"),
+          from: one("from"),
+          to: one("to"),
         }}
       />
     </div>

@@ -601,8 +601,6 @@ export async function approveStockEntry(id: string, stepOrder: number, comments?
 
   const refusal = approvalRefusal(entry, user);
   if (refusal) return { error: refusal };
-  // Four eyes: whoever booked the goods in cannot also sign them off
-  if (entry.createdById === user.id) return { error: "You booked this in, so someone else has to approve it" };
 
   const approval = entry.approvals.find((a) => a.stepOrder === stepOrder);
   if (!approval) return { error: "Approval step not found" };
@@ -741,7 +739,6 @@ export async function rejectStockEntry(id: string, stepOrder: number, reason: st
 
   const refusal = approvalRefusal(entry, user);
   if (refusal) return { error: refusal };
-  if (entry.createdById === user.id) return { error: "You booked this in, so someone else has to review it" };
 
   const approval = entry.approvals.find((a) => a.stepOrder === stepOrder);
   if (!approval) return { error: "Approval step not found" };

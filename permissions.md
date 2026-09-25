@@ -61,7 +61,7 @@ Everything, everywhere. The account of last resort.
 
 Who: Phani Raj
 
-- **Activity log** — Activity: Buying, Activity: Catalog, Activity: Everyone's Actions, Activity: Making, Activity: Own Actions Only, Activity: Own Department, Activity: People, Activity: Security & Settings, Activity: Stock In, Activity: Stock Out, Open the Activity Log
+- **Activity log** — Activity: Buying, Activity: Catalog, Activity: Everyone's Actions, Activity: Making, Activity: Own Actions Only, Activity: Own Department, Activity: People, Activity: Security & Settings, Activity: Stock In, Activity: Stock Movement, Open the Activity Log
 - **Assets** — Answer a Transfer Request, Ask For a Transfer, Create Assets, View Assets
 - **Bills of materials** — Approve a Bill of Materials, Build From a Bill of Materials, Correct the Active Bill of Materials, Delete a Bill of Materials, Finish a Build, Publish Without Approval, Undo a Build, View Bills of Materials, Write a Bill of Materials
 - **Clients** — Add Clients, Delete Clients, Edit Clients, Export the Client List, View Clients
@@ -109,7 +109,7 @@ Runs a department: its stock, its assets, its people's transfer requests and its
 
 Who: Kirubakaran, Manohar
 
-- **Activity log** — Activity: Making, Activity: Own Department, Activity: People, Activity: Stock In, Activity: Stock Out, Open the Activity Log
+- **Activity log** — Activity: Making, Activity: Own Department, Activity: People, Activity: Stock In, Activity: Stock Movement, Open the Activity Log
 - **Assets** — Answer a Transfer Request, Ask For a Transfer, Create Assets, View Assets
 - **Bills of materials** — Approve a Bill of Materials, Correct the Active Bill of Materials, Publish Without Approval, View Bills of Materials, Write a Bill of Materials
 - **Departments** — View Departments
@@ -282,7 +282,7 @@ On the activity log, sees **their own department's** actions, and actions done t
 
 <details><summary>Everything they hold, by area</summary>
 
-- **Activity log** — Activity: Buying, Activity: Making, Activity: Own Department, Activity: People, Activity: Stock In, Activity: Stock Out, Open the Activity Log
+- **Activity log** — Activity: Buying, Activity: Making, Activity: Own Department, Activity: People, Activity: Stock In, Activity: Stock Movement, Open the Activity Log
 - **Assets** — Answer a Transfer Request, Ask For a Transfer, Create Assets, View Assets
 - **Bills of materials** — Approve a Bill of Materials, Build From a Bill of Materials, Correct the Active Bill of Materials, Finish a Build, Publish Without Approval, Undo a Build, View Bills of Materials, Write a Bill of Materials
 - **Departments** — View Departments
@@ -313,7 +313,7 @@ On the activity log, sees **their own department's** actions, and actions done t
 
 <details><summary>Everything they hold, by area</summary>
 
-- **Activity log** — Activity: Making, Activity: Own Department, Activity: People, Activity: Stock In, Activity: Stock Out, Open the Activity Log
+- **Activity log** — Activity: Making, Activity: Own Department, Activity: People, Activity: Stock In, Activity: Stock Movement, Open the Activity Log
 - **Assets** — Answer a Transfer Request, Ask For a Transfer, Create Assets, View Assets
 - **Bills of materials** — Approve a Bill of Materials, Correct the Active Bill of Materials, Publish Without Approval, View Bills of Materials, Write a Bill of Materials
 - **Departments** — View Departments
@@ -371,7 +371,7 @@ On the activity log, sees **everyone's** actions.
 
 <details><summary>Everything they hold, by area</summary>
 
-- **Activity log** — Activity: Buying, Activity: Catalog, Activity: Everyone's Actions, Activity: Making, Activity: Own Actions Only, Activity: Own Department, Activity: People, Activity: Security & Settings, Activity: Stock In, Activity: Stock Out, Open the Activity Log
+- **Activity log** — Activity: Buying, Activity: Catalog, Activity: Everyone's Actions, Activity: Making, Activity: Own Actions Only, Activity: Own Department, Activity: People, Activity: Security & Settings, Activity: Stock In, Activity: Stock Movement, Open the Activity Log
 - **Assets** — Answer a Transfer Request, Ask For a Transfer, Create Assets, View Assets
 - **Bills of materials** — Approve a Bill of Materials, Build From a Bill of Materials, Correct the Active Bill of Materials, Delete a Bill of Materials, Finish a Build, Publish Without Approval, Undo a Build, View Bills of Materials, Write a Bill of Materials
 - **Clients** — Add Clients, Delete Clients, Edit Clients, Export the Client List, View Clients
@@ -511,7 +511,7 @@ The same information the other way round — useful when you want to know who co
 | Open the Activity Log | `activity.view` | Can open the activity log. What is visible on it depends on the activity.view.* permissions | Super Admin, Admin, Department Manager, Buyer | Kirubakaran, Manohar, Nagarajan, Phani Raj, Shravani |
 | Activity: Catalog | `activity.view.catalog` | Can read log entries about products, categories, vendors and clients | Super Admin, Admin | Phani Raj, Shravani |
 | Activity: Making | `activity.view.making` | Can read log entries about bills of materials and builds | Super Admin, Department Manager | Kirubakaran, Manohar, Phani Raj |
-| Activity: Stock Out | `activity.view.movement` | Can read log entries about issues, transfers and dispatches | Super Admin, Department Manager | Kirubakaran, Manohar, Phani Raj |
+| Activity: Stock Movement | `activity.view.movement` | Can read log entries about issues, transfers and dispatches | Super Admin, Department Manager | Kirubakaran, Manohar, Phani Raj |
 | Activity: People | `activity.view.people` | Can read log entries about team members, roles, departments and sites | Super Admin, Admin, Department Manager | Kirubakaran, Manohar, Phani Raj, Shravani |
 | Activity: Buying | `activity.view.procurement` | Can read log entries about stated needs and purchase orders | Super Admin, Admin, Buyer | Kirubakaran, Nagarajan, Phani Raj, Shravani |
 | Activity: Security & Settings | `activity.view.security` | Can read password reveals, permission grants, deletions and configuration changes — the most sensitive part of the log | Super Admin | Phani Raj |

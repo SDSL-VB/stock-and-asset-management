@@ -183,8 +183,8 @@ Pages: `/stock`, `/stock/new`, `/stock/[id]`, `/stock/[id]/edit`, `/configure`.
 | `stock.edit` | Open a DRAFT or REJECTED entry you created | Edit button present | **Manohar** — no Edit on any entry |
 | `stock.approve` | Open a SUBMITTED entry at your site | Amber Action Required card with Approve / Reject | **Manohar**, **Spandana** — no card at all |
 | `stock.move` | Open an APPROVED central entry with quantity left | Move to Department is offered | **Spandana** — offered a transfer *request* instead, or nothing |
-| `stock.value.view` | Look at any entry and the stock list | Unit price, total and value columns visible | **Kirubakaran** — quantities only; no price column, no total, no value tile |
-| `stock.lowstock.view` | Look at the top bar, then open `/procurement` | A bell in the top bar (a red count when something needs ordering); opening it lists each item with **"Low since <date, time> — <the movement that did it>"**. A Low stock card on Procurement lists each watched product per site with the same line; **Raise needs** opens "What do you need?" filled in (needs `procurement.intent.create` too) | **Nagarajan** — a Buyer too, but holds no individual grant: no bell, no card |
+| `stock.value.view` | Look at any entry and the stock list, then open a consignment on `/dispatch` | Unit price, total and value columns visible; a consignment shows each line's price and the consignment total | **Kirubakaran** — quantities only; no price column, no total, no value tile, no consignment value |
+| `stock.lowstock.view` | Look at the top bar, then open `/procurement` | A bell in the top bar (a red count when something needs ordering); opening it lists each item with **"Low since <date, time> — <the movement that did it>"**. A Low stock card on Procurement lists each watched product with the same line, for the sites this person can see (every site only with `stock.scope.all`) — and the bell follows the same rule; **Raise needs** opens "What do you need?" filled in (needs `procurement.intent.create` too) | **Nagarajan** — a Buyer too, but holds no individual grant: no bell, no card |
 | `stock.lowstock.manage` | On the Low stock card, press **Watch a product**, then edit and stop watching one; press **Lead times** on a row | The button and the row controls are present, and saving the minimum changes the reorder point shown. It opens "Who supplies it" — lead time per vendor, editable (the same records as on Vendors and in the Catalog) | **Uday** — no card at all; calling the action directly is refused |
 | `stock.batch.edit` | Open `/stock/new` | Batch number field is present and saves | **Kirubakaran** (grant `stock.create` temporarily) — field absent, and a batch posted directly is ignored by the action |
 | `stock.warranty.view` | Open an entry with warranty details | Warranty card shows purchase date, model, serial, expiry | **Deepanjona** — card absent |
@@ -254,10 +254,10 @@ Page: `/stock/products` (Catalog).
 | `products.code.override` | Add a product | The generated code can be typed over by hand | **Nagarajan** — code is fixed from the category prefix |
 | `products.request.create` | Catalog → ask for a product | Request form present, request appears in the queue | **Kirubakaran** |
 | `products.request.approve` | Catalog → requests queue | Approve/decline; approving creates the product | **Deepanjona** — queue not shown |
-| `categories.create` | Add a category | Present | **Deepanjona** |
+| `categories.create` | Add a category, and add a subcategory under one | Both are present, and a new subcategory's code can be typed with it (required when Catalog settings say so) | **Deepanjona** |
 | `categories.edit` | Rename a category | Present | **Deepanjona** |
 | `categories.delete` | Delete a category | Offered, steering to deactivate | **Nagarajan** |
-| `categories.prefix.edit` | Open a category | The 4-digit code prefix is editable | **Nagarajan** — prefix shown but fixed |
+| `categories.prefix.edit` | Open a category, then open its Subcategories and edit one | The category code is editable (letters, numbers or both, up to the length in Catalog settings), and an existing subcategory's code can be changed | **Nagarajan** — prefix shown but fixed; he can still give a NEW subcategory its code, which comes with `categories.create` |
 | `categories.request.create` | Ask for a category | Request form present | **Kirubakaran** |
 | `categories.request.approve` | Requests queue | Approve/decline; approving creates the category | **Deepanjona** |
 
@@ -298,7 +298,7 @@ Page: `/dispatch`.
 | `dispatch.create` | Raise a consignment | Central stock at their site can be sent to another site or a client | **Kirubakaran** |
 | `dispatch.accept` | Open an arriving consignment | Accept/reject — **and the person who raised it may not answer it** | **Manohar**. Also as **Uday**: raise one, confirm he cannot accept his own |
 | `dispatch.receive` | Confirm delivery | Books into central stock at the destination; **this one is allowed for the requester** | **Manohar** |
-| `dispatch.export` | Dispatch report | Export CSV present | **Manohar** |
+| `dispatch.export` | Dispatch report | Export CSV present; unit price and line value columns only with `stock.value.view` | **Manohar** |
 
 ### Fulfilment — 3 keys
 
@@ -347,7 +347,7 @@ Page: `/procurement`.
 | `settings.edit` | Change a setting | Saves | **Nagarajan** |
 | `config.flows.bom` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
 | `config.flows.procurement` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
-| `config.catalog` | *The Configuration page is taken out for now — nothing to test until it returns.* | | |
+| `config.catalog` | Open `/stock/products` | "Catalog settings" sits in the header; it saves the three rules and the category code length | **Nagarajan** — no button |
 
 ### Recycle bin — 5 keys
 

@@ -265,6 +265,16 @@ export const PRODUCT_MANAGE_PERMISSIONS: PermissionKey[] = [
  * who can only ASK for a product still needs the page to see what happened to
  * what they asked for. Keep `middleware.ts` in step with this list.
  */
+/**
+ * Who may raise a write-off at all: central stock, a department's holding, or
+ * both. The Wastage page's own "Report wastage" needs either one, and what it
+ * offers depends on which is held.
+ */
+export const WRITE_OFF_RAISE_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.STOCK_WRITEOFF_CREATE,
+  PERMISSIONS.STOCK_WRITEOFF_DEPARTMENT,
+];
+
 export const CATALOG_PAGE_PERMISSIONS: PermissionKey[] = [
   ...PRODUCT_MANAGE_PERMISSIONS,
   PERMISSIONS.PRODUCTS_REQUEST_CREATE,

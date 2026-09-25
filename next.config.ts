@@ -1,6 +1,25 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  /**
+   * Which addresses may load the DEV server's own assets.
+   *
+   * `next dev` refuses cross-origin requests for its internal files, and it
+   * only trusts localhost and the hostname it was started with. Opening the app
+   * from a phone on the same wifi asks for it by LAN address instead, so the
+   * page's HTML arrived and none of its JavaScript did: the top bar rendered,
+   * and the menu, the bell and the profile button did nothing, because nothing
+   * had hydrated.
+   *
+   * These entries are hostnames only — no scheme, no port — and one `*` stands
+   * for one part of an address, so the whole 192.168.x subnet is covered
+   * whatever address the router hands out today.
+   *
+   * Development only. A built server (`next start`, or Vercel) serves its
+   * assets to anyone who can reach it and ignores this completely.
+   */
+  allowedDevOrigins: ["192.168.*.*", "10.*.*.*", "172.16.*.*"],
+
   // Builds a self-contained server bundle in .next/standalone, so the Docker
   // image does not need node_modules. See docs/hosting.md.
   //

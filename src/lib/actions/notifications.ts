@@ -20,7 +20,18 @@ export async function getMyNotifications() {
   const [items, unread] = await Promise.all([
     prisma.notification.findMany({
       where: { userId: user.id },
-      select: { id: true, kind: true, title: true, body: true, href: true, readAt: true, createdAt: true },
+      select: {
+        id: true,
+        kind: true,
+        title: true,
+        body: true,
+        href: true,
+        readAt: true,
+        createdAt: true,
+        // The bell shows a group as one line that opens — see the bell itself
+        groupKey: true,
+        groupLabel: true,
+      },
       orderBy: { createdAt: "desc" },
       take: 30,
     }),
