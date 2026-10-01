@@ -2,7 +2,6 @@ import { requireAnyPermission } from "@/lib/rbac/check";
 import {
   PERMISSIONS,
   ASSET_PAGE_PERMISSIONS,
-  resolveStockScope,
 } from "@/lib/rbac/permissions";
 import {
   getAssetHoldings,
@@ -30,10 +29,10 @@ export default async function AssetsPage() {
   const user = await requireAnyPermission(ASSET_PAGE_PERMISSIONS);
   const has = (p: string) => user.permissions.includes(p);
 
-  const canSeeHoldings = has(PERMISSIONS.ASSETS_VIEW);
+  const canSeeHoldings = has(PERMISSIONS.ASSETS_VIEW) || has(PERMISSIONS.ASSETS_REPORT_VIEW);
   const canRequestTransfer = has(PERMISSIONS.ASSETS_TRANSFER_REQUEST);
   const canApproveTransfer = has(PERMISSIONS.ASSETS_TRANSFER_APPROVE);
-  const canSeeTransfers = canRequestTransfer || canApproveTransfer;
+  const canSeeTransfers = canRequestTransfer || canApproveTransfer || has(PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT);
 
   // Creating an asset is its own capability AND a stock movement, so it needs
   // both keys. Requiring both is what keeps the button from appearing to
@@ -50,15 +49,28 @@ export default async function AssetsPage() {
 
   const pending = transfers.filter((t) => t.status === "PENDING").length;
 
+  // Where stock can be moved TO: never a central-stock department
+  const moveTargets = departments.filter((d) => !d.isCentralStock);
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Assets"
         description="What each department holds, and the transfers that put it there"
       >
-        {canCreateAsset && <NewAssetDialog entries={centralStock} departments={departments} />}
+        {canCreateAsset && (
+          <NewAssetDialog
+            entries={centralStock}
+            departments={moveTargets}
+            canMoveAcrossSites={has(PERMISSIONS.ASSETS_MOVE_CROSS_SITE)}
+          />
+        )}
         {canRequestTransfer && (
-          <RequestTransferPickerDialog entries={transferable} departments={departments} />
+          <RequestTransferPickerDialog
+            entries={transferable}
+            departments={moveTargets}
+            canMoveAcrossSites={has(PERMISSIONS.ASSETS_MOVE_CROSS_SITE)}
+          />
         )}
         <HowTo
           title="How something becomes a department's"
@@ -110,9 +122,6 @@ export default async function AssetsPage() {
           <TabsContent value="transfers">
             <TransferQueue
               requests={transfers}
-              canApprove={canApproveTransfer}
-              seesEverySite={resolveStockScope(user) === "all"}
-              viewerDepartmentId={user.departmentId ?? null}
               viewerId={user.id}
             />
           </TabsContent>

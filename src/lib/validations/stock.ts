@@ -11,8 +11,9 @@ export const rackField = z
 
 const stockEntryFields = {
   productId: z.string().min(1, "Please select a product from the catalog"),
-  // Chosen from the vendor master; supplierName is snapshotted server-side
-  vendorId: z.string().min(1, "Please select a vendor"),
+  // Chosen from the vendor master; supplierName is snapshotted server-side.
+  // Required unless the item came in for service — see requireClientOrLocation.
+  vendorId: z.string().optional(),
   supplierName: z.string().optional(),
   quantity: z.number().int().positive("Quantity must be a positive number"),
   unitPrice: z.number().positive("Unit price must be a positive number"),
@@ -29,6 +30,10 @@ const stockEntryFields = {
   rackLocation: rackField,
   /** Default nature when this stock later moves into a department */
   isAsset: z.boolean().optional(),
+  /** Received for service — held as service stock, never central stock */
+  forService: z.boolean().optional(),
+  /** The client a service item came from — required when forService */
+  serviceClientId: z.string().optional(),
   /** Ships directly to a client without reaching our warehouse */
   isDirectToClient: z.boolean().optional(),
   clientId: z.string().optional(),
@@ -47,9 +52,23 @@ const stockEntryFields = {
 };
 
 function requireClientOrLocation(
-  data: { isDirectToClient?: boolean; clientId?: string; locationId?: string },
+  data: {
+    isDirectToClient?: boolean;
+    clientId?: string;
+    locationId?: string;
+    forService?: boolean;
+    serviceClientId?: string;
+    vendorId?: string;
+  },
   ctx: z.RefinementCtx
 ) {
+  // A service item says which client it came from; anything else, which vendor
+  if (data.forService && !data.serviceClientId?.trim()) {
+    ctx.addIssue({ code: "custom", path: ["serviceClientId"], message: "Select the client this came from" });
+  }
+  if (!data.forService && !data.vendorId?.trim()) {
+    ctx.addIssue({ code: "custom", path: ["vendorId"], message: "Please select a vendor" });
+  }
   // Exactly one of the two is asked for: a client for goods going straight out,
   // a location for goods arriving at a site.
   if (data.isDirectToClient) {

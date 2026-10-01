@@ -67,6 +67,8 @@ export async function syncBomWatches(): Promise<{ added: number; updated: number
       where: {
         productId: { in: componentIds },
         status: "APPROVED",
+        // Service stock does not mean the site uses the component
+        forService: false,
         locationId: { not: null },
         location: { isActive: true },
       },

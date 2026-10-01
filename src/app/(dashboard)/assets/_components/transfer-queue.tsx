@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { approveTransferRequest, rejectTransferRequest } from "@/lib/actions/assets";
+import { agreeTransferRequest, approveTransferRequest, rejectTransferRequest } from "@/lib/actions/assets";
 import { toast } from "sonner";
 import { Check, Loader2, X } from "lucide-react";
 import { statusPill } from "@/lib/design/status";
@@ -31,11 +31,13 @@ import { statusPill } from "@/lib/design/status";
  * The transfer queue on the Assets page.
  *
  * A transfer is how central stock becomes a department's holding, which is why
- * it lives here rather than on a page of its own. Approving one IS the
- * movement — there is no second step.
+ * it lives here rather than on a page of its own. Two steps: the receiving
+ * department agrees (canAgree), then the Stock Manager approves, which IS the
+ * movement (canDecide).
  *
- * Review buttons appear only on requests this person may actually act on:
- * their own department's, and never one they raised themselves.
+ * Buttons appear only on requests this person may actually act on — the
+ * server works that out with the actions' own rules. Someone who may approve
+ * what they ask for never sees it here as pending: asking approves it.
  */
 
 type TransferRequest = {
@@ -56,23 +58,25 @@ type TransferRequest = {
   };
   department: { id: string; name: string };
   requestedBy: { id: string; name: string };
+  /** Still waiting for the receiving department to agree */
+  waitingOnDepartment: boolean;
+  /** Whether this viewer may agree it for the department (step 1) */
+  canAgree: boolean;
+  /** Whether this viewer may approve it and move the stock (step 2) */
+  canDecide: boolean;
   reviewedBy: { id: string; name: string } | null;
 };
 
 interface Props {
   requests: TransferRequest[];
-  canApprove: boolean;
-  /** Full stock scope reviews transfers into any department */
-  seesEverySite: boolean;
-  viewerDepartmentId: string | null;
   viewerId: string;
 }
 
-function StatusBadge({ status }: { status: TransferRequest["status"] }) {
-  const labels = { PENDING: "Pending", APPROVED: "Approved", REJECTED: "Rejected" };
+function StatusBadge({ request }: { request: TransferRequest }) {
+  const labels = { PENDING: "With Stock Manager", APPROVED: "Approved", REJECTED: "Rejected" };
   return (
-    <Badge variant="outline" className={statusPill(status)}>
-      {labels[status]}
+    <Badge variant="outline" className={statusPill(request.status)}>
+      {request.waitingOnDepartment ? "With department" : labels[request.status]}
     </Badge>
   );
 }
@@ -87,9 +91,6 @@ function formatDate(date: Date) {
 
 export function TransferQueue({
   requests,
-  canApprove,
-  seesEverySite,
-  viewerDepartmentId,
   viewerId,
 }: Props) {
   return (
@@ -119,14 +120,10 @@ export function TransferQueue({
                 </TableRow>
               ) : (
                 requests.map((request) => {
-                  // Absent, not disabled: another department's request is not
-                  // this person's to answer, and neither is their own.
+                  // Absent, not disabled: decided by the server with the approve
+                  // action's own rule (scope, site, department)
+                  const canReview = request.canDecide || request.canAgree;
                   const isMine = request.requestedBy.id === viewerId;
-                  const canReview =
-                    request.status === "PENDING" &&
-                    canApprove &&
-                    !isMine &&
-                    (seesEverySite || request.department.id === viewerDepartmentId);
 
                   return (
                     <TableRow key={request.id}>
@@ -157,7 +154,7 @@ export function TransferQueue({
                       <TableCell className="text-xs">{formatDate(request.createdAt)}</TableCell>
                       <TableCell>
                         <div className="space-y-1">
-                          <StatusBadge status={request.status} />
+                          <StatusBadge request={request} />
                           {request.status === "REJECTED" && request.reviewNote && (
                             <p className="text-xs text-red-600">{request.reviewNote}</p>
                           )}
@@ -192,12 +189,21 @@ function ReviewActions({ request }: { request: TransferRequest }) {
   async function handleApprove() {
     setApproving(true);
     try {
-      const result = await approveTransferRequest(request.id);
-      if ("error" in result) {
-        toast.error(result.error);
-        return;
+      if (request.canAgree) {
+        const result = await agreeTransferRequest(request.id);
+        if ("error" in result) {
+          toast.error(result.error);
+          return;
+        }
+        toast.success(result.moved ? `Approved — stock moved to ${request.department.name}` : "Agreed — sent to the Stock Manager");
+      } else {
+        const result = await approveTransferRequest(request.id);
+        if ("error" in result) {
+          toast.error(result.error);
+          return;
+        }
+        toast.success(`Approved — stock moved to ${request.department.name}`);
       }
-      toast.success(`Approved — stock moved to ${request.department.name}`);
       router.refresh();
     } finally {
       setApproving(false);
@@ -231,7 +237,9 @@ function ReviewActions({ request }: { request: TransferRequest }) {
         title={
           tooLittleLeft
             ? `Only ${remaining} units remain in stock`
-            : "Approve and move the stock"
+            : request.canAgree
+              ? "Agree for the department; the Stock Manager then moves it"
+              : "Approve and move the stock"
         }
       >
         {approving ? (
@@ -239,7 +247,7 @@ function ReviewActions({ request }: { request: TransferRequest }) {
         ) : (
           <>
             <Check className="mr-1 h-4 w-4" />
-            Approve
+            {request.canAgree ? "Agree" : "Approve"}
           </>
         )}
       </Button>

@@ -144,7 +144,9 @@ export function WriteOffForm({
         return;
       }
       toast.success(
-        `${result.writeOffNumber} raised — waiting for a manager to approve it`
+        result.approved
+          ? `${result.writeOffNumber} raised and approved — you may approve it yourself`
+          : `${result.writeOffNumber} raised — waiting for the Stock Manager to approve it`
       );
       setQuantity("");
       setReason("");

@@ -47,16 +47,20 @@ interface Props {
   itemName: string;
   remainingQuantity: number;
   departments: { id: string; name: string }[];
+  /** How the Stock Manager classified the entry — it moves as that */
+  entryIsAsset?: boolean;
+  /** May choose stock or asset here (stock.classify) */
+  canClassify?: boolean;
 }
 
-export function MoveStockDialog({ entryId, itemName, remainingQuantity, departments }: Props) {
+export function MoveStockDialog({ entryId, itemName, remainingQuantity, departments, entryIsAsset = false, canClassify = false }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [departmentId, setDepartmentId] = useState("");
   const [quantity, setQuantity] = useState(remainingQuantity);
   const [notes, setNotes] = useState("");
-  const [isAsset, setIsAsset] = useState(false);
+  const [isAsset, setIsAsset] = useState(entryIsAsset);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -134,7 +138,8 @@ export function MoveStockDialog({ entryId, itemName, remainingQuantity, departme
           </div>
           {/* Everything sits in central stock as plain stock; the movement is
               where it is decided what the department receives it as. */}
-          <div className="space-y-2">
+          {canClassify ? (
+<div className="space-y-2">
             <Label>Receive as *</Label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
@@ -169,6 +174,11 @@ export function MoveStockDialog({ entryId, itemName, remainingQuantity, departme
               </button>
             </div>
           </div>
+          ) : (
+            <p className="rounded-md bg-muted p-2.5 text-sm">
+              Moves as <b>{entryIsAsset ? "an asset" : "stock"}</b> — classified by the Stock Manager.
+            </p>
+          )}
           <div className="space-y-2">
             <Label htmlFor="move-notes">Notes (optional)</Label>
             <Textarea

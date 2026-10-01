@@ -50,6 +50,8 @@ type StockOption = {
   itemCode: string | null;
   itemName: string;
   locationName: string | null;
+  /** Service stock, offered only to those who may see it */
+  forService?: boolean;
   available: number;
 };
 
@@ -412,7 +414,10 @@ export function NewDispatchDialog({
                                 <span className="font-mono text-caption text-muted-foreground">
                                   {s.itemCode ?? s.entryNumber}
                                 </span>
-                                <span className="text-sm font-medium">{s.itemName}</span>
+                                <span className="text-sm font-medium">
+                                  {s.itemName}
+                                  {s.forService ? " (service)" : ""}
+                                </span>
                               </span>
                               <span className="mt-0.5 block text-caption text-muted-foreground">
                                 {s.available} available
@@ -480,7 +485,7 @@ export function NewDispatchDialog({
                         value={line.stockEntryId}
                         items={options.map((s) => ({
                           value: s.id,
-                          label: `${s.itemName} — ${s.available} available`,
+                          label: `${s.itemName}${s.forService ? " (service)" : ""} — ${s.available} available`,
                         }))}
                         onValueChange={(v) =>
                           updateLine(index, { stockEntryId: (v as string) ?? "" })
@@ -493,6 +498,7 @@ export function NewDispatchDialog({
                           {options.map((s) => (
                             <SelectItem key={s.id} value={s.id}>
                               {s.itemName}
+                              {s.forService ? " (service)" : ""}
                               {s.itemCode ? ` (${s.itemCode})` : ""} — {s.available}{" "}
                               available
                             </SelectItem>
@@ -519,16 +525,6 @@ export function NewDispatchDialog({
                             disabled={!line.stockEntryId}
                           />
                         </div>
-                        <label className="flex items-center gap-2 pb-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={line.isAsset}
-                            onChange={(e) =>
-                              updateLine(index, { isAsset: e.target.checked })
-                            }
-                          />
-                          Asset
-                        </label>
                         {lines.length > 1 && (
                           <Button
                             type="button"

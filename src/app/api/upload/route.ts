@@ -23,9 +23,14 @@ type UploadIntent = {
 };
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json()) as HandleUploadBody;
-
   try {
+    // Inside the try: a body that is not JSON is a rejected request (400), not
+    // a crash (500). Its own message, not the parser's, which quotes the input
+    // back and says more about the internals than anyone sending it needs.
+    const body = (await request.json().catch(() => {
+      throw new Error("That upload request could not be read");
+    })) as HandleUploadBody;
+
     const result = await handleUpload({
       body,
       request,
@@ -42,8 +47,17 @@ export async function POST(request: NextRequest) {
         if (session.user.mustChangePassword) throw new Error("Change your password first");
 
         if (!clientPayload) throw new Error("Missing upload details");
-        const intent = JSON.parse(clientPayload) as UploadIntent;
-        if (!intent.stockEntryId || !intent.attachmentType) {
+        // The payload is whatever the browser sent. Checked for shape before any
+        // of it reaches the database: two short strings, nothing else.
+        const intent = JSON.parse(clientPayload) as Partial<UploadIntent>;
+        if (
+          typeof intent.stockEntryId !== "string" ||
+          typeof intent.attachmentType !== "string" ||
+          !intent.stockEntryId ||
+          !intent.attachmentType ||
+          intent.stockEntryId.length > 64 ||
+          intent.attachmentType.length > 100
+        ) {
           throw new Error("Missing upload details");
         }
 
@@ -64,7 +78,8 @@ export async function POST(request: NextRequest) {
           allowedContentTypes: limits.allowed.length > 0 ? limits.allowed : undefined,
           // Comes back to onUploadCompleted below.
           tokenPayload: JSON.stringify({
-            ...intent,
+            stockEntryId: intent.stockEntryId,
+            attachmentType: intent.attachmentType,
             uploadedById: session.user.id,
           }),
         };

@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { Loader2, MapPin, Search } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Clock, Loader2, MapPin, Search, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { findStock, type FoundStock } from "@/lib/actions/racks";
+import { findStock, type FoundStock, type SiteStockRow } from "@/lib/actions/racks";
 import { FilterSelect } from "@/components/shared/filter-select";
 import { formatCurrency } from "@/lib/format";
 import { rackLabel } from "@/lib/racks";
@@ -32,16 +33,108 @@ function qty(n: number) {
   return n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 }
 
+/* ------------------------------------------------------------------------- */
+/* Recent searches                                                           */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * What this person searched for lately, kept in their own browser.
+ *
+ * Browser storage rather than the database because it is a convenience for one
+ * person on one device — nobody else needs to see it and nothing on the server
+ * reads it. It can also be missing or blocked (a private window, cleared site
+ * data), so every read and write is wrapped and the page works without it.
+ *
+ * Read through useSyncExternalStore so the server render and the first client
+ * render agree (both empty) and the list appears straight after, with no
+ * hydration mismatch and no setState-in-an-effect.
+ */
+const RECENT_KEY = "find-stock:recent";
+const RECENT_MAX = 8;
+const recentListeners = new Set<() => void>();
+
+function readRecentRaw(): string {
+  try {
+    return window.localStorage.getItem(RECENT_KEY) ?? "[]";
+  } catch {
+    return "[]";
+  }
+}
+
+/**
+ * Parsed defensively: storage is outside this code's control, so anything that
+ * is not a short list of short strings is treated as empty rather than trusted.
+ */
+function parseRecent(raw: string): string[] {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0 && v.length <= 100)
+      .slice(0, RECENT_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function writeRecent(list: string[]) {
+  try {
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+  } catch {
+    // Storage blocked — the list simply does not persist
+  }
+  recentListeners.forEach((notify) => notify());
+}
+
+function subscribeRecent(notify: () => void) {
+  recentListeners.add(notify);
+  window.addEventListener("storage", notify);
+  return () => {
+    recentListeners.delete(notify);
+    window.removeEventListener("storage", notify);
+  };
+}
+
+function useRecentSearches() {
+  const raw = useSyncExternalStore(subscribeRecent, readRecentRaw, () => "[]");
+  const recent = useMemo(() => parseRecent(raw), [raw]);
+
+  /**
+   * Remember a search. A query that extends an earlier one replaces it, so
+   * typing "cap", "capa", "capacitor" leaves one entry, not three.
+   */
+  function remember(query: string) {
+    const term = query.trim();
+    if (term.length < 2) return;
+    const lower = term.toLowerCase();
+    const kept = recent.filter((old) => {
+      const o = old.toLowerCase();
+      return o !== lower && !lower.startsWith(o);
+    });
+    writeRecent([term, ...kept].slice(0, RECENT_MAX));
+  }
+
+  function forget(term: string) {
+    writeRecent(recent.filter((old) => old !== term));
+  }
+
+  return { recent, remember, forget, clear: () => writeRecent([]) };
+}
+
 export function StockFinder({
   initialQuery,
   categories,
   locations,
+  siteStock,
 }: {
   initialQuery: string;
   categories: { id: string; name: string }[];
   /** Only the sites this person may see — the server decides that list */
   locations: { id: string; name: string }[];
+  /** What is on the shelves at this person's own site; no site means none */
+  siteStock: { site: { id: string; name: string } | null; rows: SiteStockRow[]; truncated: boolean };
 }) {
+  const { recent, remember, forget, clear } = useRecentSearches();
   const [query, setQuery] = useState(initialQuery);
   const [categoryId, setCategoryId] = useState("ALL");
   const [locationId, setLocationId] = useState("ALL");
@@ -68,6 +161,7 @@ export function StockFinder({
       setSearching(true);
       try {
         setResults(await findStock(value, filterOf(category, location)));
+        remember(value);
       } finally {
         setSearching(false);
       }
@@ -149,6 +243,55 @@ export function StockFinder({
           />
         )}
       </div>
+
+      {/* Before anything is typed: what was looked for lately, and what is on
+          the shelves here. Both give way to the answer once there is a search. */}
+      {results === null && !searching && (
+        <>
+          {recent.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="flex items-center gap-1.5 text-caption font-semibold text-muted-foreground">
+                  <Clock className="h-3.5 w-3.5" />
+                  Recent searches
+                </p>
+                <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={clear}>
+                  Clear
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {recent.map((term) => (
+                  <span
+                    key={term}
+                    className="inline-flex items-center rounded-full border bg-muted/40 text-sm"
+                  >
+                    <button
+                      type="button"
+                      className="px-3 py-1 hover:text-primary"
+                      onClick={() => {
+                        setQuery(term);
+                        search(term);
+                      }}
+                    >
+                      {term}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Forget "${term}"`}
+                      className="pr-2 text-muted-foreground hover:text-destructive"
+                      onClick={() => forget(term)}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <SiteStock siteStock={siteStock} />
+        </>
+      )}
 
       {results !== null && results.length === 0 && (
         <p className="text-sm text-muted-foreground">Nothing in the catalog matches that.</p>
@@ -290,5 +433,119 @@ export function StockFinder({
         </Card>
       ))}
     </div>
+  );
+}
+
+/**
+ * What is on the shelves at the person's own site: code, item, how much is free
+ * and which rack. The short form of the stock report — no value, no receipts,
+ * no batches, which the report and the rack view already carry.
+ *
+ * With no site it says so and shows nothing: there is no "here" to list, and
+ * the search box above is how that person finds anything.
+ */
+function SiteStock({
+  siteStock,
+}: {
+  siteStock: { site: { id: string; name: string } | null; rows: SiteStockRow[]; truncated: boolean };
+}) {
+  const [filter, setFilter] = useState("");
+
+  if (!siteStock.site) {
+    return (
+      <Card>
+        <CardContent className="flex items-start gap-3 p-4 text-sm text-muted-foreground">
+          <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            You are not attached to a site, so nothing is listed here. Search for what you
+            need above — the answer covers every site you can see.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const f = filter.trim().toLowerCase();
+  const shown = f
+    ? siteStock.rows.filter(
+        (r) =>
+          r.code.toLowerCase().includes(f) ||
+          r.name.toLowerCase().includes(f) ||
+          r.racks.some((rack) => rack.toLowerCase().includes(f))
+      )
+    : siteStock.rows;
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm font-semibold">
+            On the shelves at {siteStock.site.name}
+            <span className="ml-1.5 font-normal text-muted-foreground">
+              {siteStock.rows.length} item{siteStock.rows.length === 1 ? "" : "s"}
+            </span>
+          </p>
+          {siteStock.rows.length > 8 && (
+            <Input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Narrow this list — code, item or rack"
+              className="h-8 max-w-xs"
+            />
+          )}
+        </div>
+
+        {siteStock.rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nothing is free at {siteStock.site.name} right now.</p>
+        ) : (
+          <div className="max-h-[28rem] overflow-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-muted/60 text-left text-caption text-muted-foreground backdrop-blur">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Code</th>
+                  <th className="px-3 py-2 font-medium">Item</th>
+                  <th className="px-3 py-2 text-right font-medium">Free</th>
+                  <th className="px-3 py-2 font-medium">Rack</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((r) => (
+                  <tr key={r.productId} className="border-t">
+                    <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">{r.code}</td>
+                    <td className="px-3 py-2">{r.name}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-right font-semibold tabular-nums">
+                      {qty(r.available)} {r.unit}
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.racks.length === 0 ? (
+                        <span className="text-xs text-muted-foreground">not recorded</span>
+                      ) : (
+                        <span className="flex flex-wrap gap-1">
+                          {r.racks.map((rack) => (
+                            <span
+                              key={rack}
+                              title={rackLabel(rack)}
+                              className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-xs font-semibold"
+                            >
+                              {rack}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {siteStock.truncated && (
+          <p className="text-xs text-muted-foreground">
+            Showing the first {siteStock.rows.length}. Search above to find anything else.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

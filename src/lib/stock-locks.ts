@@ -17,3 +17,10 @@ export async function lockEntries(tx: Prisma.TransactionClient, ids: string[]): 
   if (unique.length === 0) return;
   await tx.$queryRaw`SELECT id FROM stock_entries WHERE id IN (${Prisma.join(unique)}) ORDER BY id FOR UPDATE`;
 }
+
+/** The same, for department holdings — a build drawing on its department's stock. */
+export async function lockIssues(tx: Prisma.TransactionClient, ids: string[]): Promise<void> {
+  const unique = [...new Set(ids)].sort();
+  if (unique.length === 0) return;
+  await tx.$queryRaw`SELECT id FROM stock_issues WHERE id IN (${Prisma.join(unique)}) ORDER BY id FOR UPDATE`;
+}

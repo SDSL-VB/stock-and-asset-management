@@ -608,7 +608,8 @@ export async function getDepartmentsForSelect() {
   await requireAuth();
   return prisma.department.findMany({
     where: { isActive: true },
-    select: { id: true, name: true },
+    // The site, so forms that move stock can offer only its own site's departments
+    select: { id: true, name: true, locationId: true, isCentralStock: true },
     orderBy: { name: "asc" },
   });
 }

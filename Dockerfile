@@ -1,11 +1,15 @@
 # Stock & Asset Management — production image.
 #
-# Three stages so the shipped image carries no build tooling and no dev
+# Three stages (plus an on-demand tools target) so the shipped image carries no build tooling and no dev
 # dependencies. See docs/hosting.md for how to run it.
 
 # ---- 1. Dependencies -------------------------------------------------------
 FROM node:22-alpine AS deps
 WORKDIR /app
+# Prisma picks its database engine by the OpenSSL it finds. Alpine ships
+# none, and the engine it then assumes needs libssl 1.1, which fails to load
+# ("libssl.so.1.1: No such file"): every query errors. So every stage has it.
+RUN apk add --no-cache openssl
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
 # `npm ci` runs prisma generate through the postinstall hook, so the client is
@@ -15,14 +19,29 @@ RUN npm ci
 # ---- 2. Build --------------------------------------------------------------
 FROM node:22-alpine AS builder
 WORKDIR /app
+RUN apk add --no-cache openssl
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # next build reads the schema-generated client from node_modules
 RUN npx prisma generate && npm run build
 
+# ---- Tools: migrations and the one-off setup scripts ---------------------
+# Built as its own target (`--target tools`) and run only on demand by
+# deploy/scripts/deploy.sh: `prisma migrate deploy`, or prisma/fresh-start.ts.
+# It keeps the full dependencies (tsx, the Prisma CLI) out of the app image.
+FROM node:22-alpine AS tools
+WORKDIR /app
+RUN apk add --no-cache openssl
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
+USER node
+CMD ["npx", "prisma", "migrate", "deploy"]
+
 # ---- 3. Runtime ------------------------------------------------------------
 FROM node:22-alpine AS runner
 WORKDIR /app
+RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0

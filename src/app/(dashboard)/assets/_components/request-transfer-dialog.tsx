@@ -29,12 +29,15 @@ interface TransferableEntry {
   entryNumber: string;
   itemCode: string | null;
   itemName: string;
+  locationId: string | null;
   available: number;
 }
 
 interface Props {
   entries: TransferableEntry[];
-  departments: { id: string; name: string }[];
+  departments: { id: string; name: string; locationId: string | null }[];
+  /** May move stock into a department at another site (assets.move.crosssite) */
+  canMoveAcrossSites?: boolean;
 }
 
 /**
@@ -44,7 +47,7 @@ interface Props {
  * hold something. Someone who may move stock directly sees "Move" instead of
  * "Request" and never waits for anyone.
  */
-export function RequestTransferPickerDialog({ entries, departments }: Props) {
+export function RequestTransferPickerDialog({ entries, departments, canMoveAcrossSites = false }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -55,6 +58,15 @@ export function RequestTransferPickerDialog({ entries, departments }: Props) {
 
   const selectedEntry = entries.find((e) => e.id === entryId) ?? null;
   const maxQty = selectedEntry?.available ?? 0;
+  // Only departments the server will accept: the stock's own site, unless this
+  // person may move across sites. None until the stock is picked.
+  const allowedDepartments = selectedEntry
+    ? departments.filter(
+        (d) =>
+          canMoveAcrossSites ||
+          (d.locationId !== null && d.locationId === selectedEntry.locationId)
+      )
+    : [];
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -111,6 +123,8 @@ export function RequestTransferPickerDialog({ entries, departments }: Props) {
               onValueChange={(v) => {
                 const next = v ?? "";
                 setEntryId(next);
+                // A department picked for other stock may be at another site
+                setDepartmentId("");
                 const entry = entries.find((en) => en.id === next);
                 if (entry) setQuantity(Math.min(quantity, entry.available) || entry.available);
               }}
@@ -132,14 +146,15 @@ export function RequestTransferPickerDialog({ entries, departments }: Props) {
             <Label>Receiving Department *</Label>
             <Select
               value={departmentId}
-              items={departments.map((d) => ({ value: d.id, label: d.name }))}
+              items={allowedDepartments.map((d) => ({ value: d.id, label: d.name }))}
               onValueChange={(v) => setDepartmentId(v ?? "")}
+              disabled={!selectedEntry}
             >
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select department" />
+                <SelectValue placeholder={selectedEntry ? "Select department" : "Pick the stock first"} />
               </SelectTrigger>
               <SelectContent>
-                {departments.map((dept) => (
+                {allowedDepartments.map((dept) => (
                   <SelectItem key={dept.id} value={dept.id}>
                     {dept.name}
                   </SelectItem>

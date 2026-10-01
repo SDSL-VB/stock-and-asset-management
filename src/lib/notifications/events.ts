@@ -28,13 +28,15 @@ type Entry = {
   locationId: string | null;
   departmentId: string | null;
   deliveryId: string | null;
+  forService: boolean;
 };
 
 const entryHref = (e: Entry) => (e.deliveryId ? `/stock/delivery/${e.deliveryId}` : `/stock/${e.id}`);
 
 export async function entrySubmitted(e: Entry) {
   await notifyHolders(
-    PERMISSIONS.STOCK_APPROVE,
+    // Service stock goes only to its own approvers
+    e.forService ? PERMISSIONS.STOCK_SERVICE_APPROVE : PERMISSIONS.STOCK_APPROVE,
     { locationId: e.locationId, departmentId: e.departmentId, exclude: [e.createdById] },
     e.deliveryId
       ? { kind: "ACTION", title: "A delivery is waiting for approval", body: "Several items booked in together", href: entryHref(e), dedupeKey: `dlv-submit:${e.deliveryId}:${minute()}` }
@@ -97,10 +99,13 @@ export async function bomDecided(b: { productId: string; productName: string; ve
 
 /* ---- write-offs ------------------------------------------------------ */
 
-export async function writeOffRaised(w: { writeOffNumber: string; itemName: string; raisedById: string; locationId: string | null; departmentId: string | null }) {
+export async function writeOffRaised(w: { writeOffNumber: string; itemName: string; raisedById: string; locationId: string | null; departmentId: string | null; forService?: boolean }) {
   await notifyHolders(
-    PERMISSIONS.STOCK_WRITEOFF_APPROVE,
-    { locationId: w.locationId, departmentId: w.departmentId, exclude: [w.raisedById] },
+    // Service stock's losses go only to its own approvers
+    w.forService ? PERMISSIONS.STOCK_SERVICE_APPROVE : PERMISSIONS.STOCK_WRITEOFF_APPROVE,
+    // By site: the Stock Manager decides write-offs and sits in central stock,
+    // not in the department that lost the goods (see writeOffDecisionRefusal)
+    { locationId: w.locationId, exclude: [w.raisedById] },
     { kind: "ACTION", title: `${w.writeOffNumber} (loss) needs a decision`, body: w.itemName, href: "/wastage" }
   );
 }
@@ -116,11 +121,22 @@ export async function writeOffDecided(w: { writeOffNumber: string; itemName: str
 
 /* ---- transfers into departments -------------------------------------- */
 
-export async function transferRequested(t: { requestNumber: string; itemName: string; requestedById: string; departmentId: string }) {
+export async function transferRequested(t: { requestNumber: string; itemName: string; requestedById: string; locationId: string | null }) {
+  // To approvers at the receiving department's SITE — the Stock Manager sits in
+  // central stock, not in the department asking (see transferDecisionRefusal)
   await notifyHolders(
     PERMISSIONS.ASSETS_TRANSFER_APPROVE,
-    { departmentId: t.departmentId, exclude: [t.requestedById] },
+    { locationId: t.locationId, exclude: [t.requestedById] },
     { kind: "ACTION", title: `${t.requestNumber}: stock requested for your department`, body: t.itemName, href: "/assets" }
+  );
+}
+
+export async function transferNeedsDepartment(t: { requestNumber: string; itemName: string; requestedById: string; departmentId: string }) {
+  // Step 1 goes to whoever agrees for the receiving department
+  await notifyHolders(
+    PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT,
+    { departmentId: t.departmentId, exclude: [t.requestedById] },
+    { kind: "ACTION", title: `${t.requestNumber}: your department asked for stock`, body: t.itemName, href: "/assets" }
   );
 }
 
@@ -169,4 +185,14 @@ export async function siteRequestDecided(r: { requestNumber: string; productName
     body: detail ?? r.productName,
     href: "/dispatch?tab=requests",
   });
+}
+
+/* ---- built goods ------------------------------------------------------ */
+
+export async function builtGoodsWaiting(b: { buildNumber: string; productName: string; quantity: number; locationId: string; finishedById: string }) {
+  await notifyHolders(
+    PERMISSIONS.BOM_BUILD_APPROVE,
+    { locationId: b.locationId, exclude: [b.finishedById] },
+    { kind: "ACTION", title: `${b.quantity} × ${b.productName} built — waiting for approval`, body: b.buildNumber, href: "/builds" }
+  );
 }

@@ -36,16 +36,20 @@ import {
   requireAnyPermission,
   resolveStockScope,
 } from "@/lib/rbac/check";
-import { PERMISSIONS, WRITE_OFF_RAISE_PERMISSIONS } from "@/lib/rbac/permissions";
+import {
+  PERMISSIONS,
+  WRITE_OFF_RAISE_PERMISSIONS,
+  WASTAGE_PAGE_PERMISSIONS,
+} from "@/lib/rbac/permissions";
 import {
   availabilityInclude,
   availableQuantity,
   availableFromIssue,
-  issueWriteOffsInclude,
+  issueDrawdownsInclude,
   round,
 } from "@/lib/stock-availability";
 import { stockCandidatesWhere, isStockVisible } from "@/lib/stock-visibility";
-import { SELF_APPROVAL_REFUSAL } from "@/lib/review-rules";
+import { writeOffDecisionRefusal } from "@/lib/review-rules";
 import {
   createWriteOffSchema,
   rejectWriteOffSchema,
@@ -53,6 +57,24 @@ import {
 } from "@/lib/validations/write-off";
 import { logActivity } from "@/lib/activity-log";
 import { writeOffDecided, writeOffRaised } from "@/lib/notifications/events";
+
+/**
+ * Raise what you may decide, and it is decided: a write-off raised by someone
+ * who could approve it (writeOffDecisionRefusal) is approved on the spot,
+ * recorded with them as the reviewer. Returns whether it was.
+ */
+async function approveOnRaise(
+  writeOffId: string,
+  user: Parameters<typeof writeOffDecisionRefusal>[0] & { id: string },
+  scopeOf: Parameters<typeof writeOffDecisionRefusal>[1]
+): Promise<boolean> {
+  if (writeOffDecisionRefusal(user, scopeOf) !== null) return false;
+  await prisma.stockWriteOff.update({
+    where: { id: writeOffId },
+    data: { status: "APPROVED", reviewedById: user.id, reviewedAt: new Date() },
+  });
+  return true;
+}
 
 /** Every page a write-off changes a number on. */
 function revalidateAffected(stockEntryId?: string) {
@@ -123,22 +145,31 @@ export async function createWriteOff(stockEntryId: string, data: unknown) {
     },
   });
 
+  const approved = await approveOnRaise(writeOff.id, user, {
+    forService: entry.forService,
+    departmentId: null,
+    siteId: entry.locationId,
+  });
+
   await logActivity(
-    "CREATED",
+    approved ? "APPROVED" : "CREATED",
     "StockWriteOff",
     writeOff.id,
-    `Raised ${writeOff.writeOffNumber}: ${parsed.data.quantity} × ${entry.itemName} as ${parsed.data.reason.toLowerCase()} from central stock — ${parsed.data.notes}`
+    `${approved ? "Raised and approved" : "Raised"} ${writeOff.writeOffNumber}: ${parsed.data.quantity} × ${entry.itemName} as ${parsed.data.reason.toLowerCase()} from ${entry.forService ? "service stock" : "central stock"} — ${parsed.data.notes}`
   );
 
   revalidateAffected(stockEntryId);
-  await writeOffRaised({
-    writeOffNumber: writeOff.writeOffNumber,
-    itemName: entry.itemName,
-    raisedById: user.id,
-    locationId: entry.locationId,
-    departmentId: null,
-  });
-  return { success: true as const, writeOffNumber: writeOff.writeOffNumber };
+  if (!approved) {
+    await writeOffRaised({
+      writeOffNumber: writeOff.writeOffNumber,
+      itemName: entry.itemName,
+      raisedById: user.id,
+      locationId: entry.locationId,
+      departmentId: null,
+      forService: entry.forService,
+    });
+  }
+  return { success: true as const, writeOffNumber: writeOff.writeOffNumber, approved };
 }
 
 /**
@@ -156,7 +187,7 @@ export async function createDepartmentWriteOff(stockIssueId: string, data: unkno
   const issue = await prisma.stockIssue.findUnique({
     where: { id: stockIssueId },
     include: {
-      ...issueWriteOffsInclude,
+      ...issueDrawdownsInclude,
       department: { select: { id: true, name: true, locationId: true } },
       stockEntry: { select: { id: true, itemName: true, product: { select: { unit: true } } } },
     },
@@ -205,22 +236,31 @@ export async function createDepartmentWriteOff(stockIssueId: string, data: unkno
     },
   });
 
+  // Department holdings are never service stock — that never enters a department
+  const approved = await approveOnRaise(writeOff.id, user, {
+    forService: false,
+    departmentId: issue.departmentId,
+    siteId: issue.department.locationId,
+  });
+
   await logActivity(
-    "CREATED",
+    approved ? "APPROVED" : "CREATED",
     "StockWriteOff",
     writeOff.id,
-    `Raised ${writeOff.writeOffNumber}: ${parsed.data.quantity} × ${issue.stockEntry.itemName} as ${parsed.data.reason.toLowerCase()} in ${issue.department.name} — ${parsed.data.notes}`
+    `${approved ? "Raised and approved" : "Raised"} ${writeOff.writeOffNumber}: ${parsed.data.quantity} × ${issue.stockEntry.itemName} as ${parsed.data.reason.toLowerCase()} in ${issue.department.name} — ${parsed.data.notes}`
   );
 
   revalidateAffected(issue.stockEntryId);
-  await writeOffRaised({
-    writeOffNumber: writeOff.writeOffNumber,
-    itemName: issue.stockEntry.itemName,
-    raisedById: user.id,
-    locationId: issue.department.locationId,
-    departmentId: issue.departmentId,
-  });
-  return { success: true as const, writeOffNumber: writeOff.writeOffNumber };
+  if (!approved) {
+    await writeOffRaised({
+      writeOffNumber: writeOff.writeOffNumber,
+      itemName: issue.stockEntry.itemName,
+      raisedById: user.id,
+      locationId: issue.department.locationId,
+      departmentId: issue.departmentId,
+    });
+  }
+  return { success: true as const, writeOffNumber: writeOff.writeOffNumber, approved };
 }
 
 /**
@@ -228,30 +268,25 @@ export async function createDepartmentWriteOff(stockIssueId: string, data: unkno
  * goods are still counted as held.
  */
 export async function approveWriteOff(id: string) {
-  const user = await requirePermission(PERMISSIONS.STOCK_WRITEOFF_APPROVE);
+  const user = await requireAnyPermission([PERMISSIONS.STOCK_WRITEOFF_APPROVE, PERMISSIONS.STOCK_SERVICE_APPROVE]);
 
   const writeOff = await prisma.stockWriteOff.findUnique({
     where: { id },
     include: {
       stockEntry: { include: availabilityInclude },
-      stockIssue: { include: issueWriteOffsInclude },
+      stockIssue: { include: issueDrawdownsInclude },
       department: { select: { name: true, locationId: true } },
     },
   });
   if (!writeOff) return { error: "That write-off does not exist" };
+  const refusal = writeOffDecisionRefusal(user, {
+    forService: writeOff.stockEntry.forService,
+    departmentId: writeOff.departmentId,
+    siteId: writeOff.department?.locationId ?? writeOff.stockEntry.locationId,
+  });
+  if (refusal) return { error: refusal };
   if (writeOff.status !== "PENDING") {
     return { error: "This write-off has already been decided" };
-  }
-  if (writeOff.raisedById === user.id) {
-    return { error: SELF_APPROVAL_REFUSAL };
-  }
-
-  const scope = resolveStockScope(user);
-  if (scope !== "all" && writeOff.departmentId && writeOff.departmentId !== user.departmentId) {
-    return { error: "You can only approve write-offs in your own department" };
-  }
-  if (scope !== "all" && !writeOff.departmentId && writeOff.stockEntry.locationId !== user.locationId) {
-    return { error: "You can only approve write-offs of stock at your own site" };
   }
 
   // This write-off is itself one of the pending ones already subtracted from
@@ -276,7 +311,7 @@ export async function approveWriteOff(id: string) {
     "APPROVED",
     "StockWriteOff",
     id,
-    `Approved ${writeOff.writeOffNumber}: ${writeOff.quantity} × ${writeOff.stockEntry.itemName} written off as ${writeOff.reason.toLowerCase()}${writeOff.department ? ` in ${writeOff.department.name}` : " from central stock"}`
+    `Approved ${writeOff.writeOffNumber}: ${writeOff.quantity} × ${writeOff.stockEntry.itemName} written off as ${writeOff.reason.toLowerCase()}${writeOff.department ? ` in ${writeOff.department.name}` : writeOff.stockEntry.forService ? " from service stock" : " from central stock"}`
   );
 
   revalidateAffected(writeOff.stockEntryId);
@@ -286,30 +321,27 @@ export async function approveWriteOff(id: string) {
 
 /** Decline a write-off, with a reason whoever raised it can read. */
 export async function rejectWriteOff(id: string, data: unknown) {
-  const user = await requirePermission(PERMISSIONS.STOCK_WRITEOFF_APPROVE);
+  const user = await requireAnyPermission([PERMISSIONS.STOCK_WRITEOFF_APPROVE, PERMISSIONS.STOCK_SERVICE_APPROVE]);
 
   const parsed = rejectWriteOffSchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
 
   const writeOff = await prisma.stockWriteOff.findUnique({
     where: { id },
-    include: { stockEntry: { select: { id: true, itemName: true, locationId: true } } },
+    include: {
+      stockEntry: { select: { id: true, itemName: true, locationId: true, forService: true } },
+      department: { select: { locationId: true } },
+    },
   });
   if (!writeOff) return { error: "That write-off does not exist" };
+  const refusal = writeOffDecisionRefusal(user, {
+    forService: writeOff.stockEntry.forService,
+    departmentId: writeOff.departmentId,
+    siteId: writeOff.department?.locationId ?? writeOff.stockEntry.locationId,
+  });
+  if (refusal) return { error: refusal };
   if (writeOff.status !== "PENDING") {
     return { error: "This write-off has already been decided" };
-  }
-  if (writeOff.raisedById === user.id) {
-    return { error: SELF_APPROVAL_REFUSAL };
-  }
-
-  const scope = resolveStockScope(user);
-  if (scope !== "all" && writeOff.departmentId && writeOff.departmentId !== user.departmentId) {
-    return { error: "You can only decide write-offs in your own department" };
-  }
-  // A loss from central stock is decided at the site it happened, as approving is
-  if (scope !== "all" && !writeOff.departmentId && writeOff.stockEntry.locationId !== user.locationId) {
-    return { error: "That write-off is at another site" };
   }
 
   await prisma.stockWriteOff.update({
@@ -356,9 +388,12 @@ export async function reverseWriteOff(id: string, data: unknown) {
 
   const writeOff = await prisma.stockWriteOff.findUnique({
     where: { id },
-    include: { stockEntry: { select: { id: true, itemName: true, locationId: true } } },
+    include: { stockEntry: { select: { id: true, itemName: true, locationId: true, forService: true } } },
   });
-  if (!writeOff) return { error: "That write-off does not exist" };
+  // Service stock is reversed only by someone who may see it
+  if (!writeOff || (writeOff.stockEntry.forService && !user.permissions.includes(PERMISSIONS.STOCK_SERVICE_VIEW))) {
+    return { error: "That write-off does not exist" };
+  }
   if (writeOff.status !== "APPROVED") {
     return { error: "Only an approved write-off can be reversed" };
   }
@@ -428,9 +463,14 @@ async function getWriteOffs(): Promise<WriteOffRow[]> {
   const user = await requireAnyPermission([
     PERMISSIONS.STOCK_WRITEOFF_VIEW,
     PERMISSIONS.STOCK_WRITEOFF_APPROVE,
+    PERMISSIONS.STOCK_SERVICE_APPROVE,
   ]);
 
   const scope = resolveStockScope(user);
+  // Service stock's write-offs only for those who may see service stock
+  const serviceRule = user.permissions.includes(PERMISSIONS.STOCK_SERVICE_VIEW)
+    ? {}
+    : { stockEntry: { forService: false } };
 
   // Two kinds of row need two different narrowings: a departmental write-off is
   // scoped by ITS department, a central one by the entry's own visibility.
@@ -451,7 +491,7 @@ async function getWriteOffs(): Promise<WriteOffRow[]> {
         };
 
   const rows = await prisma.stockWriteOff.findMany({
-    where,
+    where: { AND: [where, serviceRule] },
     include: {
       stockEntry: {
         select: {
@@ -467,11 +507,12 @@ async function getWriteOffs(): Promise<WriteOffRow[]> {
           // Both fields: isStockVisible() below reads the quantities as well as
           // the departments.
           status: true,
+          forService: true,
           quantity: true,
           issues: { select: { departmentId: true, quantity: true } },
         },
       },
-      department: { select: { name: true } },
+      department: { select: { name: true, locationId: true } },
       raisedBy: { select: { name: true } },
       reviewedBy: { select: { name: true } },
     },
@@ -479,7 +520,6 @@ async function getWriteOffs(): Promise<WriteOffRow[]> {
   });
 
   const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
-  const canApprove = user.permissions.includes(PERMISSIONS.STOCK_WRITEOFF_APPROVE);
   const canReverse = user.permissions.includes(PERMISSIONS.STOCK_WRITEOFF_REVERSE);
 
   return rows
@@ -498,7 +538,9 @@ async function getWriteOffs(): Promise<WriteOffRow[]> {
       itemName: w.stockEntry.itemName,
       entryId: w.stockEntry.id,
       entryNumber: w.stockEntry.entryNumber,
-      place: w.department?.name ?? `Central Stock (${w.stockEntry.location?.name ?? "Unassigned"})`,
+      place:
+        w.department?.name ??
+        `${w.stockEntry.forService ? "Service Stock" : "Central Stock"} (${w.stockEntry.location?.name ?? "Unassigned"})`,
       raisedByName: w.raisedBy.name,
       reviewedByName: w.reviewedBy?.name ?? null,
       rejectionReason: w.rejectionReason,
@@ -507,7 +549,14 @@ async function getWriteOffs(): Promise<WriteOffRow[]> {
       value: canSeeValue ? round(w.quantity * w.stockEntry.unitPrice) : null,
       // Never render a button the action would refuse. Deciding your own
       // write-off is refused by approveWriteOff, so it must not be offered.
-      canDecide: canApprove && w.status === "PENDING" && w.raisedById !== user.id,
+      // The approve action's own rule, so no button is offered that it refuses
+      canDecide:
+        w.status === "PENDING" &&
+        writeOffDecisionRefusal(user, {
+          forService: w.stockEntry.forService,
+          departmentId: w.departmentId,
+          siteId: w.department?.locationId ?? w.stockEntry.locationId,
+        }) === null,
       canReverse: canReverse && w.status === "APPROVED",
     }));
 }
@@ -567,7 +616,7 @@ export async function getWriteOffCandidates(): Promise<WriteOffCandidate[]> {
           departmentId: true,
           issuedById: true,
           department: { select: { name: true, locationId: true } },
-          ...issueWriteOffsInclude,
+          ...issueDrawdownsInclude,
         },
       },
       product: { select: { unit: true } },
@@ -592,7 +641,7 @@ export async function getWriteOffCandidates(): Promise<WriteOffCandidate[]> {
         itemName: entry.itemName,
         unit,
         batchNumber: entry.batchNumber,
-        place: `Central Stock (${site})`,
+        place: `${entry.forService ? "Service Stock" : "Central Stock"} (${site})`,
         available: central,
         isAsset: entry.isAsset,
       });
@@ -633,7 +682,8 @@ export async function getWriteOffCandidates(): Promise<WriteOffCandidate[]> {
  * these totals would overstate the damage.
  */
 export async function getWastageSummary() {
-  const user = await requirePermission(PERMISSIONS.STOCK_WRITEOFF_VIEW);
+  // Everyone the Wastage page lets in — see WASTAGE_PAGE_PERMISSIONS
+  const user = await requireAnyPermission(WASTAGE_PAGE_PERMISSIONS);
   const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
 
   const rows = await getWriteOffs();

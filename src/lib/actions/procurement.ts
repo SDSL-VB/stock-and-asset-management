@@ -53,8 +53,8 @@ import { NO_SITE } from "@/lib/stock-visibility";
 
 /**
  * One rule for the company, like the bill-of-materials flow: must a need be
- * verified before it is ordered? Stored in `procurement_flow_config`; nothing
- * changes it while the Configuration page is taken out.
+ * verified before it is ordered? Stored in `procurement_flow_config`; switched
+ * on or off on the Approval Flows page (actions/approval-settings.ts).
  */
 export async function getProcurementFlow() {
   await requireAuth();

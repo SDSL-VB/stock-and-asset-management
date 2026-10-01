@@ -121,6 +121,7 @@ interface Props {
     itemCode: string | null;
     itemName: string;
     locationName: string | null;
+    forService?: boolean;
     available: number;
   }[];
   locations: { id: string; name: string }[];

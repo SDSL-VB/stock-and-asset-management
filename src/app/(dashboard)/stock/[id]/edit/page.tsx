@@ -7,6 +7,7 @@ import { getClientsForEntryForm } from "@/lib/actions/clients";
 import { getVendorsForEntryForm } from "@/lib/actions/vendors";
 import { PageHeader } from "@/components/shared/page-header";
 import { StockEntryForm } from "../../_components/stock-entry-form";
+import { maySeeEntryMoney } from "@/lib/stock-visibility";
 import { notFound, redirect } from "next/navigation";
 
 export default async function EditStockEntryPage({
@@ -60,6 +61,7 @@ export default async function EditStockEntryPage({
         canCreateCategories={user.permissions.includes(PERMISSIONS.CATEGORIES_CREATE)}
         canRequestProducts={user.permissions.includes(PERMISSIONS.PRODUCTS_REQUEST_CREATE)}
         canRequestCategories={user.permissions.includes(PERMISSIONS.CATEGORIES_REQUEST_CREATE)}
+        priceHidden={!maySeeEntryMoney(entry, user)}
         initialData={{
           id: entry.id,
           productId: entry.productId,

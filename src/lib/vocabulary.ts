@@ -11,7 +11,7 @@
  * column and every CSV header. Nothing else should hard-code these strings.
  */
 
-export const PRODUCT_KINDS = ["RAW", "FINISHED", "KIT"] as const;
+export const PRODUCT_KINDS = ["RAW", "SEMI_FINISHED", "FINISHED", "KIT"] as const;
 export type ProductKind = (typeof PRODUCT_KINDS)[number];
 
 /**
@@ -22,14 +22,16 @@ export type ProductKind = (typeof PRODUCT_KINDS)[number];
  */
 export const KIND_LABEL: Record<ProductKind, string> = {
   RAW: "Raw material",
-  FINISHED: "Finished product",
+  SEMI_FINISHED: "Semi-finished good (SFG)",
+  FINISHED: "Finished good (FG)",
   KIT: "Ready goods",
 };
 
 /** What each kind is, for the moment someone has to choose. */
 export const KIND_HINT: Record<ProductKind, string> = {
   RAW: "Bought in and used up when something is made.",
-  FINISHED: "Made here from its components, with a bill of materials, then stocked and dispatched.",
+  SEMI_FINISHED: "Made here with a bill of materials, and built into a finished good — a panel, a wheel, a feeder.",
+  FINISHED: "Made here with a bill of materials and sold whole — a cricket simulator.",
   KIT: "Bought ready to use or sell as it is — a TV, say. Never made here, so it has no bill of materials.",
 };
 
@@ -37,7 +39,7 @@ export const KIND_HINT: Record<ProductKind, string> = {
  * The two groups everything is split by: bought or made.
  *
  *   BOUGHT_IN  procured from a vendor, never a bill of materials   (RAW, KIT)
- *   MADE       assembled here from a bill of materials             (FINISHED)
+ *   MADE       assembled here from a bill of materials (SEMI_FINISHED, FINISHED)
  */
 export const PRODUCT_GROUPS = ["BOUGHT_IN", "MADE"] as const;
 export type ProductGroup = (typeof PRODUCT_GROUPS)[number];
@@ -61,8 +63,15 @@ export const GROUP_HINT: Record<ProductGroup, string> = {
 /** Which kinds belong to each group. The only place this mapping lives. */
 export const GROUP_KINDS: Record<ProductGroup, ProductKind[]> = {
   BOUGHT_IN: ["RAW", "KIT"],
-  MADE: ["FINISHED"],
+  MADE: ["SEMI_FINISHED", "FINISHED"],
 };
+
+/**
+ * What can come in for service: anything made here — a finished good (a
+ * simulator) or a semi-finished one (a panel, a feeder) — and anything bought
+ * whole (a TV, a PC). Never raw material.
+ */
+export const SERVICEABLE_KINDS: ProductKind[] = ["SEMI_FINISHED", "FINISHED", "KIT"];
 
 export function groupOf(kind: string): ProductGroup {
   return GROUP_KINDS.MADE.includes(kind as ProductKind) ? "MADE" : "BOUGHT_IN";
@@ -88,6 +97,7 @@ export function kindFilter(group: ProductGroup) {
 /** Colour treatment per kind, so a badge reads the same wherever it appears. */
 export const KIND_BADGE: Record<ProductKind, string> = {
   RAW: "bg-slate-100 text-slate-700 border-slate-200",
+  SEMI_FINISHED: "bg-sky-100 text-sky-800 border-sky-200",
   FINISHED: "bg-emerald-100 text-emerald-800 border-emerald-200",
   KIT: "bg-violet-100 text-violet-800 border-violet-200",
 };

@@ -161,6 +161,7 @@ export async function onTheWay(
         locationId: { in: locationIds },
         status: "SUBMITTED",
         departmentId: null,
+        forService: false,
       },
       select: { productId: true, locationId: true, quantity: true },
     }),
@@ -271,6 +272,7 @@ export async function stockLevelReport(
         locationId: { in: locationIds },
         status: "APPROVED",
         departmentId: null,
+        forService: false,
       },
       select: {
         productId: true,

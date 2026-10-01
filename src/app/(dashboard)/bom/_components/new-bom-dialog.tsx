@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { codePrefixOf } from "@/lib/product-codes";
-import { KIND_HINT, KIND_LABEL, COMMON_UNITS, type ProductKind } from "@/lib/vocabulary";
+import { KIND_HINT, KIND_LABEL, COMMON_UNITS, GROUP_KINDS, type ProductKind } from "@/lib/vocabulary";
 import { getBomCandidates } from "@/lib/actions/bom";
 import { createProduct } from "@/lib/actions/products";
 import { toast } from "sonner";
@@ -67,8 +67,9 @@ export function NewBomDialog({ categories, canCreateProduct }: Props) {
   const [picked, setPicked] = useState<Candidate | null>(null);
 
   // Inline create
-  // Always a finished product — see the note in the form below
-  const kind: ProductKind = "FINISHED";
+  // Always something made here — see the note in the form below — either a
+  // finished good or a semi-finished one that goes into a finished good
+  const [kind, setKind] = useState<ProductKind>("FINISHED");
   const [categoryId, setCategoryId] = useState("");
   const [codeSuffix, setCodeSuffix] = useState("");
   const [name, setName] = useState("");
@@ -236,13 +237,25 @@ export function NewBomDialog({ categories, canCreateProduct }: Props) {
           </div>
         ) : (
           <div className="space-y-3">
-            {/* A new product here is always a finished product: this dialog
-                gives it a bill of materials, and only things made here have one.
-                Bought items — raw materials, ready goods — are added in the
-                Catalog instead. */}
-            <p className="rounded-md bg-muted p-2.5 text-caption text-muted-foreground">
-              {KIND_HINT.FINISHED}
-            </p>
+            {/* A new product here is always made here: this dialog gives it a
+                bill of materials, and only things made here have one. Bought
+                items — raw materials, ready goods — are added in the Catalog. */}
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(GROUP_KINDS.MADE as ProductKind[]).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setKind(k)}
+                  className={cn(
+                    "rounded-md border p-2.5 text-left text-caption transition-colors",
+                    kind === k ? "border-primary bg-primary/5" : "hover:bg-muted"
+                  )}
+                >
+                  <span className="block text-sm font-medium">{KIND_LABEL[k]}</span>
+                  <span className="text-muted-foreground">{KIND_HINT[k]}</span>
+                </button>
+              ))}
+            </div>
 
             <div className="space-y-1.5">
               <Label>Category</Label>

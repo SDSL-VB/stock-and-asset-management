@@ -35,6 +35,10 @@ const SERIES = {
   NR: { model: "needList", field: "listNumber" },
   /** Delivery — several stock entries that arrived together on one invoice */
   DLV: { model: "delivery", field: "deliveryNumber" },
+  /** Material request — a department asking central stock for materials */
+  MR: { model: "materialRequest", field: "requestNumber" },
+  /** Call-back — a batch recalled */
+  CB: { model: "callBack", field: "callBackNumber" },
 } as const;
 
 type ReferenceSeries = keyof typeof SERIES;

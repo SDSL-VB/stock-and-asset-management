@@ -19,6 +19,8 @@ export default async function ProfilePage() {
           name: user.name ?? "",
           email: user.email ?? "",
           role: user.role,
+          // roles is every role held, main one first
+          additionalRoles: user.roles.slice(1),
         }}
       />
       <MailSettings email={mail.email} instant={mail.mailInstantKinds} digest={mail.mailDigest} mailOn={mail.mailOn} />

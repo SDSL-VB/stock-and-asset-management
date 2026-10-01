@@ -1,0 +1,145 @@
+# Deploys master to the shared droplet on every push, and runs rollbacks on
+# request (Actions → Deploy → Run workflow). See docs/deploy-droplet.md.
+# Mirrors the bills app's workflow.
+#
+# The images are built here, not on the droplet: the droplet runs both apps
+# comfortably but would run out of memory building one.
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "rollback = go back to an earlier release; deploy = build and deploy"
+        type: choice
+        options: [rollback, deploy]
+        default: rollback
+      commit:
+        description: "Commit hash. Blank: the previous release (rollback) or the latest master (deploy)"
+        type: string
+        required: false
+
+# One run at a time; a push during a deploy waits its turn
+concurrency:
+  group: production-sim
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'push' || inputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: inputs.commit != ''
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: git checkout --quiet "$COMMIT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run lint
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: inputs.commit != ''
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: git checkout --quiet "$COMMIT"
+      - id: meta
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: App image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runner
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.registry }}/sim-app:${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Tools image (migrations, fresh start)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: tools
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.registry }}/sim-tools:${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+      # The free plan's package storage is small: keep the newest 6 of each.
+      # Not fatal: if GitHub refuses, delete old versions under the repo's Packages.
+      - uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          package-name: sim-app
+          package-type: container
+          min-versions-to-keep: 6
+      - uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          package-name: sim-tools
+          package-type: container
+          min-versions-to-keep: 6
+
+  deploy:
+    needs: [check, build]
+    # Rollbacks skip the checks and the build: the images already exist.
+    # Only master may deploy: the secrets are repository secrets (environments
+    # need a paid plan on private repos), so the branch check lives here.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.SIM_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Run on the droplet
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          ACTION: ${{ github.event_name == 'push' && 'deploy' || inputs.action }}
+          COMMIT: ${{ needs.build.outputs.sha || inputs.commit }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The droplet only lets this key run scripts/ci-deploy.sh, which checks
+        # these words; the token goes on stdin so it never shows in a command line
+        run: |
+          printf '%s\n%s\n' "$GHCR_USER" "$GHCR_TOKEN" |
+            ssh -o BatchMode=yes -o ServerAliveInterval=30 -i ~/.ssh/id_ed25519 "deploy@$HOST" "$ACTION $COMMIT"

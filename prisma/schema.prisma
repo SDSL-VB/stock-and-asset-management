@@ -69,6 +69,7 @@ model User {
   productRequestsReviewed  ProductRequest[]       @relation("ProductRequestReviewer")
   transferRequestsMade     StockTransferRequest[] @relation("TransferRequester")
   transferRequestsReviewed StockTransferRequest[] @relation("TransferReviewer")
+  transfersAgreed          StockTransferRequest[] @relation("TransferDepartmentApprover")
   billsOfMaterialsAuthored BillOfMaterials[]      @relation("BomAuthor")
   billsOfMaterialsApproved BillOfMaterials[]      @relation("BomApprover")
   buildsMade               Build[]                @relation("BuildCreator")
@@ -87,6 +88,14 @@ model User {
   purchaseOrdersRaised     PurchaseOrder[]        @relation("PoCreator")
   purchaseOrdersClosed     PurchaseOrder[]        @relation("PoCloser")
   needListsRaised          NeedList[]             @relation("NeedListCreator")
+
+  materialRequests            MaterialRequest[] @relation("MaterialRequester")
+  materialDepartmentApprovals MaterialRequest[] @relation("MaterialDepartmentApprover")
+  materialsSupplied           MaterialRequest[] @relation("MaterialSupplier")
+  materialRejections          MaterialRequest[] @relation("MaterialRejecter")
+
+  callBacksRaised CallBack[]    @relation("CallBackRaiser")
+  serviceSwaps    ServiceSwap[] @relation("ServiceSwapper")
 
   @@map("users")
 }
@@ -209,6 +218,10 @@ model Location {
   needLists         NeedList[]
   stockLevels       StockLevel[]
 
+  materialRequests MaterialRequest[]
+
+  callBacks CallBack[]
+
   @@map("locations")
 }
 
@@ -233,6 +246,10 @@ model Department {
   approvalFlow     ApprovalFlowConfig?
   purchaseIntents  PurchaseIntent[]
   bomsAuthored     BillOfMaterials[]      @relation("BomAuthorDepartment")
+  builds           Build[]
+  materialRequests MaterialRequest[]
+
+  callBacks CallBack[]
 
   @@index([locationId])
   @@map("departments")
@@ -250,8 +267,12 @@ model Client {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stockEntries StockEntry[]
-  dispatches   Dispatch[]
+  stockEntries   StockEntry[]
+  dispatches     Dispatch[]
+  // Goods this client sent us for service
+  serviceEntries StockEntry[] @relation("ServiceClient")
+
+  serviceSwaps ServiceSwap[]
 
   @@index([city])
   @@map("clients")
@@ -385,18 +406,18 @@ model ProductCategory {
 // existed, so leaving the code empty keeps the old format and nothing has to be
 // renumbered. Whether a code is required at all is a setting — see CatalogConfig.
 model ProductSubcategory {
-  id         String   @id @default(cuid())
-  name       String
-  categoryId String
+  id           String   @id @default(cuid())
+  name         String
+  categoryId   String
   // Typed by whoever creates it, never generated, exactly like a category's
   // code. Null means this subcategory adds nothing to a product code.
-  code       String?
-  isActive   Boolean  @default(true)
+  code         String?
+  isActive     Boolean  @default(true)
   // The next product number to hand out under this subcategory: 001, 002, …
   // Products are numbered within their subcategory, not across the catalog.
-  nextSequence Int    @default(1)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  nextSequence Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   category        ProductCategory  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   products        Product[]
@@ -411,7 +432,8 @@ model ProductSubcategory {
 
 enum ProductKind {
   RAW // bought in and consumed by a production run
-  FINISHED // made by a run, or bought whole
+  FINISHED // a finished good (FG): made here, sold whole — a cricket simulator
+  SEMI_FINISHED // a semi-finished good (SFG): made here, goes into an FG — a panel, a feeder
   KIT // "Ready goods": bought whole, used or sold as it is. Never made here, never has a BOM
 }
 
@@ -449,6 +471,12 @@ model Product {
   billsOfMaterials   BillOfMaterials[]   @relation("BomProduct")
   usedInBomLines     BomLine[]           @relation("BomComponent")
   builds             Build[]             @relation("BuiltProduct")
+
+  materialRequestsFor  MaterialRequest[]     @relation("MaterialRequestFor")
+  materialRequestLines MaterialRequestLine[]
+
+  callBacks        CallBack[]
+  serviceSwapParts ServiceSwap[] @relation("ServiceSwapPart")
 
   @@index([categoryId])
   @@index([subcategoryId])
@@ -558,6 +586,9 @@ model Build {
   // this build produced — derived, never stored, so the two can never disagree.
   quantity          Int
   locationId        String
+  // The department whose own stock the run draws on. Null on runs from before
+  // builds drew on department stock — those took from central stock.
+  departmentId      String?
   status            BuildStatus @default(COMPLETED)
   notes             String?
   builtById         String
@@ -573,6 +604,7 @@ model Build {
   product      Product            @relation("BuiltProduct", fields: [productId], references: [id])
   bom          BillOfMaterials    @relation(fields: [bomId], references: [id])
   location     Location           @relation(fields: [locationId], references: [id])
+  department   Department?        @relation(fields: [departmentId], references: [id])
   builtBy      User               @relation("BuildCreator", fields: [builtById], references: [id])
   consumptions BuildConsumption[]
   outputs      StockEntry[]       @relation("BuildOutput")
@@ -590,16 +622,23 @@ model Build {
 // to the builds that consumed it, to the goods those builds produced, to the
 // consignments that carried them.
 model BuildConsumption {
-  id           String @id @default(cuid())
+  id           String  @id @default(cuid())
   buildId      String
   stockEntryId String
+  // Set when the component came from a DEPARTMENT'S holding: the loss is that
+  // holding's, never the entry's (which the holding was already taken off when
+  // it moved). Null means it came straight from central stock — the same rule
+  // as a write-off's stockIssueId. See src/lib/stock-availability.ts.
+  stockIssueId String?
   quantity     Float
 
-  build      Build      @relation(fields: [buildId], references: [id], onDelete: Cascade)
-  stockEntry StockEntry @relation(fields: [stockEntryId], references: [id])
+  build      Build       @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  stockEntry StockEntry  @relation(fields: [stockEntryId], references: [id])
+  stockIssue StockIssue? @relation(fields: [stockIssueId], references: [id])
 
   @@index([buildId])
   @@index([stockEntryId])
+  @@index([stockIssueId])
   @@map("build_consumptions")
 }
 
@@ -668,6 +707,17 @@ model StockTransferRequest {
   requestedBy User       @relation("TransferRequester", fields: [requestedById], references: [id])
   reviewedBy  User?      @relation("TransferReviewer", fields: [reviewedById], references: [id])
 
+  // Raised by a call-back: the goods are coming back for rework
+  callBackId String?
+  callBack   CallBack? @relation(fields: [callBackId], references: [id])
+
+  // Step 1: the receiving department agrees (assets.transfer.department).
+  // Null while it waits; set on raising when the asker may agree it or may
+  // allocate the stock outright. Step 2 is the Stock Manager's approval.
+  departmentApprovedById String?
+  departmentApprovedAt   DateTime?
+  departmentApprovedBy   User?     @relation("TransferDepartmentApprover", fields: [departmentApprovedById], references: [id])
+
   @@index([status])
   @@index([stockEntryId])
   @@index([departmentId])
@@ -704,6 +754,8 @@ enum StockSource {
   // Booked in at the receiving site when a consignment from another site is
   // confirmed as delivered. These goods were never bought by this site.
   TRANSFERRED
+  // Goods a customer returned on a call-back
+  CALLBACK
 }
 
 model StockEntry {
@@ -754,6 +806,15 @@ model StockEntry {
   // Default nature of this stock when it moves into a department. Everything
   // sits in central stock as plain stock; the movement decides what it becomes.
   isAsset              Boolean          @default(false)
+  // Received for service, not as stock. Held apart as SERVICE stock: never
+  // counted in central stock, and seen and approved only by holders of the
+  // stock.service.* permissions.
+  forService           Boolean          @default(false)
+  // The client a service item came from. Separate from clientId, which means
+  // "ships straight to this client" and raises a dispatch on approval.
+  serviceClientId      String?
+  // Set on goods a customer returned on a call-back (source CALLBACK)
+  callBackId           String?
   status               StockEntryStatus @default(DRAFT)
   rejectionReason      String?
   customFields         Json?
@@ -766,6 +827,7 @@ model StockEntry {
   product            Product?               @relation(fields: [productId], references: [id])
   location           Location?              @relation(fields: [locationId], references: [id])
   client             Client?                @relation(fields: [clientId], references: [id])
+  serviceClient      Client?                @relation("ServiceClient", fields: [serviceClientId], references: [id])
   vendor             Vendor?                @relation(fields: [vendorId], references: [id])
   department         Department?            @relation(fields: [departmentId], references: [id])
   createdBy          User                   @relation("StockEntryCreator", fields: [createdById], references: [id])
@@ -783,6 +845,8 @@ model StockEntry {
   delivery           Delivery?              @relation(fields: [deliveryId], references: [id])
   sourceDispatchItem DispatchItem?          @relation("TransferredIn", fields: [sourceDispatchItemId], references: [id])
 
+  callBack CallBack? @relation(fields: [callBackId], references: [id])
+
   @@index([status])
   @@index([departmentId])
   @@index([createdById])
@@ -795,6 +859,8 @@ model StockEntry {
   @@index([sourceDispatchItemId])
   @@index([deliveryId])
   @@index([rackLocation])
+  @@index([forService])
+  @@index([serviceClientId])
   @@map("stock_entries")
 }
 
@@ -912,12 +978,18 @@ model StockIssue {
   issuedById   String
   createdAt    DateTime @default(now())
 
-  stockEntry StockEntry      @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
-  department Department      @relation(fields: [departmentId], references: [id])
-  issuedBy   User            @relation("StockIssueCreator", fields: [issuedById], references: [id])
+  stockEntry        StockEntry         @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  department        Department         @relation(fields: [departmentId], references: [id])
+  issuedBy          User               @relation("StockIssueCreator", fields: [issuedById], references: [id])
   // Losses charged against this department's holding specifically, rather than
   // against central stock. See StockWriteOff for why that distinction matters.
-  writeOffs  StockWriteOff[]
+  writeOffs         StockWriteOff[]
+  // Components a build took from this holding
+  buildConsumptions BuildConsumption[]
+
+  // Moved in by a call-back, for rework
+  callBackId String?
+  callBack   CallBack? @relation(fields: [callBackId], references: [id])
 
   @@index([stockEntryId])
   @@index([departmentId])
@@ -968,6 +1040,8 @@ model Dispatch {
   items          DispatchItem[]
   // Set when this consignment exists because another site asked for it
   siteRequest    SiteRequest?
+
+  serviceSwaps ServiceSwap[]
 
   @@index([status])
   @@index([originLocationId])
@@ -1192,7 +1266,7 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderLine {
-  id              String  @id @default(cuid())
+  id              String    @id @default(cuid())
   purchaseOrderId String
   productId       String
   quantity        Int
@@ -1498,4 +1572,144 @@ model LoginFailure {
   firstAt DateTime
 
   @@map("login_failures")
+}
+
+// A department asking central stock for materials — what a build is short of,
+// or anything else it needs. Approved by the department's manager, then
+// supplied by the Stock Manager, who moves the stock into the department (as
+// StockIssues). What central stock cannot supply becomes a need for the Buyer.
+model MaterialRequest {
+  id                     String                @id @default(cuid())
+  requestNumber          String                @unique
+  departmentId           String
+  locationId             String
+  status                 MaterialRequestStatus @default(PENDING_DEPARTMENT)
+  notes                  String?
+  // What it is for, when it came from a short build — shown, never trusted
+  forProductId           String?
+  forQuantity            Int?
+  requestedById          String
+  // Each step records who decided it — the requester when raise-and-approve
+  // applied
+  departmentApprovedById String?
+  departmentApprovedAt   DateTime?
+  suppliedById           String?
+  suppliedAt             DateTime?
+  rejectedById           String?
+  rejectionReason        String?
+  // When what central stock could not supply was raised as needs — once only
+  shortfallRaisedAt      DateTime?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  department         Department            @relation(fields: [departmentId], references: [id])
+  location           Location              @relation(fields: [locationId], references: [id])
+  forProduct         Product?              @relation("MaterialRequestFor", fields: [forProductId], references: [id])
+  requestedBy        User                  @relation("MaterialRequester", fields: [requestedById], references: [id])
+  departmentApprover User?                 @relation("MaterialDepartmentApprover", fields: [departmentApprovedById], references: [id])
+  supplier           User?                 @relation("MaterialSupplier", fields: [suppliedById], references: [id])
+  rejectedBy         User?                 @relation("MaterialRejecter", fields: [rejectedById], references: [id])
+  lines              MaterialRequestLine[]
+
+  @@index([status])
+  @@index([departmentId])
+  @@index([locationId])
+  @@map("material_requests")
+}
+
+model MaterialRequestLine {
+  id        String @id @default(cuid())
+  requestId String
+  productId String
+  quantity  Float
+  // How much the Stock Manager actually moved in; less than asked when central
+  // stock was short
+  supplied  Float  @default(0)
+
+  request MaterialRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+
+  @@index([requestId])
+  @@map("material_request_lines")
+}
+
+enum MaterialRequestStatus {
+  PENDING_DEPARTMENT // waiting for the department's manager
+  PENDING_STOCK // approved by the department, waiting for the Stock Manager
+  SUPPLIED // everything asked for was moved in
+  PARTLY_SUPPLIED // some was; the rest becomes a need
+  REJECTED
+  CANCELLED
+}
+
+// A call-back: the Production Manager recalling a batch — a whole finished
+// good, or a semi-finished one inside them — for any reason. Batches still in
+// central stock go back to Production through transfer requests the Stock
+// Manager approves; customers who have it are traced through dispatches and
+// builds, and Service is told to follow up. See actions/callbacks.ts.
+model CallBack {
+  id             String         @id @default(cuid())
+  callBackNumber String         @unique
+  batchNumber    String
+  productId      String?
+  reason         String
+  // Tell Service at every site, not only the sites that dispatched it
+  notifyAllSites Boolean        @default(false)
+  status         CallBackStatus @default(OPEN)
+  // Where the raiser is, and the department called-back goods go to
+  locationId     String
+  departmentId   String
+  raisedById     String
+  createdAt      DateTime       @default(now())
+  closedAt       DateTime?
+
+  product    Product?      @relation(fields: [productId], references: [id])
+  location   Location      @relation(fields: [locationId], references: [id])
+  department Department    @relation(fields: [departmentId], references: [id])
+  raisedBy   User          @relation("CallBackRaiser", fields: [raisedById], references: [id])
+  returns    StockEntry[]
+  swaps      ServiceSwap[]
+
+  transferRequests StockTransferRequest[]
+  issues           StockIssue[]
+
+  @@index([batchNumber])
+  @@index([status])
+  @@map("call_backs")
+}
+
+enum CallBackStatus {
+  OPEN
+  CLOSED
+}
+
+// A part swapped at the customer's premises: what went in, into which of the
+// customer's products. The replacement's batch is recorded against the
+// customer's product batch, so the next call-back of either finds this.
+model ServiceSwap {
+  id               String   @id @default(cuid())
+  callBackId       String?
+  clientId         String
+  // The batch of the customer's product the part went into
+  customerBatch    String
+  partProductId    String
+  quantity         Float
+  // The batch of the part that went in — from the dispatch that carried it
+  replacementBatch String?
+  // The consignment that carried the part to the customer
+  dispatchId       String?
+  notes            String?
+  swappedById      String
+  createdAt        DateTime @default(now())
+
+  callBack    CallBack? @relation(fields: [callBackId], references: [id])
+  client      Client    @relation(fields: [clientId], references: [id])
+  partProduct Product   @relation("ServiceSwapPart", fields: [partProductId], references: [id])
+  dispatch    Dispatch? @relation(fields: [dispatchId], references: [id])
+  swappedBy   User      @relation("ServiceSwapper", fields: [swappedById], references: [id])
+
+  @@index([customerBatch])
+  @@index([replacementBatch])
+  @@index([clientId])
+  @@map("service_swaps")
 }

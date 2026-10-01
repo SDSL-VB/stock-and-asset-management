@@ -54,6 +54,7 @@ interface ProductOption {
   id: string;
   code: string;
   name: string;
+  kind?: string;
   category: { id: string; name: string };
 }
 
@@ -68,6 +69,12 @@ interface Props {
   attachmentTypes: AttachmentTypeConfig[];
   canRequestProducts?: boolean;
   canRequestCategories?: boolean;
+  /**
+   * The person editing may not see this entry's price (no stock.value.view and
+   * not its author while in their hands). The price is not shown or sent; the
+   * server keeps the stored one. Only ever true when editing.
+   */
+  priceHidden?: boolean;
   /** May set the batch these goods belong to */
   canSetBatch?: boolean;
   /** May record warranty and registration details */
@@ -91,6 +98,8 @@ interface Props {
     clientId: string | null;
     batchNumber: string | null;
     rackLocation?: string | null;
+    forService?: boolean;
+    serviceClientId?: string | null;
     warranty: {
       purchaseDate: Date;
       modelNumber: string;
@@ -107,7 +116,7 @@ interface Props {
   };
 }
 
-export function StockEntryForm({ openOrderLines = [], categories, locations, clients, vendors, defaultLocationId, fieldConfigs, attachmentTypes, canRequestProducts = false, canRequestCategories = false, canSetBatch = false, canEditWarranty = false, canCreateProducts = false, canCreateCategories = false, initialData }: Props) {
+export function StockEntryForm({ openOrderLines = [], categories, locations, clients, vendors, defaultLocationId, fieldConfigs, attachmentTypes, canRequestProducts = false, canRequestCategories = false, canSetBatch = false, canEditWarranty = false, canCreateProducts = false, canCreateCategories = false, priceHidden = false, initialData }: Props) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -143,13 +152,17 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
           vendorId: initialData.vendorId ?? "",
           supplierName: initialData.supplierName,
           quantity: initialData.quantity,
-          unitPrice: initialData.unitPrice,
+          // Hidden prices arrive masked as 0; 1 only satisfies the form's own
+          // check and is thrown away by the server, which keeps the stored price
+          unitPrice: priceHidden ? 1 : initialData.unitPrice,
           invoiceNumber: initialData.invoiceNumber ?? "",
           locationId: initialData.locationId ?? "",
           batchNumber: initialData.batchNumber ?? "",
           rackLocation: initialData.rackLocation ?? "",
           clientId: initialData.clientId ?? "",
           isDirectToClient: !!(initialData.clientId ?? initialData.clientName),
+          forService: initialData.forService ?? false,
+          serviceClientId: initialData.serviceClientId ?? "",
           clientName: initialData.clientName ?? "",
           clientLocation: initialData.clientLocation ?? "",
           customFields: (initialData.customFields as Record<string, string | number | boolean | null>) ?? {},
@@ -161,6 +174,8 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
           locationId: defaultLocationId ?? "",
           clientId: "",
           isDirectToClient: false,
+          forService: false,
+          serviceClientId: "",
           customFields: {},
         },
   });
@@ -169,6 +184,8 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
   const unitPrice = watch("unitPrice");
   const isDirectToClient = watch("isDirectToClient");
   const clientId = watch("clientId") ?? "";
+  const forService = watch("forService") ?? false;
+  const serviceClientId = watch("serviceClientId") ?? "";
   const vendorId = watch("vendorId") ?? "";
 
   // Warranty is stored beside the entry, so it is kept as its own state and
@@ -199,6 +216,25 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
   function handleProductSelect(product: ProductOption | null) {
     setSelectedProduct(product);
     setValue("productId", product?.id ?? "", { shouldValidate: !!product });
+  }
+
+  /**
+   * Service goods come in FROM a client, so they never also ship to one, never
+   * arrive against a purchase order, and are never raw material — switching
+   * it on clears anything that would contradict that.
+   */
+  function handleServiceToggle(on: boolean) {
+    setValue("forService", on);
+    if (!on) {
+      setValue("serviceClientId", "");
+      return;
+    }
+    setValue("isDirectToClient", false);
+    // It came from a client, so there is no vendor or vendor invoice
+    setValue("vendorId", "");
+    setValue("invoiceNumber", "");
+    if (orderLine) handleOrderLineSelect(null);
+    if (selectedProduct?.kind === "RAW") handleProductSelect(null);
   }
 
   const [orderLine, setOrderLine] = useState<OpenOrderLine | null>(null);
@@ -306,7 +342,11 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
         return;
       }
 
-      toast.success("Entry submitted for approval");
+      toast.success(
+        "approved" in submitResult && submitResult.approved
+          ? "Entry submitted and approved — you may approve it yourself"
+          : "Entry submitted for approval"
+      );
       router.push("/stock");
       router.refresh();
     } finally {
@@ -318,12 +358,72 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
 
   return (
     <form className="space-y-6">
-      <PurchaseOrderPicker
-        lines={openOrderLines}
-        selected={orderLine}
-        onSelect={handleOrderLineSelect}
-        disabled={isLoading || !!initialData}
-      />
+      {/* First, because it changes the rest of the form: a service item names
+          the client it came from, and only serviceable products are offered.
+          Service goods are held apart from central stock, seen and approved
+          only by holders of the stock.service.* permissions. */}
+      <Card>
+        <CardContent className="space-y-4 pt-6">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={forService}
+              onChange={(e) => handleServiceToggle(e.target.checked)}
+            />
+            <span>
+              <span className="block text-sm font-medium">For service</span>
+              <span className="block text-sm text-muted-foreground">
+                A client sent this in for service. It goes into service stock instead of
+                central stock, and only the service team, accounts and admin can see it.
+              </span>
+            </span>
+          </label>
+
+          {forService && (
+            <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
+              <Label>Client it came from *</Label>
+              {clients.length > 0 ? (
+                <Select
+                  value={serviceClientId}
+                  items={clients.map((c) => ({ value: c.id, label: `${c.name} — ${c.city}` }))}
+                  onValueChange={(v) =>
+                    setValue("serviceClientId", (v as string) ?? "", { shouldValidate: true })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select the client" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {clients.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name} — {c.city}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No clients have been added yet. Ask an administrator to add the client
+                  first.
+                </p>
+              )}
+              {errors.serviceClientId && (
+                <p className="text-sm text-destructive">{errors.serviceClientId.message}</p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {!forService && (
+        <PurchaseOrderPicker
+          lines={openOrderLines}
+          selected={orderLine}
+          onSelect={handleOrderLineSelect}
+          disabled={isLoading || !!initialData}
+        />
+      )}
 
       <Card>
         <CardHeader>
@@ -332,6 +432,7 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
         <CardContent className="space-y-4">
           <ProductSearch
             categories={categories}
+            serviceable={forService}
             selected={selectedProduct}
             onSelect={handleProductSelect}
             onCategoryChange={setCodeCategoryId}
@@ -366,12 +467,29 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
             </div>
           </div>
 
-          {(canRequestProducts || canRequestCategories) && (
+          {/* Someone who may add to the catalog adds it there — asking would only
+              file a request into their own queue. A new tab keeps this form. */}
+          {(canCreateProducts || canCreateCategories) && (
             <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed p-3">
               <p className="text-xs text-muted-foreground">
-                {canCreateProducts || canCreateCategories
-                  ? "Product or category not in the catalog? Add it now."
-                  : "Product or category not in the catalog? Send a request for an admin to add it."}
+                Product or category not in the catalog? Add it there, then search again here.
+              </p>
+              <Button
+                render={<a href="/stock/products" target="_blank" rel="noopener noreferrer" />}
+                nativeButton={false}
+                type="button"
+                variant="outline"
+                size="sm"
+              >
+                Open catalog to add
+              </Button>
+            </div>
+          )}
+
+          {!canCreateProducts && !canCreateCategories && (canRequestProducts || canRequestCategories) && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed p-3">
+              <p className="text-xs text-muted-foreground">
+                Product or category not in the catalog? Send a request for an admin to add it.
               </p>
               <RequestProductDialog
                 categories={categories}
@@ -393,6 +511,8 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
           <CardTitle>Entry Details</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* A service item came from a client — no vendor, no vendor invoice */}
+          {!forService && (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Vendor *</Label>
@@ -437,6 +557,7 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
               />
             </div>
           </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2">
@@ -453,27 +574,43 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="unitPrice">Unit Price (INR) *</Label>
-              <Input
-                id="unitPrice"
-                type="number"
-                min={0}
-                step="0.01"
-                {...register("unitPrice", { valueAsNumber: true })}
-                placeholder="0.00"
-              />
-              {errors.unitPrice && (
-                <p className="text-sm text-destructive">{errors.unitPrice.message}</p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label>Total Price</Label>
-              <div className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm font-semibold">
-                {formatMoney(totalPrice)}
+            {priceHidden ? (
+              // A price this person may not see is not shown — not even as 0,
+              // which would read as the real figure. The field still holds a
+              // placeholder so the form validates; the server discards it and
+              // keeps the stored price (updateStockEntry).
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Price</Label>
+                <input type="hidden" {...register("unitPrice", { valueAsNumber: true })} />
+                <p className="flex h-9 items-center rounded-md border border-dashed px-3 text-sm text-muted-foreground">
+                  Hidden — only people who may see prices can view or change it
+                </p>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="unitPrice">Unit Price (INR) *</Label>
+                  <Input
+                    id="unitPrice"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    {...register("unitPrice", { valueAsNumber: true })}
+                    placeholder="0.00"
+                  />
+                  {errors.unitPrice && (
+                    <p className="text-sm text-destructive">{errors.unitPrice.message}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Total Price</Label>
+                  <div className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm font-semibold">
+                    {formatMoney(totalPrice)}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -548,7 +685,9 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
           </div>
 
           {/* Goods that ship straight from the vendor to a client still book in
-              against a location, then leave again as a dispatch. */}
+              against a location, then leave again as a dispatch. Never for a
+              service item, which came FROM a client. */}
+          {!forService && (
           <label className="flex items-start gap-3 rounded-lg border p-4 cursor-pointer">
             <input
               type="checkbox"
@@ -565,8 +704,9 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
               </span>
             </span>
           </label>
+          )}
 
-          {isDirectToClient && (
+          {isDirectToClient && !forService && (
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
               <Label>Client *</Label>
               {clients.length > 0 ? (
@@ -609,8 +749,9 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
           )}
 
           <p className="text-xs text-muted-foreground">
-            New stock is received into central stock. After approval, it can be moved to a
-            department from the entry page.
+            {forService
+              ? "A service item is held in service stock at this location, apart from central stock."
+              : "New stock is received into central stock. After approval, it can be moved to a department from the entry page."}
           </p>
         </CardContent>
       </Card>
@@ -786,7 +927,12 @@ export function StockEntryForm({ openOrderLines = [], categories, locations, cli
           {savedEntryId ? (
             <FileUpload
               stockEntryId={savedEntryId}
-              attachmentTypes={attachmentTypes}
+              // A service item has no vendor documents to insist on
+              attachmentTypes={
+                forService
+                  ? attachmentTypes.map((t) => ({ ...t, isRequired: false }))
+                  : attachmentTypes
+              }
             />
           ) : (
             <div className="rounded-lg border border-dashed p-6 text-center space-y-3">
@@ -927,11 +1073,14 @@ function CategoryCombobox({
 // chosen the search covers the whole catalog, and the product brings its own.
 function ProductSearch({
   categories,
+  serviceable = false,
   selected,
   onSelect,
   onCategoryChange,
 }: {
   categories: { id: string; name: string; codePrefix: string | null }[];
+  /** Only products that can come in for service — never raw material */
+  serviceable?: boolean;
   selected: ProductOption | null;
   onSelect: (product: ProductOption | null) => void;
   onCategoryChange?: (categoryId: string) => void;
@@ -969,7 +1118,7 @@ function ProductSearch({
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
       try {
-        const found = await searchProducts(value, catId || undefined);
+        const found = await searchProducts(value, catId || undefined, serviceable);
         setResults(found);
         setOpen(true);
       } catch {
@@ -1045,7 +1194,9 @@ function ProductSearch({
               <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-md">
                 {results.length === 0 ? (
                   <p className="p-3 text-sm text-muted-foreground">
-                    No products found. Ask an admin to add it to the catalog.
+                    {serviceable
+                      ? "No finished or ready products match. Raw material cannot come in for service."
+                      : "No products found. Ask an admin to add it to the catalog."}
                   </p>
                 ) : (
                   <ul className="max-h-60 overflow-y-auto py-1">

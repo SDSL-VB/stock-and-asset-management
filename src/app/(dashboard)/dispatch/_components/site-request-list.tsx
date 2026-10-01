@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -45,8 +46,18 @@ type SiteRequest = {
   toLocation: { id: string; name: string };
   requestedBy: { name: string };
   reviewedBy: { name: string } | null;
-  dispatch: { id: string; dispatchNumber: string; status: string } | null;
+  dispatch: {
+    id: string;
+    dispatchNumber: string;
+    status: string;
+    items: { quantity: number }[];
+  } | null;
 };
+
+/** How many the holding site actually sent — fewer than asked on a partial answer */
+function sentQuantity(r: SiteRequest) {
+  return r.dispatch?.items.reduce((sum, i) => sum + i.quantity, 0) ?? null;
+}
 
 interface Props {
   incoming: SiteRequest[];
@@ -132,15 +143,28 @@ function RequestTable({
   const [pending, startTransition] = useTransition();
   const [rejecting, setRejecting] = useState<SiteRequest | null>(null);
   const [reason, setReason] = useState("");
+  // Agreeing: all of it, or only part
+  const [accepting, setAccepting] = useState<SiteRequest | null>(null);
+  const [sendAll, setSendAll] = useState(true);
+  const [sendQty, setSendQty] = useState("");
 
-  function accept(request: SiteRequest) {
+  function openAccept(request: SiteRequest) {
+    setAccepting(request);
+    setSendAll(true);
+    setSendQty(String(request.quantity));
+  }
+
+  function accept() {
+    if (!accepting) return;
+    const quantity = sendAll ? accepting.quantity : Number(sendQty);
     startTransition(async () => {
-      const result = await acceptSiteRequest(request.id);
+      const result = await acceptSiteRequest(accepting.id, { quantity });
       if (result.error) {
         toast.error(result.error);
         return;
       }
       toast.success(`Agreed — raised ${result.dispatchNumber}`);
+      setAccepting(null);
       router.refresh();
     });
   }
@@ -230,6 +254,13 @@ function RequestTable({
                       <Badge variant={STATUS_VARIANT[r.status]}>
                         {STATUS_LABEL[r.status]}
                       </Badge>
+                      {r.status === "ACCEPTED" && sentQuantity(r) !== null && (
+                        <span className="text-xs text-muted-foreground">
+                          {sentQuantity(r)! < r.quantity
+                            ? `Partly — ${sentQuantity(r)} of ${r.quantity} sent`
+                            : "In full"}
+                        </span>
+                      )}
                       {r.dispatch && (
                         <Link
                           href="/dispatch"
@@ -243,7 +274,7 @@ function RequestTable({
                   <TableCell className="text-right">
                     {r.status === "PENDING" && side === "incoming" && canApprove && (
                       <div className="flex justify-end gap-2">
-                        <Button size="sm" onClick={() => accept(r)} disabled={pending}>
+                        <Button size="sm" onClick={() => openAccept(r)} disabled={pending}>
                           {pending ? (
                             <Loader2 className="size-4 animate-spin" />
                           ) : (
@@ -285,6 +316,63 @@ function RequestTable({
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={accepting !== null} onOpenChange={(o) => !o && setAccepting(null)}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Agree to {accepting?.requestNumber}</DialogTitle>
+            <DialogDescription>
+              {accepting?.toLocation.name} asked for {accepting?.quantity}{" "}
+              {accepting?.product.unit} of {accepting?.product.name}. Say how much you can
+              send — they only learn what you tell them here.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button
+              type="button"
+              variant={sendAll ? "default" : "outline"}
+              onClick={() => {
+                setSendAll(true);
+                setSendQty(String(accepting?.quantity ?? ""));
+              }}
+            >
+              In full — all {accepting?.quantity}
+            </Button>
+            <Button
+              type="button"
+              variant={sendAll ? "outline" : "default"}
+              onClick={() => setSendAll(false)}
+            >
+              In part — fewer
+            </Button>
+          </div>
+
+          {!sendAll && (
+            <div className="space-y-2">
+              <Label htmlFor="send-qty">How many can you send?</Label>
+              <Input
+                id="send-qty"
+                type="number"
+                min={1}
+                max={accepting ? accepting.quantity - 1 : undefined}
+                value={sendQty}
+                onChange={(e) => setSendQty(e.target.value)}
+              />
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAccepting(null)} disabled={pending}>
+              Cancel
+            </Button>
+            <Button onClick={accept} disabled={pending}>
+              {pending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+              Agree and send
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={rejecting !== null} onOpenChange={(o) => !o && setRejecting(null)}>
         <DialogContent>

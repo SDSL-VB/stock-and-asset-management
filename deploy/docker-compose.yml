@@ -1,0 +1,114 @@
+# SD-SIM on the shared droplet, next to the bills app. See docs/deploy-droplet.md.
+#
+#   sim-db       its own Postgres, on a private network with no way in or out
+#                except from the app. Not the bills database: the bills app
+#                connects to its Postgres as a superuser, so a shared server
+#                would let a fault in one app read the other's data.
+#   sim-app      the app, read-only filesystem, no published port. The bills
+#                Caddy reaches it over the bills network (sim.<domain>).
+#   sim-tools    on demand: migrations and fresh-start (profile "tools").
+#
+# Images are built by GitHub Actions; deploy/scripts/deploy.sh downloads them
+# and points sim-app:current at the live one. Nothing is built on the droplet.
+#
+# Run every command from /opt/sim with:
+#   docker compose -f deploy/docker-compose.yml --env-file .env.production ...
+
+name: sim
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  sim-db:
+    image: postgres:16-alpine
+    <<: *hardening
+    # Postgres needs these few to switch to its own user and own its files
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      # The superuser. Used only by you (over SSH) and by deploy.sh for the
+      # audit setup; the app never sees this password.
+      POSTGRES_USER: ${DB_SUPERUSER:-sim_admin}
+      POSTGRES_PASSWORD: ${DB_SUPERUSER_PASSWORD:?set DB_SUPERUSER_PASSWORD}
+      POSTGRES_DB: sim
+      # Read by deploy/db/init/01-roles.sh on the very first start only
+      SIM_OWNER_PASSWORD: ${SIM_OWNER_PASSWORD:?set SIM_OWNER_PASSWORD}
+      SIM_APP_PASSWORD: ${SIM_APP_PASSWORD:?set SIM_APP_PASSWORD}
+      # scram-sha-256 for every connection, password required even inside Docker
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    volumes:
+      - sim-db-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./db:/sim-db-scripts:ro
+    networks: [sim-private]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_SUPERUSER:-sim_admin} -d sim"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # No ports. Nothing outside this network can reach the database.
+
+  sim-app:
+    image: sim-app:current
+    <<: *hardening
+    depends_on:
+      sim-db:
+        condition: service_healthy
+    environment: &app-env
+      # The app's own login: may read and write rows, nothing more. It cannot
+      # change the schema, switch off the audit triggers, or read the audit log.
+      DATABASE_URL: postgresql://sim_app:${SIM_APP_PASSWORD}@sim-db:5432/sim?schema=public&connection_limit=10
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET}
+      AUTH_URL: https://${SIM_DOMAIN:?set SIM_DOMAIN}
+      AUTH_TRUST_HOST: "true"
+      APP_URL: https://${SIM_DOMAIN}
+      PASSWORD_ENCRYPTION_KEY: ${PASSWORD_ENCRYPTION_KEY:?set PASSWORD_ENCRYPTION_KEY}
+      BLOB_READ_WRITE_TOKEN: ${BLOB_READ_WRITE_TOKEN:-}
+      CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache:uid=1001,gid=1001
+    networks: [sim-private, bills]
+    mem_limit: 640m
+    pids_limit: 256
+    # No ports: the bills Caddy is the only way in
+
+  # One-off jobs: migrations (default), or the fresh start on an empty database
+  sim-tools:
+    image: sim-tools:current
+    profiles: ["tools"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    depends_on:
+      sim-db:
+        condition: service_healthy
+    environment:
+      # The schema owner: only migrations and setup run as it
+      DATABASE_URL: postgresql://sim_owner:${SIM_OWNER_PASSWORD}@sim-db:5432/sim?schema=public
+      PASSWORD_ENCRYPTION_KEY: ${PASSWORD_ENCRYPTION_KEY}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+    networks: [sim-private]
+
+networks:
+  # internal: no route to the internet and none from it
+  sim-private:
+    internal: true
+  # The bills project's network, where its Caddy lives
+  bills:
+    external: true
+    name: bills_default
+
+volumes:
+  sim-db-data:

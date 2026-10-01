@@ -9,7 +9,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
-import { reverseBuild, finishBuild, closeBuildShort } from "@/lib/actions/builds";
+import {
+  reverseBuild,
+  finishBuild,
+  closeBuildShort,
+  approveBuiltGoods,
+  returnBuiltGoods,
+} from "@/lib/actions/builds";
 import { Label } from "@/components/ui/label";
 import {
   Dialog,
@@ -67,6 +73,10 @@ type Build = {
   finished: number;
   onFloor: number;
   outputEntryNumbers: string[];
+  /** May read the recipe — what the run consumed, and its BOM */
+  seesRecipe: boolean;
+  waiting: { id: string; entryNumber: string; quantity: number }[];
+  canApproveWaiting: boolean;
   closedShortReason: string | null;
   completedAt: Date | null;
   consumptions: {
@@ -95,6 +105,36 @@ export function BuildList({ builds, canReverse, canFinish, canSetBatch }: Props)
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const [reversing, setReversing] = useState<Build | null>(null);
+  // Sending finished units back to the floor: which, and why
+  const [returning, setReturning] = useState<{ id: string; label: string } | null>(null);
+  const [returnReason, setReturnReason] = useState("");
+
+  function approveWaiting(entryId: string) {
+    startTransition(async () => {
+      const res = await approveBuiltGoods(entryId);
+      if ("error" in res && res.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Approved into stock");
+      router.refresh();
+    });
+  }
+
+  function sendBack() {
+    if (!returning) return;
+    startTransition(async () => {
+      const res = await returnBuiltGoods(returning.id, returnReason);
+      if ("error" in res && res.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Sent back to the floor");
+      setReturning(null);
+      setReturnReason("");
+      router.refresh();
+    });
+  }
   const [error, setError] = useState<string | null>(null);
 
   // Finishing a run: how many are done, and what batch they carry
@@ -118,10 +158,11 @@ export function BuildList({ builds, canReverse, canFinish, canSetBatch }: Props)
         toast.error(res.error);
         return;
       }
+      const landed = res.approved ? "booked into stock" : "waiting for approval";
       toast.success(
         res.complete
-          ? `${finishing.buildNumber} complete — ${res.finished} booked into stock`
-          : `${res.finished} booked in; the rest are still on the floor`
+          ? `${finishing.buildNumber} complete — ${res.finished} ${landed}`
+          : `${res.finished} ${landed}; the rest are still on the floor`
       );
       setFinishing(null);
       setFinishQty("");
@@ -299,6 +340,35 @@ export function BuildList({ builds, canReverse, canFinish, canSetBatch }: Props)
                       </div>
                     </div>
 
+                    {b.waiting.length > 0 && !reversed && (
+                      <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 dark:bg-amber-950/30">
+                        <p className="text-sm font-medium">Finished — waiting for approval before it counts as stock</p>
+                        {b.waiting.map((w) => (
+                          <div key={w.id} className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm">
+                              {formatQty(w.quantity)} {b.product.unit} ·{" "}
+                              <span className="font-mono text-caption">{w.entryNumber}</span>
+                            </span>
+                            {b.canApproveWaiting && (
+                              <>
+                                <Button size="sm" onClick={() => approveWaiting(w.id)} disabled={pending}>
+                                  Approve into stock
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setReturning({ id: w.id, label: `${formatQty(w.quantity)} ${b.product.unit} of ${b.product.name}` })}
+                                  disabled={pending}
+                                >
+                                  Send back to the floor
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap items-center gap-3">
                       {b.outputEntryNumbers.length > 0 && !reversed && (
                         <span className="text-caption text-muted-foreground">
@@ -314,12 +384,14 @@ export function BuildList({ builds, canReverse, canFinish, canSetBatch }: Props)
                         </span>
                       )}
                       {b.notes && <span className="text-caption">{b.notes}</span>}
-                      <Link
-                        href={`/bom/${b.product.id}`}
-                        className="text-caption text-muted-foreground underline-offset-2 hover:underline"
-                      >
-                        View its bill of materials
-                      </Link>
+                      {b.seesRecipe && (
+                        <Link
+                          href={`/bom/${b.product.id}`}
+                          className="text-caption text-muted-foreground underline-offset-2 hover:underline"
+                        >
+                          View its bill of materials
+                        </Link>
+                      )}
                       {canFinish && b.status === "IN_PROGRESS" && (
                         <>
                           <Button
@@ -363,6 +435,33 @@ export function BuildList({ builds, canReverse, canFinish, canSetBatch }: Props)
           })}
         </CardContent>
       </Card>
+
+      {returning && (
+        <Dialog open onOpenChange={(o) => !o && setReturning(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Send back to the floor</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              {returning.label} goes back on the floor, to be finished again. Say why.
+            </p>
+            <Input
+              value={returnReason}
+              onChange={(e) => setReturnReason(e.target.value)}
+              placeholder="e.g. failed the motor test"
+              maxLength={300}
+            />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setReturning(null)} disabled={pending}>
+                Cancel
+              </Button>
+              <Button onClick={sendBack} disabled={pending || !returnReason.trim()}>
+                Send back
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {finishing && (
         <Dialog open onOpenChange={(o) => !o && setFinishing(null)}>

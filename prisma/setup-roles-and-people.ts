@@ -9,17 +9,17 @@
  *
  * Two ideas run through it.
  *
- *   Jobs are not job titles. Buyer, Stock Approver and Builder are small roles
- *   that sit ON TOP of whatever else someone does, so Kiruba is one account
- *   holding four roles rather than a manager with a pile of exceptions.
+ *   Jobs are not job titles. Buyer and Dispatch Operator can sit ON TOP of
+ *   whatever else someone does, given to individual people, so one account
+ *   can hold several roles rather than a pile of exceptions.
  *
  *   Nothing is granted by role NAME in the application. These lists decide
  *   everything; the code only ever asks "do they hold this key?".
  *
  * It also brings the permission TABLE in line with prisma/lib/permission-catalog.ts
  * before handing anything out, so a newly added key exists on a live database
- * by the time a role asks for it. That step only adds keys and refreshes their
- * wording; it never deletes one.
+ * by the time a role asks for it. That step only adds keys; it never deletes
+ * one, and never overwrites a name or description edited in the app.
  */
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
@@ -36,7 +36,59 @@ const OWN_RECYCLE_BIN = [
   "recyclebin.scope.own",
 ];
 
-const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: number; keys: string[] }> = {
+/**
+ * A department manager's duties — shared by the Department, Production and
+ * R&D Manager roles, each for its own department. Moving anything out of
+ * central stock is the Stock Manager's, so it is not here: a manager agrees
+ * their people's requests (step 1) and the Stock Manager moves the goods.
+ */
+const DEPARTMENT_MANAGER_KEYS = [
+  "users.view",
+  // Their department's stock, plus their site's central stock to ask from
+  "stock.view", "stock.scope.department", "stock.warranty.view",
+  "reports.view",
+  // Asking for materials and assets, and agreeing what their people ask for
+  "materials.request", "materials.approve.department",
+  "assets.view", "assets.transfer.request", "assets.transfer.department",
+  // Damage in their department: raised here, approved by the Stock Manager
+  "stock.writeoff.view", "stock.writeoff.create", "stock.writeoff.department",
+  // Their department's history only
+  "activity.view", "activity.scope.department",
+  "activity.view.people", "activity.view.stock", "activity.view.movement",
+  ...OWN_RECYCLE_BIN,
+];
+
+/** What an engineer in any department starts from. */
+const ENGINEER_KEYS = [
+  // Their department's stock plus their site's central stock
+  "stock.view", "stock.scope.department",
+  // Asking, never doing: their manager and the Stock Manager decide
+  "assets.view", "assets.transfer.request",
+  // Reporting damage on what their department holds
+  "stock.writeoff.view", "stock.writeoff.department",
+  "products.request.create", "categories.request.create",
+  ...OWN_RECYCLE_BIN,
+];
+
+/**
+ * Building, for Production. Readiness only, not the recipe (no bom.view), and
+ * from the department's own stock. Batch numbers are set only here.
+ */
+const BUILDING_KEYS = [
+  "bom.build", "bom.build.finish", "bom.unbuild", "builds.view", "stock.batch.edit",
+];
+
+/**
+ * Prices, of any kind, belong to Accounts and Admin only (and Super Admin, who
+ * holds everything). Two keys carry them: `stock.value.view` for stock, and
+ * `procurement.value.view` for purchase orders. Nobody else is given either.
+ * Typing a price — off an invoice, onto a new order — is data entry and needs
+ * neither; SEEING prices already in the system does.
+ *
+ * Exported so prisma/sync-role-permissions.ts brings a live database into line
+ * from this same list, without touching anybody's account.
+ */
+export const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: number; keys: string[] }> = {
   "Super Admin": {
     description: "Everything, everywhere. The account of last resort.",
     hierarchyLevel: 0,
@@ -51,7 +103,8 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
       // People
       "users.view", "users.create", "users.edit", "users.delete",
       "users.password.view", "users.password.edit", "users.permissions.grant",
-      "roles.view", "roles.create", "roles.edit", "roles.delete",
+      "roles.view", "roles.create", "roles.edit", "roles.delete", "permissions.rename",
+      "locations.create", "locations.edit", "approvals.configure",
       "departments.view", "departments.create", "departments.edit", "departments.delete",
       // Masters
       "vendors.view", "vendors.create", "vendors.edit", "vendors.delete", "vendors.export",
@@ -62,20 +115,23 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
       "categories.create", "categories.edit", "categories.delete", "categories.prefix.edit",
       "products.request.create", "products.request.approve",
       "categories.request.create", "categories.request.approve",
-      // Assets: read only. Turning stock into a holding belongs to the people
-      // who can see the stock it comes from.
       "assets.view",
-      // Admin has no stock.view, so this never opens the Stock Entries page.
-      // What it does is answer "how much may they see?" on the pages they DO
-      // reach — the asset register and the procurement pages both ask, and both
-      // need the answer to be every site. This used to be inferred from the
-      // role being NAMED "Admin"; saying it outright means renaming the role
-      // cannot quietly change what an admin can see.
+      // Granted through the Roles page after this list was first written —
+      // seeing stock entries, moving stock into departments and registering
+      // assets. The database is the more recent decision, so it is followed.
+      "stock.view", "stock.move", "assets.create",
+      // Every site. This used to be inferred from the role being NAMED
+      // "Admin"; saying it outright means renaming the role cannot quietly
+      // change what an admin can see.
       "stock.scope.all",
       // Buying, end to end, including the rule about whether needs are verified
       "procurement.intent.view", "procurement.intent.create", "procurement.intent.approve",
       "procurement.po.view", "procurement.po.create", "procurement.po.close",
       "procurement.value.view", "config.flows.procurement",
+      // Prices are Accounts' and Admin's — stock value as well as order value
+      "stock.value.view",
+      // Service stock: seeing it and approving it
+      "stock.service.view", "stock.service.approve",
       // They own the catalog, so they decide how strict it is
       "config.catalog",
       // History of the things they run — not goods movements, not passwords
@@ -87,103 +143,149 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
     ],
   },
 
-  Auditor: {
+  /* --- running the stock -------------------------------------------- */
+
+  "Stock Manager": {
     description:
-      "Read-only oversight of every site including value, plus the catalog, the masters and the asset register.",
+      "Runs its site's central stock: approves what arrives, call-back returns and write-offs; moves stock and assets into departments; supplies material requests. Sees prices only while approving.",
     hierarchyLevel: 2,
     keys: [
-      // The reports nobody else gets
-      "reports.view", "reports.export",
-      "stock.view", "stock.scope.all", "stock.value.view", "stock.warranty.view",
-      "dispatch.view", "dispatch.export",
-      // What has been lost, and to what. Read-only: an auditor reports on
-      // wastage rather than deciding it.
-      "stock.writeoff.view",
-      // Read
-      "departments.view", "users.view", "bom.view", "products.view", "fulfilment.view",
-      // Masters, including taking the list away as a file
-      "vendors.view", "vendors.create", "vendors.edit", "vendors.export",
-      "clients.view", "clients.create", "clients.edit", "clients.export",
-      // Catalog: adding and correcting products and categories
-      "products.create", "products.create.made", "products.edit",
-      "categories.create", "categories.edit",
-      "products.request.approve", "categories.request.approve",
-      // Managing assets means being able to make one
+      // Approving at its own site. No stock.view: after approving it works
+      // from Find Stock and its approval queue, not the entries list. The price
+      // shows only on an entry waiting for its approval.
+      "stock.approve", "stock.value.approving", "stock.find", "stock.scope.location",
+      "stock.warranty.view",
+      // Whether goods are an asset is its call, once they are received
+      "stock.classify",
+      // Moving stock and assets into departments (step 2 of a request, or
+      // allocating outright), and what has gone where
       "assets.view", "assets.create", "stock.move",
+      "assets.transfer.request", "assets.transfer.approve", "assets.report.view",
+      // Supplying what departments ask for; a need for what is not in stock
+      "materials.supply",
+      "procurement.intent.view", "procurement.intent.create",
+      // Write-offs are its second check; its own are approved on raising
+      "stock.writeoff.view", "stock.writeoff.create", "stock.writeoff.approve",
+      // Told about call-backs; approves the returns as stock entries
+      "callbacks.view",
+      // Quantities only — no stock.value.view
+      "reports.view",
       ...OWN_RECYCLE_BIN,
     ],
   },
+
+  /* --- departments: managers and engineers ------------------------------ */
 
   "Department Manager": {
     description:
-      "Runs a department: its stock, its assets, its people's transfer requests and its bills of materials.",
+      "Runs a department other than Production and R&D: its stock, its people's requests for materials and assets, and its write-offs.",
+    hierarchyLevel: 2,
+    keys: DEPARTMENT_MANAGER_KEYS,
+  },
+
+  "Production Manager": {
+    description:
+      "Runs Production: a department manager's duties, plus building, approving what is built, and calling built goods back.",
     hierarchyLevel: 2,
     keys: [
-      "users.view", "departments.view",
-      // Their department's stock, plus their site's central stock to pull from
-      "stock.view", "stock.scope.department", "stock.move", "stock.warranty.view",
-      // Their team's transfers land here
-      "assets.transfer.request", "assets.transfer.approve",
-      "assets.view", "assets.create",
-      // Damage in their department: they report it on their own holdings and
-      // sign off what their team reports. Reversing an approval is an admin
-      // correction, so it is deliberately not here.
-      "stock.writeoff.view", "stock.writeoff.create",
-      "stock.writeoff.department", "stock.writeoff.approve",
-      // A manager publishes what their team writes. Building is NOT here: it
-      // belongs to whoever runs production, which is one person, not every
-      // holder of this role — see the Builder role below.
-      "bom.view", "bom.create", "bom.edit", "bom.approve", "bom.publish",
-      "fulfilment.view", "fulfilment.request",
-      // They can state a need like anyone; verifying one is the Buyer's job
-      "procurement.intent.view", "procurement.intent.create", "procurement.po.view",
-      // Their department's history only
-      "activity.view", "activity.scope.department",
-      "activity.view.people", "activity.view.stock", "activity.view.movement",
+      ...DEPARTMENT_MANAGER_KEYS,
+      ...BUILDING_KEYS,
+      // Finished units come to this role; its own builds approve on finishing
+      "bom.build.approve",
+      // Calling a batch back into Production, for any reason
+      "callbacks.raise", "callbacks.view",
       "activity.view.making",
-      ...OWN_RECYCLE_BIN,
     ],
   },
 
-  Engineer: {
+  "R&D Manager": {
     description:
-      "Works in a department: finds stock, asks for it, states what is needed, and writes bills of materials.",
+      "Runs R&D: a department manager's duties, plus approving bills of materials — and publishing its own without review.",
+    hierarchyLevel: 2,
+    keys: [
+      ...DEPARTMENT_MANAGER_KEYS,
+      "bom.view", "bom.create", "bom.edit", "bom.approve", "bom.publish",
+      // R&D states needs, with the product request for a new item
+      "procurement.intent.view", "procurement.intent.create",
+      "products.request.create", "categories.request.create",
+      "activity.view.making",
+    ],
+  },
+
+  "Production Engineer": {
+    description:
+      "Builds from Production's own stock, asks central stock for what is missing, raises needs, and asks for assets.",
     hierarchyLevel: 4,
     keys: [
-      // Their department's stock plus their site's central stock
-      "stock.view", "stock.scope.department",
-      "products.view",
-      // Asking, never doing: every one of these is reviewed by someone else
-      "assets.transfer.request",
-      // Reports damage on what their department holds; a manager decides.
-      "stock.writeoff.view", "stock.writeoff.department",
-      "products.request.create", "categories.request.create",
-      // Seeing every site's availability is what makes asking another site possible
-      "fulfilment.view", "fulfilment.request",
+      ...ENGINEER_KEYS,
+      ...BUILDING_KEYS,
+      "materials.request",
       "procurement.intent.view", "procurement.intent.create",
-      "bom.view", "bom.create",
-      "assets.view",
-      ...OWN_RECYCLE_BIN,
     ],
+  },
+
+  "R&D Engineer": {
+    description:
+      "Drafts and submits bills of materials, raises needs, and asks for assets.",
+    hierarchyLevel: 4,
+    keys: [
+      ...ENGINEER_KEYS,
+      // Drafting; the R&D Manager approves
+      "bom.view", "bom.create",
+      "procurement.intent.view", "procurement.intent.create",
+    ],
+  },
+
+  "Software Development Engineer": {
+    description: "No permissions yet.",
+    hierarchyLevel: 4,
+    keys: [],
   },
 
   "Stock Entry Operator": {
     description:
-      "Books goods in: fresh stock or a delivery against an order, submitted for approval.",
+      "Enters stock, and only that. Sees an entry while it is theirs to write or correct; once submitted it leaves their view.",
     hierarchyLevel: 3,
     keys: [
-      "stock.view", "stock.create", "stock.edit", "stock.scope.own",
-      "stock.batch.edit", "stock.value.view",
-      "stock.warranty.view", "stock.warranty.edit",
-      // They unpack the goods, so they are who finds the damage. Reporting it
-      // only; a manager decides whether it comes off the books.
-      "stock.writeoff.view", "stock.writeoff.create",
-      "products.view",
-      // Enough of procurement to tell a PO delivery from a fresh one
-      "procurement.intent.view", "procurement.intent.create", "procurement.po.view",
+      // Entering. No stock.view: without it they see only their own entries
+      // still in their hands — drafts, and ones sent back to correct — and never
+      // one that is submitted or approved (src/lib/stock-visibility.ts). Editing
+      // their own draft needs no stock.edit; that key is for other people's.
+      // (Holding no scope key is the same as stock.scope.own.) No batch
+      // numbers: those are set only by Production, when building.
+      "stock.create",
+      // Warranty details are entered with the goods they belong to.
+      // stock.scope.own and stock.warranty.view were removed through the Roles
+      // page after this list was written; the database is followed.
+      "stock.warranty.edit",
+      // No products.view: the entry form's product search runs on stock.create
+      // (PRODUCT_PICK_PERMISSIONS), and the Catalog page stays closed to them.
+      // Asking for a product or category that is missing — from the entry form
       "products.request.create", "categories.request.create",
-      "bom.view", "bom.create",
-      ...OWN_RECYCLE_BIN,
+      // Booking in goods returned on a call-back
+      "callbacks.receive",
+      // Nothing else: no prices, no BOMs, builds, procurement, dispatch, wastage
+      // or recycle bin. Notifications of approval and rejection reach them
+      // regardless — they go to whoever raised the entry.
+    ],
+  },
+
+  "Service Operator": {
+    description:
+      "Looks after goods received for service: approves them into service stock, and writes them off or sends them out. Sees service stock at their own site and nothing of central stock.",
+    hierarchyLevel: 3,
+    keys: [
+      // Service stock at their own site. No stock.view and no stock.create —
+      // goods are booked in (and tagged for service) by whoever receives them,
+      // and without either key Find Stock and central stock stay closed.
+      "stock.service.view", "stock.service.approve", "stock.scope.location",
+      // Writing service stock off, and sending it out; the stock picker offers
+      // them service stock only
+      "stock.writeoff.view", "stock.writeoff.create",
+      "dispatch.view", "dispatch.create",
+      // Told about call-backs to follow up with customers; books the returns
+      // in and swaps parts on site
+      "callbacks.view", "callbacks.receive", "service.swap",
     ],
   },
 
@@ -194,16 +296,35 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
     keys: [
       "dispatch.view", "dispatch.create", "dispatch.accept", "dispatch.receive",
       "dispatch.export",
-      // Their whole site's stock — you cannot dispatch what you cannot see
-      "stock.view", "stock.scope.location", "stock.warranty.view",
       // Check readiness, ask another site, answer their asks
       "fulfilment.view", "fulfilment.request", "fulfilment.approve",
-      "products.view", "bom.view",
+      // stock.view, stock.scope.location, stock.warranty.view, products.view
+      // and bom.view were removed through the Roles page after this list was
+      // written; the database is followed. The dispatch form still offers
+      // their own site's stock to send.
       ...OWN_RECYCLE_BIN,
     ],
   },
 
-  /* --- the two job-shaped roles, held on top of another ------------------ */
+
+  Accounts: {
+    description:
+      "Sees what everything costs: stock value, order prices and the reports built on them. Moves stock and assets into departments, at every site.",
+    hierarchyLevel: 2,
+    keys: [
+      // Prices of both kinds — the reason this role exists
+      "stock.value.view", "procurement.value.view",
+      // Service stock: seeing it and approving it
+      "stock.service.view", "stock.service.approve",
+      // Enough to read them in context, across every site
+      "stock.view", "stock.scope.all",
+      "procurement.po.view",
+      "reports.view", "reports.export",
+      "products.view",
+      // Asset transfers, with the Stock Manager
+      "assets.view", "assets.transfer.request", "assets.transfer.approve", "assets.report.view",
+    ],
+  },
 
   Buyer: {
     description:
@@ -212,41 +333,19 @@ const ROLE_DEFINITIONS: Record<string, { description: string; hierarchyLevel: nu
     keys: [
       "procurement.intent.view", "procurement.intent.create", "procurement.intent.approve",
       "procurement.po.view", "procurement.po.create", "procurement.po.close",
-      "procurement.value.view",
+      // No procurement.value.view: a buyer types the agreed price onto a new
+      // order, but prices already in the system are Accounts' and Admin's
       "vendors.view", "products.view",
       "activity.view", "activity.view.procurement",
     ],
   },
-
-  "Stock Approver": {
-    description:
-      "Held on top of another role. Approves goods arriving at their own site.",
-    hierarchyLevel: 2,
-    keys: [
-      "stock.approve", "stock.view", "stock.scope.location", "stock.warranty.view",
-      // Signing off what arrives and signing off what is written off are the
-      // same judgement about the same stock at the same site.
-      "stock.writeoff.view", "stock.writeoff.approve",
-    ],
-  },
-
-  Builder: {
-    description:
-      "Held on top of another role. Runs builds: takes components out of central stock and books the finished product in.",
-    hierarchyLevel: 2,
-    keys: [
-      // Building reads a bill of materials and draws down central stock, so it
-      // needs sight of both. The whole site, because the components are held in
-      // central stock rather than in the builder's own department.
-      "bom.build", "bom.build.finish", "bom.unbuild",
-      "bom.view", "stock.view", "stock.scope.location",
-    ],
-  },
 };
 
-/** No live holders once the engineers move across. Kept, not deleted: their
- *  names appear on historic approval records. */
-const RETIRED_ROLES = ["Central Stock Manager", "Staff", "Production Engineer", "R&D Engineer"];
+/** Stripped of permissions once nobody holds them. Kept, not deleted: their
+ *  names appear on historic records. Auditor was removed; Engineer split into
+ *  the three engineer roles; Stock Approver became Stock Manager; Builder
+ *  folded into the Production roles. */
+const RETIRED_ROLES = ["Central Stock Manager", "Staff", "Auditor", "Engineer", "Stock Approver", "Builder"];
 
 type Person = {
   email: string;
@@ -272,7 +371,7 @@ const PEOPLE: Person[] = [
   {
     email: "nagarajan@straightdrivesport.com",
     name: "Nagarajan",
-    primaryRole: "Auditor",
+    primaryRole: "Accounts",
     additionalRoles: ["Buyer"],
     department: "Accounts",
     newPassword: "Audit@123!",
@@ -280,15 +379,14 @@ const PEOPLE: Person[] = [
   {
     email: "kiruba@straightdrivesport.com",
     name: "Kirubakaran",
-    primaryRole: "Department Manager",
-    // Runs Production, does the buying, approves goods at Bengaluru, and is the
-    // only person other than the Super Admin who runs builds.
-    additionalRoles: ["Buyer", "Stock Approver", "Builder"],
+    primaryRole: "Production Manager",
+    // Runs Production, does the buying, and approves goods at Bengaluru
+    additionalRoles: ["Buyer", "Stock Manager"],
     department: "Production",
   },
-  { email: "manu@straightdrivesport.com", name: "Manohar", primaryRole: "Department Manager", department: "R&D" },
-  { email: "deepanjona@straightdrivesport.com", name: "Deepanjona", primaryRole: "Engineer", department: "Production" },
-  { email: "raghava@straightdrivesport.com", name: "Raghava", primaryRole: "Engineer", department: "R&D" },
+  { email: "manu@straightdrivesport.com", name: "Manohar", primaryRole: "R&D Manager", department: "R&D" },
+  { email: "deepanjona@straightdrivesport.com", name: "Deepanjona", primaryRole: "Production Engineer", department: "Production" },
+  { email: "raghava@straightdrivesport.com", name: "Raghava", primaryRole: "R&D Engineer", department: "R&D" },
   {
     email: "uday@straightdrivesport.com",
     name: "Uday Kherkatary",
@@ -343,6 +441,12 @@ type Options = {
    * file is a password anyone who reads the code knows.
    */
   knownPasswords?: boolean;
+  /**
+   * Only these accounts are created or updated (and only their grants and
+   * deactivations applied). For a fresh install that starts with Super Admin
+   * and Admin alone — see prisma/fresh-start.ts.
+   */
+  onlyEmails?: string[];
 };
 
 /**
@@ -354,6 +458,7 @@ type Options = {
  */
 export async function applyRolesAndPeople(prisma: PrismaClient, options: Options = {}) {
   const log = options.log ?? ((line: string) => console.log(line));
+  const included = (email: string) => !options.onlyEmails || options.onlyEmails.includes(email);
 
   /* --- the permission catalog ----------------------------------------- */
   //
@@ -370,11 +475,9 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
     PERMISSION_CATALOG.map((definition) =>
       prisma.permission.upsert({
         where: { key: definition.key },
-        update: {
-          name: definition.name,
-          module: definition.module,
-          description: definition.description,
-        },
+        // Names and descriptions are edited in the app (Permission Names page),
+        // so only a new key takes them from the catalog
+        update: { module: definition.module },
         create: definition,
       })
     )
@@ -421,7 +524,7 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
     select: { id: true },
   });
 
-  for (const person of PEOPLE) {
+  for (const person of PEOPLE.filter((p) => included(p.email))) {
     const role = await prisma.role.findUnique({ where: { name: person.primaryRole } });
     if (!role) throw new Error(`Role ${person.primaryRole} missing`);
 
@@ -504,7 +607,7 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
   // delete ALL of Kirubakaran's grants on every run (his old one-offs had become
   // roles), which would also have wiped any grant made since.
   log("");
-  for (const grant of INDIVIDUAL_GRANTS) {
+  for (const grant of INDIVIDUAL_GRANTS.filter((g) => included(g.email))) {
     const person = await prisma.user.findUnique({ where: { email: grant.email }, select: { id: true, name: true } });
     if (!person) continue;
     const ids = grant.keys.map((key) => {
@@ -531,7 +634,7 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
   }
 
   /* --- accounts no longer needed ---------------------------------------- */
-  for (const email of DEACTIVATE) {
+  for (const email of DEACTIVATE.filter(included)) {
     const user = await prisma.user.findUnique({ where: { email } });
     if (user?.isActive) {
       await prisma.user.update({ where: { id: user.id }, data: { isActive: false } });
@@ -563,14 +666,14 @@ export async function applyRolesAndPeople(prisma: PrismaClient, options: Options
   // decided by `stock.approve` plus the site the goods arrived at — see
   // approvalRefusal() in src/lib/actions/stock.ts. That separation is why the
   // step naming a role nobody held used to block every approval in the system.
-  const approver = await prisma.role.findUnique({ where: { name: "Stock Approver" } });
+  const approver = await prisma.role.findUnique({ where: { name: "Stock Manager" } });
   if (approver) {
     const repointed = await prisma.approvalFlowStep.updateMany({
-      where: { approverRole: { name: "Central Stock Manager" } },
+      where: { approverRole: { name: { in: ["Central Stock Manager", "Stock Approver"] } } },
       data: { approverRoleId: approver.id, stepLabel: "Site stock approval" },
     });
     if (repointed.count > 0) {
-      log(`\napproval flow: ${repointed.count} step(s) now point at Stock Approver`);
+      log(`\napproval flow: ${repointed.count} step(s) now point at Stock Manager`);
     }
 
     // A fresh database has no flow yet

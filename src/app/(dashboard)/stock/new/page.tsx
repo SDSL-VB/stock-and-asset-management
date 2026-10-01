@@ -55,12 +55,13 @@ export default async function NewStockEntryPage({
   );
 
   if (isDelivery) {
-    const [products, vendors, locations, myLocationId, openOrderLines] = await Promise.all([
+    const [products, vendors, locations, myLocationId, openOrderLines, clients] = await Promise.all([
       getProductOptions(),
       getVendorsForEntryForm(),
       getLocationsForSelect(),
       getMyLocationId(),
       getOpenOrderLines(),
+      getClientsForEntryForm(),
     ]);
     return (
       <div className="space-y-6">
@@ -75,6 +76,7 @@ export default async function NewStockEntryPage({
           locations={locations}
           defaultLocationId={myLocationId}
           openOrderLines={openOrderLines}
+          clients={clients}
           canSetBatch={user.permissions.includes(PERMISSIONS.STOCK_BATCH_EDIT)}
         />
       </div>

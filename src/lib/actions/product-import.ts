@@ -61,6 +61,11 @@ const KIND_WORDS: Record<string, string> = {
   rawmaterial: "RAW",
   finished: "FINISHED",
   finishedproduct: "FINISHED",
+  finishedgood: "FINISHED",
+  fg: "FINISHED",
+  semifinished: "SEMI_FINISHED",
+  semifinishedgood: "SEMI_FINISHED",
+  sfg: "SEMI_FINISHED",
   kit: "KIT",
   readygoods: "KIT",
 };

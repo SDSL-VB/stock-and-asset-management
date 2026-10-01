@@ -99,9 +99,9 @@ const PERMISSION_DEPENDENCIES: Partial<Record<PermissionKey, Dependency>> = {
     requires: [PERMISSIONS.STOCK_VIEW],
     reason: "Editing an entry means opening it first.",
   },
-  [PERMISSIONS.STOCK_APPROVE]: {
-    requires: [PERMISSIONS.STOCK_VIEW],
-    reason: "Approving an entry means reading it first.",
+  [PERMISSIONS.STOCK_VALUE_APPROVING]: {
+    requires: [PERMISSIONS.STOCK_APPROVE],
+    reason: "This shows the price only on entries waiting for your approval.",
   },
   [PERMISSIONS.STOCK_MOVE]: {
     requires: [PERMISSIONS.STOCK_VIEW],
@@ -110,6 +110,10 @@ const PERMISSION_DEPENDENCIES: Partial<Record<PermissionKey, Dependency>> = {
   [PERMISSIONS.STOCK_VALUE_VIEW]: {
     requires: [PERMISSIONS.STOCK_VIEW],
     reason: "Prices are columns on the stock they belong to.",
+  },
+  [PERMISSIONS.STOCK_SERVICE_APPROVE]: {
+    requires: [PERMISSIONS.STOCK_SERVICE_VIEW],
+    reason: "Approving service stock means reading the entry first.",
   },
   [PERMISSIONS.STOCK_WARRANTY_EDIT]: {
     requires: [PERMISSIONS.STOCK_WARRANTY_VIEW],

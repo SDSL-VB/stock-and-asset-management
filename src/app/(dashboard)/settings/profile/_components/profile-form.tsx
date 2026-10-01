@@ -13,6 +13,8 @@ interface Props {
     name: string;
     email: string;
     role: string;
+    /** Roles held on top of the main one */
+    additionalRoles: string[];
   };
 }
 
@@ -34,9 +36,14 @@ export function ProfileForm({ user }: Props) {
             </AvatarFallback>
           </Avatar>
           <h2 className="mt-4 text-lg font-semibold">{user.name}</h2>
-          <Badge variant="secondary" className="mt-2">
-            {user.role}
-          </Badge>
+          <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+            <Badge variant="secondary">{user.role}</Badge>
+            {user.additionalRoles.map((r) => (
+              <Badge key={r} variant="outline">
+                {r}
+              </Badge>
+            ))}
+          </div>
         </CardContent>
       </Card>
 
@@ -66,10 +73,19 @@ export function ProfileForm({ user }: Props) {
           <div className="space-y-2">
             <Label className="text-muted-foreground text-xs flex items-center gap-1">
               <Shield className="h-3 w-3" />
-              Role
+              Main role
             </Label>
             <p className="text-sm font-medium p-2 rounded-md bg-muted">
               {user.role}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-muted-foreground text-xs flex items-center gap-1">
+              <Shield className="h-3 w-3" />
+              Additional roles
+            </Label>
+            <p className="text-sm font-medium p-2 rounded-md bg-muted">
+              {user.additionalRoles.length > 0 ? user.additionalRoles.join(", ") : "None"}
             </p>
           </div>
           {/* Your password is the one thing here you can change yourself, so the

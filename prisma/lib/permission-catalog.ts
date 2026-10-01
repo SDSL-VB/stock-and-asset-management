@@ -10,6 +10,10 @@
  *   3. `requirePermission(...)` on the action, and hide the UI without it
  *   4. the route in `middleware.ts` if it opens a page
  *   5. `npm run docs:permissions` to rewrite permissions.md
+ *
+ * The name and description here are only the starting text for a new key.
+ * Once a key exists, Admin edits what it is called on the Permission Names
+ * page, and the database copy is the one shown everywhere.
  */
 
 export type PermissionDefinition = {
@@ -99,6 +103,13 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     module: "roles",
     description:
       "Can view roles",
+  },
+  {
+    key: "permissions.rename",
+    name: "Rename Permissions",
+    module: "roles",
+    description:
+      "Can change the name and description every permission is shown with",
   },
 
   // ---- departments ---------------------------------------------------------
@@ -314,6 +325,13 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
       "Can approve or reject stock entries",
   },
   {
+    key: "stock.opening",
+    name: "Book Opening Stock",
+    module: "stock",
+    description:
+      "Can book in a product that has a bill of materials directly — for units that existed before the system did. Everyone else builds them",
+  },
+  {
     key: "stock.batch.edit",
     name: "Set Batch Number",
     module: "stock",
@@ -396,6 +414,118 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     module: "stock",
     description:
       "Can see prices and monetary values of stock",
+  },
+  {
+    key: "locations.create",
+    name: "Add Locations",
+    module: "departments",
+    description:
+      "Can add a new site",
+  },
+  {
+    key: "locations.edit",
+    name: "Edit Locations",
+    module: "departments",
+    description:
+      "Can rename a site, change its code, or take it out of use once nothing there is active",
+  },
+  {
+    key: "assets.transfer.department",
+    name: "Agree Department's Asset Requests",
+    module: "assets",
+    description:
+      "First step of a request to move stock or an asset into a department: its manager agrees, then the Stock Manager approves and moves it",
+  },
+  {
+    key: "assets.report.view",
+    name: "Assets Report",
+    module: "assets",
+    description:
+      "Can see the assets departments hold that came from their own site's central stock — what went out, and where it is now",
+  },
+  {
+    key: "callbacks.raise",
+    name: "Raise Call-backs",
+    module: "stock",
+    description:
+      "Can call back a batch — a finished good, or a semi-finished one inside them — for any reason. What is still in central stock is asked back into their department; Service is told about every customer who has it",
+  },
+  {
+    key: "callbacks.view",
+    name: "View Call-backs",
+    module: "stock",
+    description:
+      "Can see call-backs and the customers they reach, to follow up with them",
+  },
+  {
+    key: "callbacks.receive",
+    name: "Book In Call-back Returns",
+    module: "stock",
+    description:
+      "Can book in goods a customer returned on a call-back. The Stock Manager approves them like any other entry",
+  },
+  {
+    key: "service.swap",
+    name: "Record Parts Swapped at a Customer",
+    module: "stock",
+    description:
+      "Can record a part swapped into a customer's product on site — sent from service stock, or by central stock — so the next call-back finds it",
+  },
+  {
+    key: "materials.request",
+    name: "Request Materials",
+    module: "stock",
+    description:
+      "Can ask central stock for materials to be moved into their department — what a build is short of, or anything else it needs",
+  },
+  {
+    key: "materials.approve.department",
+    name: "Approve Material Requests (Department)",
+    module: "stock",
+    description:
+      "Can approve their own department's material requests, before the Stock Manager supplies them",
+  },
+  {
+    key: "materials.supply",
+    name: "Supply Material Requests",
+    module: "stock",
+    description:
+      "Can supply approved material requests at their site, moving central stock into the department, and raise needs for what is not there",
+  },
+  {
+    key: "stock.classify",
+    name: "Classify as Asset",
+    module: "stock",
+    description:
+      "Can mark stock at their site as an asset, or back as stock. Nobody else can — not when booking goods in, and not when dispatching them",
+  },
+  {
+    key: "stock.value.approving",
+    name: "See Price While Approving",
+    module: "stock",
+    description:
+      "Can see an entry's price and every detail while it waits for this person's approval, and not after",
+  },
+  {
+    key: "stock.find",
+    name: "Find Stock",
+    module: "stock",
+    description:
+      "Can search the site's stock for what is free and which rack it is on, without seeing stock entries",
+  },
+  {
+    key: "stock.service.view",
+    name: "View Service Stock",
+    module: "stock",
+    description:
+      "Can see stock received for service, which is held apart from central stock, and write it off or dispatch it",
+  },
+  {
+    key: "stock.service.approve",
+    name: "Approve Service Stock",
+    module: "stock",
+    description:
+      "Can approve or reject stock entries tagged for service",
   },
   {
     key: "stock.lowstock.view",
@@ -547,6 +677,27 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     module: "bom",
     description:
       "Can publish a bill of materials straight away instead of sending it for approval",
+  },
+  {
+    key: "assets.move.crosssite",
+    name: "Move Across Sites",
+    module: "assets",
+    description:
+      "Can move stock or assets from one site's central stock into a department at another site. Everyone else moves only within their own site",
+  },
+  {
+    key: "bom.build.approve",
+    name: "Approve Built Goods",
+    module: "bom",
+    description:
+      "Can approve finished units from a build into stock, or send them back to the floor. Units this person finishes are approved at once",
+  },
+  {
+    key: "builds.view",
+    name: "View Builds",
+    module: "bom",
+    description:
+      "Can see the Builds page: what has been made, what is on the floor, and what each run consumed",
   },
   {
     key: "bom.unbuild",
@@ -843,5 +994,12 @@ export const PERMISSION_CATALOG: PermissionDefinition[] = [
     module: "settings",
     description:
       "Can view settings",
+  },
+  {
+    key: "approvals.configure",
+    name: "Configure Approval Flows",
+    module: "settings",
+    description:
+      "Can see every approval in the system and switch the optional ones (bill-of-materials review, verifying needs) on or off",
   },
 ];

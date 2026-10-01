@@ -26,14 +26,13 @@ import { CatalogSettingsDialog } from "./_components/catalog-settings-dialog";
  * people have asked to be added.
  *
  * The request queue lives here because this is the page that owns the thing
- * being asked for. Someone who can only ASK still opens this page, and sees
- * nothing but their own requests.
+ * being asked for. It opens for those who manage the catalog or review requests
+ * (CATALOG_PAGE_PERMISSIONS); someone who can only ask does so from the stock
+ * entry form instead.
  *
  * Requests waiting on the viewer are announced at the top of the page and
  * counted in red on the Requests tab; `?tab=requests` (where the dashboard
- * links) opens that tab directly. Anyone who may ASK for a category or product
- * but not add one can do so from the header here, not only from the stock
- * entry form.
+ * links) opens that tab directly.
  */
 export default async function ProductsPage({
   searchParams,

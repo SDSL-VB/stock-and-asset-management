@@ -1,6 +1,10 @@
 import { notFound } from "next/navigation";
 import { requireAnyPermission } from "@/lib/rbac/check";
-import { PERMISSIONS } from "@/lib/rbac/permissions";
+import { maySeeEntryMoney } from "@/lib/stock-visibility";
+import {
+  PERMISSIONS,
+  STOCK_ENTRIES_PAGE_PERMISSIONS,
+} from "@/lib/rbac/permissions";
 import { getDelivery } from "@/lib/actions/deliveries";
 import { getAttachmentTypeConfigs } from "@/lib/actions/stock";
 import { PageHeader } from "@/components/shared/page-header";
@@ -15,7 +19,7 @@ import { DeliveryView } from "../../_components/delivery-view";
  * visible line is reported as not found.
  */
 export default async function DeliveryPage({ params }: { params: Promise<{ id: string }> }) {
-  const user = await requireAnyPermission([PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE]);
+  const user = await requireAnyPermission(STOCK_ENTRIES_PAGE_PERMISSIONS);
   const { id } = await params;
 
   const [delivery, attachmentTypes] = await Promise.all([
@@ -37,8 +41,12 @@ export default async function DeliveryPage({ params }: { params: Promise<{ id: s
         attachmentTypes={attachmentTypes}
         viewerId={user.id}
         canCreate={user.permissions.includes(PERMISSIONS.STOCK_CREATE)}
-        canApprove={user.permissions.includes(PERMISSIONS.STOCK_APPROVE)}
-        canSeeValue={user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW)}
+        // A delivery is all service or none of it; service stock has its own approvers
+        canApprove={user.permissions.includes(
+          first.forService ? PERMISSIONS.STOCK_SERVICE_APPROVE : PERMISSIONS.STOCK_APPROVE
+        )}
+        // The same rule the server used to decide whether prices were sent
+        canSeeValue={delivery.entries.every((e) => maySeeEntryMoney(e, user))}
       />
     </div>
   );

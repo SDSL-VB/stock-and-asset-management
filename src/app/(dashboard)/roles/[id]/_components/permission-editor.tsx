@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { updateRolePermissions } from "@/lib/actions/roles";
 import {
@@ -20,6 +21,8 @@ import {
 } from "@/components/shared/linked-permissions-dialog";
 import { toast } from "sonner";
 import {
+  Search,
+  X,
   Contact,
   Send,
   Truck,
@@ -241,6 +244,7 @@ export function PermissionEditor({
   });
 
   const [activeModule, setActiveModule] = useState<string>(modules[0] ?? "");
+  const [query, setQuery] = useState("");
 
   const totalPermissions = allPermissions.length;
   const selectedCount = selected.size;
@@ -381,9 +385,20 @@ export function PermissionEditor({
     );
   }
 
+  // Search across every module — by name, key, description or module name. While
+  // a search is typed, the right panel lists every match, each labelled with
+  // its module, and the module list shows only modules that have one.
+  const q = query.trim().toLowerCase();
+  const matches = (p: (typeof allPermissions)[number]) =>
+    [p.name, p.key, p.description ?? "", moduleMeta(p.module).label].some((t) =>
+      t.toLowerCase().includes(q)
+    );
+  const searchHits = q ? allPermissions.filter(matches) : [];
+  const shownModules = q ? modules.filter((m) => searchHits.some((p) => p.module === m)) : modules;
+
   const activeMeta = moduleMeta(activeModule);
   const ActiveIcon = activeMeta.icon;
-  const activePerms = allPermissions.filter((p) => p.module === activeModule);
+  const activePerms = q ? searchHits : allPermissions.filter((p) => p.module === activeModule);
   const activeAllSelected = activePerms.length > 0 && activePerms.every((p) => selected.has(p.id));
 
   return (
@@ -423,6 +438,26 @@ export function PermissionEditor({
             Pick a module on the left, then grant individual permissions on the right.
             The switch grants or clears a whole module at once.
           </p>
+          <div className="relative mt-3">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search permissions — e.g. builds, price, approve, service"
+              className="pl-9 pr-9"
+              aria-label="Search permissions"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label="Clear search"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -442,7 +477,7 @@ export function PermissionEditor({
           )}
         >
           <div className="divide-y lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-            {modules.map((module) => {
+            {shownModules.map((module) => {
               const meta = moduleMeta(module);
               const ModuleIcon = meta.icon;
               const modulePerms = allPermissions.filter((p) => p.module === module);
@@ -458,11 +493,17 @@ export function PermissionEditor({
                     "flex w-full items-center gap-3 p-3 text-left transition-colors cursor-pointer",
                     isActive ? "bg-brand-green/10" : "hover:bg-muted/60"
                   )}
-                  onClick={() => setActiveModule(module)}
+                  onClick={() => {
+                    setActiveModule(module);
+                    setQuery("");
+                  }}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") setActiveModule(module);
+                    if (e.key === "Enter" || e.key === " ") {
+                      setActiveModule(module);
+                      setQuery("");
+                    }
                   }}
                 >
                   <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", meta.color)}>
@@ -506,6 +547,12 @@ export function PermissionEditor({
         >
           <CardContent className="space-y-3 p-4 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
             {/* Stays put while the list below it scrolls */}
+            {q ? (
+              <p className="text-sm font-semibold lg:shrink-0">
+                {activePerms.length} permission{activePerms.length === 1 ? "" : "s"} matching
+                “{query.trim()}”
+              </p>
+            ) : (
             <div className="flex flex-wrap items-center justify-between gap-2 lg:shrink-0">
               <div className="flex items-center gap-3">
                 <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", activeMeta.color)}>
@@ -537,6 +584,7 @@ export function PermissionEditor({
                 </Button>
               )}
             </div>
+            )}
 
             <div className="space-y-2 lg:-mr-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
               {activePerms.map((perm) => {
@@ -578,6 +626,12 @@ export function PermissionEditor({
                       >
                         {perm.name}
                       </Label>
+                      {/* While searching, say which module each match is in */}
+                      {q && (
+                        <span className="ml-2 text-[11px] text-muted-foreground">
+                          {moduleMeta(perm.module).label}
+                        </span>
+                      )}
                       {perm.description && (
                         <p className="text-xs text-muted-foreground">
                           {perm.description}
@@ -589,7 +643,7 @@ export function PermissionEditor({
               })}
               {activePerms.length === 0 && (
                 <p className="py-8 text-center text-sm text-muted-foreground">
-                  No permissions in this module.
+                  {q ? "No permission matches that search." : "No permissions in this module."}
                 </p>
               )}
             </div>

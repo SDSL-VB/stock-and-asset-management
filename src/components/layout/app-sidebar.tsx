@@ -3,6 +3,8 @@
 import type { Session } from "next-auth";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { getMyPermissions } from "@/lib/actions/account";
 import { motion, useReducedMotion } from "motion/react";
 import {
   Sidebar,
@@ -41,7 +43,21 @@ interface Props {
 export function AppSidebar({ session }: Props) {
   const pathname = usePathname();
   const reduce = useReducedMotion();
-  const userPermissions = session?.user?.permissions ?? [];
+  // Starts from the session the layout rendered with, then is re-read from the
+  // server on every page change, so a link is only shown if the page it leads
+  // to will actually open (see getMyPermissions)
+  const [userPermissions, setUserPermissions] = useState<string[]>(
+    session?.user?.permissions ?? []
+  );
+  useEffect(() => {
+    let current = true;
+    getMyPermissions()
+      .then((keys) => current && setUserPermissions(keys))
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [pathname]);
   const userRole = session?.user?.role ?? "";
 
   // Filter nav items based on permissions

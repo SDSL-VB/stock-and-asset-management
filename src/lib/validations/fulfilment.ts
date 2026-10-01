@@ -18,5 +18,14 @@ export const createSiteRequestSchema = z.object({
 
 export const reviewSiteRequestSchema = z.object({
   reviewNote: z.string().max(500, "Keep the note under 500 characters").optional(),
+  /**
+   * How many the holding site will send when agreeing. Omitted means all of
+   * it; fewer is a partial answer. Ignored when declining.
+   */
+  quantity: z.coerce
+    .number()
+    .int("Send a whole number of units")
+    .positive("Send at least one")
+    .optional(),
 });
 

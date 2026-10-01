@@ -76,7 +76,9 @@ export default async function DispatchPage({
           ]}
         />
       </PageHeader>
-      <Tabs defaultValue={tab} className="space-y-4">
+      {/* Keyed on the tab so a link to ?tab=requests from this same page (a
+          notification) switches tabs rather than being ignored */}
+      <Tabs key={tab} defaultValue={tab} className="space-y-4">
         {canSeeConsignments && canSeeRequests && (
           <TabsList>
             <TabsTrigger value="consignments">Consignments</TabsTrigger>

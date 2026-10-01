@@ -42,6 +42,15 @@ const COMMITTING_BUILD_STATUSES = ["IN_PROGRESS", "COMPLETED"] as const;
 
 export const committingBuildConsumptionsWhere = {
   build: { status: { in: [...COMMITTING_BUILD_STATUSES] } },
+  // Taken from central stock. A component taken from a DEPARTMENT'S holding
+  // comes off that holding (heldByIssue), never off the entry as well — the
+  // entry already lost it when it moved. Counting it here would deduct twice.
+  stockIssueId: null,
+};
+
+/** The same, on a department holding: what its builds have taken from it. */
+const issueBuildConsumptionsWhere = {
+  build: { status: { in: [...COMMITTING_BUILD_STATUSES] } },
 };
 
 /**
@@ -160,7 +169,7 @@ export function availableQuantity(entry: Drawdowns): number {
 }
 
 /**
- * The department side of the same question.
+ * The department side of the same question — write-offs and builds.
  *
  * A department's holding is its StockIssue, and a write-off raised against
  * that holding reduces it — but must NOT reduce the entry as well, because the
@@ -169,34 +178,40 @@ export function availableQuantity(entry: Drawdowns): number {
  * `availabilityInclude` deliberately ignores departmental write-offs, and this
  * is where they are accounted for instead.
  *
- * Use `issueWriteOffsInclude` to fetch exactly what these need.
+ * Use `issueDrawdownsInclude` to fetch exactly what these need.
  */
 const liveWriteOffsWhere = {
   status: { in: [...LIVE_WRITE_OFF_STATUSES] },
 };
 
-export const issueWriteOffsInclude = {
+export const issueDrawdownsInclude = {
   writeOffs: { where: liveWriteOffsWhere, select: { quantity: true, status: true } },
+  buildConsumptions: { where: issueBuildConsumptionsWhere, select: { quantity: true } },
 };
 
 /**
  * The same thing, spread into a `select` on an entry's `issues` relation:
  *
- *   issues: { select: { departmentId: true, quantity: true, ...issueWriteOffsSelect } }
+ *   issues: { select: { departmentId: true, quantity: true, ...issueDrawdownsSelect } }
  *
  * The reports compute each department's share from these issues, so without it
  * a department would go on being credited with stock it has written off.
  */
-export const issueWriteOffsSelect = issueWriteOffsInclude;
+export const issueDrawdownsSelect = issueDrawdownsInclude;
 
 type IssueDrawdowns = {
   quantity: number;
   writeOffs?: WriteOffDrawdown[];
+  buildConsumptions?: { quantity: number }[];
 };
 
-/** What the department still physically has: issued, less what was written off. */
+/**
+ * What the department still physically has: issued, less what was written off
+ * and what its builds have used.
+ */
 export function heldByIssue(issue: IssueDrawdowns): number {
-  return round(issue.quantity - sumWriteOffs(issue.writeOffs, "APPROVED"));
+  const consumed = (issue.buildConsumptions ?? []).reduce((sum, c) => sum + c.quantity, 0);
+  return round(issue.quantity - sumWriteOffs(issue.writeOffs, "APPROVED") - consumed);
 }
 
 /**

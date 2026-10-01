@@ -9,9 +9,9 @@ import { prisma } from "@/lib/prisma";
  * opposite reason.
  *
  * A single row, created the first time it is read. A plain server module, not
- * a "use server" one: only bom.ts reads it, so it is not a callable endpoint. Read by bom.ts when a bill
- * of materials is submitted; nothing changes it while the Configuration page is
- * taken out.
+ * a "use server" one, so it is not a callable endpoint. Read by bom.ts when a
+ * bill of materials is submitted; switched on or off on the Approval Flows page
+ * (actions/approval-settings.ts).
  */
 
 const SINGLETON = "singleton";

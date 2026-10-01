@@ -12,6 +12,8 @@ import {
   Building2,
   Edit,
   TrendingUp,
+  Truck,
+  PackageCheck,
 } from "lucide-react";
 import { StatCard } from "@/components/dashboard/stat-card";
 
@@ -29,13 +31,22 @@ import {
   resolveStockScope,
 } from "@/lib/rbac/permissions";
 import type { Trend } from "@/lib/actions/dashboard";
+import type { ReactNode } from "react";
 
 /**
  * The single, permission-driven dashboard. Every section below declares the
  * permission it needs; the page only fetches (and this component only renders)
  * what the current user's role is actually allowed to see. New roles composed
  * from any mix of permissions get a sensible dashboard with zero extra code.
+ *
+ * The layout is built from whatever survives those checks, so nothing leaves
+ * a hole: the KPI tiles (stock, team, dispatch) flow in one band and stretch
+ * to fill each row, and the panels pair up two to a row, with a lone or
+ * leftover panel taking the full width.
  */
+
+/** A KPI tile grows to share its row; below ~200px it wraps to the next one. */
+const TILE = "min-w-[200px] flex-1";
 
 interface RecentEntry {
   id: string;
@@ -59,7 +70,9 @@ export type ReviewQueueItem = {
     | "PRODUCT"
     | "CATEGORY"
     | "SITE_REQUEST"
-    | "PURCHASE_INTENT";
+    | "PURCHASE_INTENT"
+    | "BUILT_GOODS"
+    | "MATERIALS";
   id: string;
   title: string;
   subtitle: string;
@@ -202,6 +215,177 @@ export function DynamicDashboard({
     activity ||
     dispatch;
 
+  /* ---- KPI tiles, in reading order ------------------------------------ */
+  const tiles: { key: string; node: ReactNode }[] = [];
+  if (stock) {
+    // Entry operators (no stock.view) cannot browse entries: they get their
+    // drafts and nothing more
+    if (has(PERMISSIONS.STOCK_VIEW)) {
+      tiles.push({
+        key: "entries",
+        node: (
+          <StatCard
+            title={isAdmin ? "Stock Entries" : "My Entries"}
+            value={stock.stats.total}
+            description="Total entries"
+            icon={Package}
+            tone="info"
+            trend={stock.trends.entries.series}
+            deltaPct={stock.trends.entries.deltaPct}
+            href="/stock"
+          />
+        ),
+      });
+    }
+    if (has(PERMISSIONS.STOCK_CREATE)) {
+      tiles.push({
+        key: "drafts",
+        node: (
+          <StatCard title="Drafts" value={stock.stats.drafts} description="Not yet submitted" icon={FileText} tone="draft" href="/stock" />
+        ),
+      });
+    }
+    if (has(PERMISSIONS.STOCK_VIEW)) {
+      tiles.push(
+        {
+          key: "pending",
+          node: (
+            <StatCard
+              title="Pending"
+              value={stock.stats.submitted}
+              description={has(PERMISSIONS.STOCK_APPROVE) ? "Awaiting your review" : "Awaiting approval"}
+              icon={Clock}
+              tone="pending"
+              trend={stock.trends.pending.series}
+              deltaPct={stock.trends.pending.deltaPct}
+              href="/stock"
+            />
+          ),
+        },
+        {
+          key: "approved",
+          node: (
+            <StatCard
+              title="Approved"
+              value={stock.stats.approved}
+              description="Approved entries"
+              icon={CheckCircle}
+              tone="approved"
+              trend={stock.trends.approved.series}
+              deltaPct={stock.trends.approved.deltaPct}
+              href="/stock"
+            />
+          ),
+        }
+      );
+    }
+    if (has(PERMISSIONS.STOCK_VALUE_VIEW)) {
+      tiles.push({
+        key: "value",
+        node: (
+          <StatCard
+            title="Approved Value"
+            value={stock.stats.approvedValue}
+            description="Total approved stock"
+            icon={IndianRupee}
+            tone="approved"
+            currency
+            trend={stock.trends.approvedValue.series}
+            deltaPct={stock.trends.approvedValue.deltaPct}
+            href={has(PERMISSIONS.REPORTS_VIEW) ? "/reports" : "/stock"}
+          />
+        ),
+      });
+    }
+  }
+  if (departmentMemberCount !== null) {
+    tiles.push({
+      key: "members",
+      node: (
+        <StatCard title="Department Members" value={departmentMemberCount} description="Active members" icon={Users} tone="info" href="/users" />
+      ),
+    });
+  }
+  if (team) {
+    tiles.push({
+      key: "users",
+      node: (
+        <StatCard
+          title="Total Users"
+          value={team.userCount}
+          description="Active accounts"
+          icon={Users}
+          tone="info"
+          trend={stock?.trends.users.series}
+          deltaPct={stock?.trends.users.deltaPct}
+          href="/users"
+        />
+      ),
+    });
+    if (has(PERMISSIONS.DEPARTMENTS_VIEW)) {
+      tiles.push({
+        key: "departments",
+        node: (
+          <StatCard title="Departments" value={team.departmentCount} description="Active departments" icon={Building2} tone="info" href="/departments" />
+        ),
+      });
+    }
+    tiles.push({
+      key: "new-users",
+      node: (
+        <StatCard title="New This Month" value={team.recentUsers} description="Recently added" icon={TrendingUp} tone="approved" href="/users" />
+      ),
+    });
+  }
+  // Dispatch is a module in its own right — an operator holding only dispatch
+  // keys still lands on something useful
+  if (dispatch) {
+    tiles.push(
+      {
+        key: "awaiting",
+        node: (
+          <StatCard title="Awaiting Acceptance" value={dispatch.awaitingAcceptance} description="Consignments to accept" icon={Clock} tone="pending" href="/dispatch" />
+        ),
+      },
+      {
+        key: "in-transit",
+        node: (
+          <StatCard title="In Transit" value={dispatch.inTransit} description="On the road" icon={Truck} tone="info" href="/dispatch" />
+        ),
+      },
+      {
+        key: "delivered",
+        node: (
+          <StatCard title="Delivered" value={dispatch.deliveredThisMonth} description="This month" icon={PackageCheck} tone="approved" href="/dispatch" />
+        ),
+      }
+    );
+  }
+
+  /* ---- panels ----------------------------------------------------------- */
+  const panels: { key: string; node: ReactNode }[] = [];
+  // Needs fixing — creators with rejected entries
+  if (has(PERMISSIONS.STOCK_CREATE) && rejectedEntries.length > 0) {
+    panels.push({ key: "fixing", node: <NeedsFixing entries={rejectedEntries} /> });
+  }
+  // Recent entries — anyone with stock visibility
+  if (stock && has(PERMISSIONS.STOCK_VIEW)) {
+    panels.push({
+      key: "recent",
+      node: (
+        <RecentEntries
+          entries={stock.stats.recentEntries}
+          canCreate={has(PERMISSIONS.STOCK_CREATE)}
+          seesMoney={has(PERMISSIONS.STOCK_VALUE_VIEW)}
+        />
+      ),
+    });
+  }
+  // Department overview — department viewers
+  if (departments && departments.length > 0) {
+    panels.push({ key: "departments", node: <DepartmentPanel departments={departments} /> });
+  }
+
   return (
     <div className="space-y-8">
       <Reveal>
@@ -220,321 +404,32 @@ export function DynamicDashboard({
         />
       </Reveal>
 
-      {/* Stock KPIs — anyone who can see or create stock */}
-      {stock && (
-        <Stagger className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <StaggerItem>
-            <StatCard
-              title={isAdmin ? "Stock Entries" : "My Entries"}
-              value={stock.stats.total}
-              description="Total entries"
-              icon={Package}
-              tone="info"
-              trend={stock.trends.entries.series}
-              deltaPct={stock.trends.entries.deltaPct}
-              href="/stock"
-            />
-          </StaggerItem>
-          {has(PERMISSIONS.STOCK_CREATE) ? (
-            <StaggerItem>
-              <StatCard
-                title="Drafts"
-                value={stock.stats.drafts}
-                description="Not yet submitted"
-                icon={FileText}
-                tone="draft"
-                href="/stock"
-              />
+      {tiles.length > 0 && (
+        <Stagger className="flex flex-wrap gap-4">
+          {tiles.map((tile) => (
+            <StaggerItem key={tile.key} className={TILE}>
+              {tile.node}
             </StaggerItem>
-          ) : null}
-          <StaggerItem>
-            <StatCard
-              title="Pending"
-              value={stock.stats.submitted}
-              description={
-                has(PERMISSIONS.STOCK_APPROVE)
-                  ? "Awaiting your review"
-                  : "Awaiting approval"
-              }
-              icon={Clock}
-              tone="pending"
-              trend={stock.trends.pending.series}
-              deltaPct={stock.trends.pending.deltaPct}
-              href="/stock"
-            />
-          </StaggerItem>
-          <StaggerItem>
-            <StatCard
-              title="Approved"
-              value={stock.stats.approved}
-              description="Approved entries"
-              icon={CheckCircle}
-              tone="approved"
-              trend={stock.trends.approved.series}
-              deltaPct={stock.trends.approved.deltaPct}
-              href="/stock"
-            />
-          </StaggerItem>
-          {has(PERMISSIONS.STOCK_VALUE_VIEW) && (
-            <StaggerItem>
-              <StatCard
-                title="Approved Value"
-                value={stock.stats.approvedValue}
-                description="Total approved stock"
-                icon={IndianRupee}
-                tone="approved"
-                currency
-                trend={stock.trends.approvedValue.series}
-                deltaPct={stock.trends.approvedValue.deltaPct}
-                href={has(PERMISSIONS.REPORTS_VIEW) ? "/reports" : "/stock"}
-              />
-            </StaggerItem>
-          )}
+          ))}
         </Stagger>
       )}
 
-      {/* Team KPIs — anyone who can see users/departments */}
-      {(team || departmentMemberCount !== null) && (
-        <Stagger className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {departmentMemberCount !== null && (
-            <StaggerItem>
-              <StatCard
-                title="Department Members"
-                value={departmentMemberCount}
-                description="Active members"
-                icon={Users}
-                tone="info"
-                href="/users"
-              />
-            </StaggerItem>
-          )}
-          {team && (
-            <>
-              <StaggerItem>
-                <StatCard
-                  title="Total Users"
-                  value={team.userCount}
-                  description="Active accounts"
-                  icon={Users}
-                  tone="info"
-                  trend={stock?.trends.users.series}
-                  deltaPct={stock?.trends.users.deltaPct}
-                  href="/users"
-                />
-              </StaggerItem>
-              {has(PERMISSIONS.DEPARTMENTS_VIEW) && (
-                <StaggerItem>
-                  <StatCard
-                    title="Departments"
-                    value={team.departmentCount}
-                    description="Active departments"
-                    icon={Building2}
-                    tone="info"
-                    href="/departments"
-                  />
-                </StaggerItem>
-              )}
-              <StaggerItem>
-                <StatCard
-                  title="New This Month"
-                  value={team.recentUsers}
-                  description="Recently added"
-                  icon={TrendingUp}
-                  tone="approved"
-                  href="/users"
-                />
-              </StaggerItem>
-            </>
-          )}
-        </Stagger>
-      )}
-
-
-      {/* Dispatch is a module in its own right — an operator holding only
-          dispatch keys still lands on something useful. */}
-      {dispatch && (
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Link
-            href="/dispatch"
-            className="rounded-xl border bg-card p-5 transition hover:shadow-md"
-          >
-            <p className="text-3xl font-semibold tabular-nums">
-              {dispatch.awaitingAcceptance}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Awaiting acceptance
-            </p>
-          </Link>
-          <Link
-            href="/dispatch"
-            className="rounded-xl border bg-card p-5 transition hover:shadow-md"
-          >
-            <p className="text-3xl font-semibold tabular-nums">
-              {dispatch.inTransit}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">In transit</p>
-          </Link>
-          <Link
-            href="/dispatch"
-            className="rounded-xl border bg-card p-5 transition hover:shadow-md"
-          >
-            <p className="text-3xl font-semibold tabular-nums">
-              {dispatch.deliveredThisMonth}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Delivered this month
-            </p>
-          </Link>
+      {panels.length > 0 && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          {panels.map((panel, i) => (
+            <div
+              key={panel.key}
+              // The odd one out — or the only one — spans both columns
+              className={panels.length % 2 === 1 && i === panels.length - 1 ? "lg:col-span-2" : undefined}
+            >
+              {panel.node}
+            </div>
+          ))}
         </div>
       )}
 
-      <div className="grid items-start gap-6 lg:grid-cols-2">
-        {/* Unified review queue — everything awaiting this user's approval,
-            labelled by kind (stock entries, transfers, products, categories) */}
-
-        {/* Needs fixing — creators with rejected entries */}
-        {has(PERMISSIONS.STOCK_CREATE) && rejectedEntries.length > 0 && (
-          <Card className="border-red-200">
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <XCircle className="size-4 text-status-rejected" />
-                Needs Fixing
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Stagger className="space-y-3" stagger={0.04}>
-                {rejectedEntries.map((entry) => (
-                  <StaggerItem key={entry.id}>
-                    <div className="flex items-center justify-between gap-3 rounded-lg border border-red-100 p-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-body font-semibold">
-                          {entry.itemName}
-                        </p>
-                        <p className="truncate text-caption text-muted-foreground">
-                          {entry.entryNumber}
-                        </p>
-                        {entry.rejectionReason && (
-                          <p className="mt-1 text-caption text-status-rejected">
-                            Reason: {entry.rejectionReason}
-                          </p>
-                        )}
-                      </div>
-                      <Button
-                        render={<Link href={`/stock/${entry.id}/edit`} />}
-                        nativeButton={false}
-                        size="sm"
-                        variant="outline"
-                        className="shrink-0"
-                      >
-                        <Edit />
-                        Edit &amp; Resubmit
-                      </Button>
-                    </div>
-                  </StaggerItem>
-                ))}
-              </Stagger>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Recent entries — anyone with stock visibility */}
-        {stock && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <Package className="size-4 text-status-approved" />
-                Recent Stock Entries
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {stock.stats.recentEntries.length === 0 ? (
-                <EmptyState
-                  emoji="📦"
-                  title="No stock entries yet"
-                  description={
-                    has(PERMISSIONS.STOCK_CREATE)
-                      ? "Create your first entry to get started."
-                      : "Entries will show up here as they're created."
-                  }
-                  action={
-                    has(PERMISSIONS.STOCK_CREATE)
-                      ? { label: "New stock entry", href: "/stock/new" }
-                      : undefined
-                  }
-                  className="py-8"
-                />
-              ) : (
-                <Stagger className="space-y-3" stagger={0.04}>
-                  {stock.stats.recentEntries.slice(0, 5).map((entry) => (
-                    <StaggerItem key={entry.id}>
-                      <Link
-                        href={`/stock/${entry.id}`}
-                        className="flex items-center justify-between gap-3 rounded-lg border p-3 transition-colors duration-200 hover:bg-muted/60"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-body font-semibold">
-                            {entry.itemName}
-                          </p>
-                          <p className="truncate text-caption text-muted-foreground">
-                            {entry.entryNumber} &middot; {entry.createdBy.name}
-                            {has(PERMISSIONS.STOCK_VALUE_VIEW) &&
-                              ` · ${formatCurrency(entry.totalPrice)}`}
-                          </p>
-                        </div>
-                        <Badge
-                          variant="outline"
-                          className={statusPill(entry.status)}
-                        >
-                          {entry.status}
-                        </Badge>
-                      </Link>
-                    </StaggerItem>
-                  ))}
-                </Stagger>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Department overview — department viewers */}
-        {departments && departments.length > 0 && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <Building2 className="size-4 text-status-info" />
-                Departments
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Stagger className="space-y-3" stagger={0.04}>
-                {departments.slice(0, 6).map((dept) => (
-                  <StaggerItem key={dept.id}>
-                    <Link
-                      href={`/departments/${dept.id}`}
-                      className="flex items-center justify-between gap-3 rounded-lg border p-3 transition-colors duration-200 hover:bg-muted/60"
-                    >
-                      <p className="truncate text-body font-semibold">
-                        {dept.name}
-                      </p>
-                      <span className="flex shrink-0 items-center gap-1.5 text-caption text-muted-foreground">
-                        <Users className="size-3.5" />
-                        {dept._count.users}
-                      </span>
-                    </Link>
-                  </StaggerItem>
-                ))}
-              </Stagger>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Activity feed — spans when it's the only thing in its row */}
-        {activity && (
-          <div className={stock ? "lg:col-span-2" : ""}>
-            <RecentActivity activities={activity} searchable={isAdmin} />
-          </div>
-        )}
-      </div>
+      {/* Activity feed — always the full width of the page */}
+      {activity && <RecentActivity activities={activity} searchable={isAdmin} />}
 
       {/* A role with no permissions still gets a friendly landing */}
       {!hasAnything && (
@@ -549,5 +444,132 @@ export function DynamicDashboard({
         </Card>
       )}
     </div>
+  );
+}
+
+/* ---- panels: each fills its grid cell, so a row's pair line up ---------- */
+
+function NeedsFixing({ entries }: { entries: RecentEntry[] }) {
+  return (
+    <Card className="h-full border-red-200">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2">
+          <XCircle className="size-4 text-status-rejected" />
+          Needs Fixing
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Stagger className="space-y-3" stagger={0.04}>
+          {entries.map((entry) => (
+            <StaggerItem key={entry.id}>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-red-100 p-3">
+                <div className="min-w-0">
+                  <p className="truncate text-body font-semibold">{entry.itemName}</p>
+                  <p className="truncate text-caption text-muted-foreground">{entry.entryNumber}</p>
+                  {entry.rejectionReason && (
+                    <p className="mt-1 text-caption text-status-rejected">Reason: {entry.rejectionReason}</p>
+                  )}
+                </div>
+                <Button
+                  render={<Link href={`/stock/${entry.id}/edit`} />}
+                  nativeButton={false}
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                >
+                  <Edit />
+                  Edit &amp; Resubmit
+                </Button>
+              </div>
+            </StaggerItem>
+          ))}
+        </Stagger>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RecentEntries({
+  entries,
+  canCreate,
+  seesMoney,
+}: {
+  entries: RecentEntry[];
+  canCreate: boolean;
+  seesMoney: boolean;
+}) {
+  return (
+    <Card className="h-full">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2">
+          <Package className="size-4 text-status-approved" />
+          Recent Stock Entries
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {entries.length === 0 ? (
+          <EmptyState
+            emoji="📦"
+            title="No stock entries yet"
+            description={canCreate ? "Create your first entry to get started." : "Entries will show up here as they're created."}
+            action={canCreate ? { label: "New stock entry", href: "/stock/new" } : undefined}
+            className="py-8"
+          />
+        ) : (
+          <Stagger className="space-y-3" stagger={0.04}>
+            {entries.slice(0, 5).map((entry) => (
+              <StaggerItem key={entry.id}>
+                <Link
+                  href={`/stock/${entry.id}`}
+                  className="flex items-center justify-between gap-3 rounded-lg border p-3 transition-colors duration-200 hover:bg-muted/60"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-body font-semibold">{entry.itemName}</p>
+                    <p className="truncate text-caption text-muted-foreground">
+                      {entry.entryNumber} &middot; {entry.createdBy.name}
+                      {seesMoney && ` · ${formatCurrency(entry.totalPrice)}`}
+                    </p>
+                  </div>
+                  <Badge variant="outline" className={statusPill(entry.status)}>
+                    {entry.status}
+                  </Badge>
+                </Link>
+              </StaggerItem>
+            ))}
+          </Stagger>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DepartmentPanel({ departments }: { departments: DeptOverview[] }) {
+  return (
+    <Card className="h-full">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2">
+          <Building2 className="size-4 text-status-info" />
+          Departments
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Stagger className="space-y-3" stagger={0.04}>
+          {departments.slice(0, 6).map((dept) => (
+            <StaggerItem key={dept.id}>
+              <Link
+                href={`/departments/${dept.id}`}
+                className="flex items-center justify-between gap-3 rounded-lg border p-3 transition-colors duration-200 hover:bg-muted/60"
+              >
+                <p className="truncate text-body font-semibold">{dept.name}</p>
+                <span className="flex shrink-0 items-center gap-1.5 text-caption text-muted-foreground">
+                  <Users className="size-3.5" />
+                  {dept._count.users}
+                </span>
+              </Link>
+            </StaggerItem>
+          ))}
+        </Stagger>
+      </CardContent>
+    </Card>
   );
 }

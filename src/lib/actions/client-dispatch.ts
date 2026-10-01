@@ -12,6 +12,14 @@ import { prisma } from "@/lib/prisma";
  * Called when the last approval step completes. Safe to call for any entry: it
  * does nothing unless the entry names a client, has a location, and has no
  * dispatch already.
+ *
+ * NEVER MAKE THIS FILE "use server". It sits among the server actions but is
+ * not one, and must not become one: it checks no permission and takes the
+ * acting user's id as an ARGUMENT, trusting its caller — approveStockEntry in
+ * stock.ts, which passes the signed-in user. As an endpoint it would let anyone
+ * raise a consignment for any entry and sign it with anyone's name. If it ever
+ * needs calling from the browser, wrap it in an action that reads the user from
+ * the session instead.
  */
 export async function raiseClientDispatchForEntry(
   stockEntryId: string,

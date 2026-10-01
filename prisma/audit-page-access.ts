@@ -24,6 +24,7 @@
 import { PrismaClient } from "@prisma/client";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
+import { NAV_ITEMS } from "../src/lib/constants";
 
 const prisma = new PrismaClient();
 const ROOT = process.cwd();
@@ -276,7 +277,32 @@ async function main() {
     if (guarded.length > 25) console.log(`  …and ${guarded.length - 25} more`);
   }
 
-  process.exitCode = problems.length > 0 ? 1 : 0;
+  // A sidebar link must never be shown to someone its route refuses — that is
+  // a link straight to Access Denied.
+  const navProblems: string[] = [];
+  for (const item of NAV_ITEMS) {
+    const path = item.href.split("?")[0];
+    const match = [...routeGates.entries()]
+      .filter(([route]) => path.startsWith(route))
+      .sort(([a], [b]) => b.length - a.length)[0];
+    if (!match || match[1].length === 0) continue;
+    const shownTo = item.anyPermission ?? (item.permission ? [item.permission] : []);
+    // Every key that shows the link must also open the page. Showing it to
+    // fewer is allowed — two links can lead to one page, like Service Stock.
+    if (!shownTo.every((k) => match[1].includes(k))) {
+      navProblems.push(
+        `  ${item.label.padEnd(20)} sidebar [${shownTo.join(", ")}]\n  ${"".padEnd(20)} route   [${match[1].join(", ")}] (${match[0]})`
+      );
+    }
+  }
+  if (navProblems.length === 0) {
+    console.log("\nSIDEBAR: no link is shown to anyone its page refuses.");
+  } else {
+    console.log(`\nSIDEBAR MISMATCH — a link shown to people its page refuses (${navProblems.length}):`);
+    console.log(navProblems.join("\n"));
+  }
+
+  process.exitCode = problems.length > 0 || navProblems.length > 0 ? 1 : 0;
 }
 
 main()

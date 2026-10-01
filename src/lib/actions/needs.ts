@@ -43,6 +43,16 @@ type NeedLine = {
   vendorId?: string | null;
 };
 
+/** The fields a need gets when whoever raises it may verify it */
+function verifiedOnRaise(userId: string) {
+  return {
+    status: "APPROVED" as const,
+    reviewedById: userId,
+    reviewedAt: new Date(),
+    reviewNote: "Verified on raising",
+  };
+}
+
 /**
  * The one way a list is created — used by the build shortage here and by the
  * low-stock alert. Everything in one transaction, so a list never exists with
@@ -57,6 +67,8 @@ async function createNeedList(input: {
   neededBy: Date | null;
   lines: NeedLine[];
   user: { id: string; departmentId?: string | null };
+  /** Raised by someone who may verify needs: verified on raising */
+  verified: boolean;
 }) {
   return prisma.$transaction(async (tx) => {
     const list = await tx.needList.create({
@@ -85,6 +97,7 @@ async function createNeedList(input: {
           notes: line.note ? `${input.notes} — ${line.note}` : input.notes,
           requestedById: input.user.id,
           needListId: list.id,
+          ...(input.verified ? verifiedOnRaise(input.user.id) : {}),
         },
       });
     }
@@ -129,6 +142,8 @@ const requestSchema = z.object({
  */
 export async function requestNeeds(data: unknown) {
   const user = await requirePermission(PERMISSIONS.PROCUREMENT_INTENT_CREATE);
+  // Raise what you may verify, and it is verified
+  const verified = user.permissions.includes(PERMISSIONS.PROCUREMENT_INTENT_APPROVE);
   const parsed = requestSchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const { lines, notes, source } = parsed.data;
@@ -164,16 +179,23 @@ export async function requestNeeds(data: unknown) {
         neededBy,
         notes: notes?.trim() || null,
         requestedById: user.id,
+        ...(verified ? verifiedOnRaise(user.id) : {}),
       },
     });
-    await logActivity("CREATED", "PurchaseIntent", intent.id, `Raised ${intent.intentNumber} — needs ${line.quantity} × ${known.get(line.productId)}`);
+    await logActivity(
+      "CREATED",
+      "PurchaseIntent",
+      intent.id,
+      `Raised ${intent.intentNumber}${verified ? " and verified it" : ""} — needs ${line.quantity} × ${known.get(line.productId)}`
+    );
     revalidatePath("/procurement");
     await needsRaised({
       count: 1,
       label: intent.intentNumber,
       locationId,
       requestedById: user.id,
-      requiresApproval: (await getProcurementFlow()).requiresApproval,
+      // Already verified: it goes straight to whoever orders
+      requiresApproval: !verified && (await getProcurementFlow()).requiresApproval,
     });
     return { success: true, count: 1, listNumber: null };
   }
@@ -198,6 +220,7 @@ export async function requestNeeds(data: unknown) {
     neededBy,
     user,
     lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity, vendorId: l.vendorId || null, note: l.note ?? "" })),
+    verified,
   });
 
   await logActivity(
@@ -214,7 +237,7 @@ export async function requestNeeds(data: unknown) {
     label: list.listNumber,
     locationId,
     requestedById: user.id,
-    requiresApproval: (await getProcurementFlow()).requiresApproval,
+    requiresApproval: !verified && (await getProcurementFlow()).requiresApproval,
   });
   return { success: true, count: lines.length, listNumber: list.listNumber };
 }

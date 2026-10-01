@@ -2,9 +2,9 @@
 
 import { prisma } from "@/lib/prisma";
 import { requirePermission, resolveStockScope } from "@/lib/rbac/check";
-import { PERMISSIONS } from "@/lib/rbac/permissions";
+import { PERMISSIONS, BUILDS_PAGE_PERMISSIONS } from "@/lib/rbac/permissions";
 import { toCsv } from "@/lib/csv";
-import { NO_SITE } from "@/lib/stock-visibility";
+import { NO_SITE, reportDepartmentWhere } from "@/lib/stock-visibility";
 import { hideMoney } from "@/lib/hide-money";
 import {
   visibleToDepartmentScope,
@@ -16,7 +16,7 @@ import {
   committingDispatchItemsWhere,
   committingBuildConsumptionsWhere,
   centralWriteOffsWhere,
-  issueWriteOffsSelect,
+  issueDrawdownsSelect,
   heldByIssue,
 } from "@/lib/stock-availability";
 import type { Prisma, StockEntryStatus } from "@prisma/client";
@@ -67,19 +67,16 @@ async function getStockReport(filters: ReportFilters = {}) {
 async function readStockReport(filters: ReportFilters = {}) {
   const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
 
-  const where: Prisma.StockEntryWhereInput = {};
+  // Service stock is held apart and listed on its own page, never here
+  const where: Prisma.StockEntryWhereInput = { forService: false };
 
-  // Scope: department-scoped users see their department only (including
-  // central stock and entries issued to their department)
+  // Scope: department-scoped users see their department, and their own site's
+  // central stock — see departmentScopeWhere
   const scope = resolveStockScope(user);
   if (scope === "own") {
     where.createdById = user.id;
-  } else if (scope === "department" && user.departmentId) {
-    where.OR = [
-      { departmentId: user.departmentId },
-      { departmentId: null },
-      { issues: { some: { departmentId: user.departmentId } } },
-    ];
+  } else if (scope === "department") {
+    Object.assign(where, reportDepartmentWhere(user));
   } else if (filters.departmentId) {
     // Only allow department filter for non-dept-manager roles; matches entries
     // assigned to the department or moved there via transfers
@@ -160,18 +157,6 @@ async function readStockReport(filters: ReportFilters = {}) {
   };
 }
 
-// Scope filter for a role: managers see their department's stock, which in the
-// central-stock flow means entries issued to their department plus anything
-// still in central stock (departmentId null) or legacy-assigned to them.
-function departmentScopeWhere(departmentId: string): Prisma.StockEntryWhereInput {
-  return {
-    OR: [
-      { departmentId },
-      { departmentId: null },
-      { issues: { some: { departmentId } } },
-    ],
-  };
-}
 
 /**
  * Where stock currently sits, per department. Stock moves via StockIssue
@@ -209,7 +194,7 @@ async function computeDepartmentDistribution(
           departmentId: true,
           quantity: true,
           department: { select: { name: true } },
-          ...issueWriteOffsSelect,
+          ...issueDrawdownsSelect,
         },
       },
       dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
@@ -315,7 +300,7 @@ async function getDepartmentInventory(departmentId: string) {
       unitPrice: true,
       departmentId: true,
       createdAt: true,
-      issues: { select: { departmentId: true, quantity: true, createdAt: true, ...issueWriteOffsSelect } },
+      issues: { select: { departmentId: true, quantity: true, createdAt: true, ...issueDrawdownsSelect } },
       dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
       buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
       // The fifth drawdown. Central write-offs only — a department's losses
@@ -434,14 +419,16 @@ async function readInventoryOverview(departmentId?: string) {
   let baseWhere: Prisma.StockEntryWhereInput = {};
   if (scope === "own") {
     baseWhere = { createdById: user.id };
-  } else if (scope === "department" && user.departmentId) {
-    baseWhere = departmentScopeWhere(user.departmentId);
+  } else if (scope === "department") {
+    baseWhere = reportDepartmentWhere(user);
   } else if (departmentId) {
     baseWhere = {
       OR: [{ departmentId }, { issues: { some: { departmentId } } }],
     };
   }
   if (scope === "location") baseWhere = { AND: [baseWhere, siteWhere(user)] };
+  // Service stock is held apart and never counts in these figures
+  baseWhere = { AND: [baseWhere, { forService: false }] };
 
   // A department drill-down reports what that department actually holds
   if (departmentId && scope !== "department") {
@@ -629,7 +616,7 @@ async function readStockHoldings(target: {
     departmentId: true,
     createdAt: true,
     product: { select: { kind: true, category: { select: { name: true } } } },
-    issues: { select: { departmentId: true, quantity: true, ...issueWriteOffsSelect } },
+    issues: { select: { departmentId: true, quantity: true, ...issueDrawdownsSelect } },
     dispatchItems: { where: committingDispatchItemsWhere, select: { quantity: true } },
     buildConsumptions: { where: committingBuildConsumptionsWhere, select: { quantity: true } },
     // The fifth drawdown. Central write-offs only — a department's losses
@@ -639,7 +626,7 @@ async function readStockHoldings(target: {
 
   if (target.centralLocation) {
     const entries = await prisma.stockEntry.findMany({
-      where: { status: "APPROVED", departmentId: null, locationId: target.centralLocation },
+      where: { status: "APPROVED", departmentId: null, forService: false, locationId: target.centralLocation },
       select,
       orderBy: { createdAt: "desc" },
     });
@@ -826,9 +813,15 @@ export async function exportStockReport(filters: ReportFilters = {}) {
  * This is the sheet's "ON THE FLOOR". It is deliberately not counted as stock
  * anywhere — the product does not exist yet — so it needs its own line rather
  * than being folded into a total that would then be wrong.
+ *
+ * These are build runs, so seeing them needs build visibility as well as
+ * reports.view — the report is not a side door onto the Builds page.
  */
 export async function getWorkInProgress() {
   const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
+  if (!BUILDS_PAGE_PERMISSIONS.some((p) => user.permissions.includes(p))) {
+    return { rows: [], totalOnFloor: 0, tiedUpValue: 0 };
+  }
 
   const scope = resolveStockScope(user);
   const where: Prisma.BuildWhereInput = { status: "IN_PROGRESS" };

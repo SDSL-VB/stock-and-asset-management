@@ -16,6 +16,8 @@ import { createDelivery } from "@/lib/actions/deliveries";
 import { formatMoney } from "@/lib/format";
 import { toneStyles } from "@/lib/design/status";
 import { cn } from "@/lib/utils";
+import type { ProductKind } from "@prisma/client";
+import { SERVICEABLE_KINDS } from "@/lib/vocabulary";
 import type { OpenOrderLine } from "./purchase-order-picker";
 import { readCsvTable, cell } from "@/lib/csv-import";
 import {
@@ -47,7 +49,7 @@ import {
  * submitted together. See src/lib/actions/deliveries.ts.
  */
 
-type Product = ProductOption & { unit: string };
+type Product = ProductOption & { unit: string; kind: string };
 type Line = {
   key: number;
   productId: string;
@@ -87,6 +89,7 @@ export function DeliveryForm({
   locations,
   defaultLocationId,
   openOrderLines,
+  clients,
   canSetBatch,
 }: {
   products: Product[];
@@ -94,6 +97,7 @@ export function DeliveryForm({
   locations: { id: string; name: string }[];
   defaultLocationId?: string | null;
   openOrderLines: OpenOrderLine[];
+  clients: { id: string; name: string; city: string }[];
   canSetBatch: boolean;
 }) {
   const router = useRouter();
@@ -101,20 +105,48 @@ export function DeliveryForm({
   const [vendorId, setVendorId] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [locationId, setLocationId] = useState(defaultLocationId ?? locations[0]?.id ?? "");
+  const [forService, setForService] = useState(false);
+  const [serviceClientId, setServiceClientId] = useState("");
   const [lines, setLines] = useState<Line[]>([emptyLine()]);
   const fileInput = useRef<HTMLInputElement>(null);
   /** What an uploaded file would add, until it is accepted */
   const [preview, setPreview] = useState<PreviewLine[] | null>(null);
 
   const byId = new Map(products.map((p) => [p.id, p]));
+  // A service delivery is only things that can be serviced — never raw material
+  const pickable = forService ? products.filter((p) => SERVICEABLE_KINDS.includes(p.kind as ProductKind)) : products;
+
+  /**
+   * Service goods come in FROM a client, never against a purchase order and
+   * never as raw material — switching it on drops lines that contradict that.
+   */
+  function toggleService(on: boolean) {
+    setForService(on);
+    if (!on) {
+      setServiceClientId("");
+      return;
+    }
+    setVendorId("");
+    setInvoiceNumber("");
+    setLines((all) => {
+      const kept = all.filter(
+        (l) =>
+          !l.purchaseOrderLineId &&
+          (!l.productId || SERVICEABLE_KINDS.includes(byId.get(l.productId)?.kind as ProductKind))
+      );
+      return kept.length > 0 ? kept : [emptyLine()];
+    });
+  }
   const update = (key: number, patch: Partial<Line>) =>
     setLines((all) => all.map((l) => (l.key === key ? { ...l, ...patch } : l)));
 
   // Order lines from this vendor, for this site, not already on the delivery
   const usedOrderLines = new Set(lines.map((l) => l.purchaseOrderLineId).filter(Boolean));
-  const offered = openOrderLines.filter(
-    (o) => o.vendorId === vendorId && o.locationId === locationId && !usedOrderLines.has(o.lineId)
-  );
+  const offered = forService
+    ? []
+    : openOrderLines.filter(
+        (o) => o.vendorId === vendorId && o.locationId === locationId && !usedOrderLines.has(o.lineId)
+      );
 
   function addFromOrder(o: OpenOrderLine) {
     const line: Line = {
@@ -270,8 +302,9 @@ export function DeliveryForm({
 
   const filled = lines.filter((l) => l.productId);
   const total = filled.reduce((sum, l) => sum + (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0), 0);
+  // A service delivery came from a client, so it has no vendor
   const ready =
-    vendorId &&
+    (forService ? serviceClientId : vendorId) &&
     locationId &&
     filled.length > 0 &&
     filled.every((l) => Number.isInteger(Number(l.quantity)) && Number(l.quantity) > 0 && Number(l.unitPrice) > 0);
@@ -279,9 +312,11 @@ export function DeliveryForm({
   function save() {
     startSaving(async () => {
       const res = await createDelivery({
-        vendorId,
-        invoiceNumber: invoiceNumber.trim() || undefined,
+        vendorId: forService ? undefined : vendorId,
+        invoiceNumber: forService ? undefined : invoiceNumber.trim() || undefined,
         locationId,
+        forService,
+        serviceClientId: forService ? serviceClientId : undefined,
         lines: filled.map((l) => ({
           productId: l.productId,
           quantity: Number(l.quantity),
@@ -302,11 +337,57 @@ export function DeliveryForm({
 
   return (
     <div className="space-y-6">
+      {/* First, because it changes the rest of the form. Service goods are held
+          apart from central stock. */}
+      <Card>
+        <CardContent className="grid gap-4 pt-6 sm:grid-cols-2 sm:items-start">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={forService}
+              onChange={(e) => toggleService(e.target.checked)}
+            />
+            <span>
+              <span className="block text-sm font-medium">For service</span>
+              <span className="block text-sm text-muted-foreground">
+                A client sent everything on this delivery in for service. It goes into service
+                stock instead of central stock, and only the service team, accounts and admin
+                can see it.
+              </span>
+            </span>
+          </label>
+          {forService && (
+            <div className="space-y-2">
+              <Label>Client it came from *</Label>
+              <Select
+                value={serviceClientId}
+                items={clients.map((c) => ({ value: c.id, label: `${c.name} — ${c.city}` }))}
+                onValueChange={(v) => setServiceClientId((v as string) ?? "")}
+              >
+                <SelectTrigger><SelectValue placeholder="Select the client" /></SelectTrigger>
+                <SelectContent>
+                  {clients.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>{c.name} — {c.city}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-caption text-muted-foreground">
+                Only finished and ready products can be added — never raw material.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">The delivery</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-3">
+        <CardContent className={cn("grid gap-4", forService ? "sm:grid-cols-1" : "sm:grid-cols-3")}>
+          {/* A service delivery came from a client — no vendor, no vendor invoice */}
+          {!forService && (
+          <>
           <div className="space-y-2">
             <Label>Vendor *</Label>
             <Select
@@ -324,6 +405,8 @@ export function DeliveryForm({
             <Label htmlFor="dlv-invoice">Invoice number</Label>
             <Input id="dlv-invoice" value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="Optional" />
           </div>
+          </>
+          )}
           <div className="space-y-2">
             <Label>Received at *</Label>
             <Select
@@ -430,7 +513,7 @@ export function DeliveryForm({
               >
                 <div className="min-w-0 space-y-1">
                   <ProductCombobox
-                    products={products}
+                    products={pickable}
                     value={line.productId}
                     disabled={!!line.purchaseOrderLineId}
                     onChange={(id) => update(line.key, { productId: id })}

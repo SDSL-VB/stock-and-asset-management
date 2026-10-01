@@ -1,0 +1,40 @@
+# SD-SIM's site block, for the bills app's Caddyfile (the one Caddy on the
+# droplet). Paste it below the bills block in bill-management-accounting/Caddyfile
+# and commit it there: every bills deploy checks out that file and reloads Caddy.
+# See docs/deploy-droplet.md.
+
+sim.straightdrivesport.com {
+	encode gzip
+
+	# Office-only switch, as for bills. Replace "0.0.0.0/0 ::/0" (everyone) with
+	# the office's public IP(s), e.g. "203.0.113.7/32", to refuse everyone else
+	# before they reach the app
+	@outside not remote_ip 0.0.0.0/0 ::/0
+	respond @outside "This app is only available from the office network." 403
+
+	# Internal only: the health check is the container's, the daily job runs
+	# from the droplet's own cron (deploy/scripts/daily-job.sh)
+	@internal path /api/health /api/health/* /api/cron /api/cron/*
+	respond @internal 404
+
+	# Uploads go straight from the browser to Blob storage; nothing posted here
+	# needs to be large
+	request_body {
+		max_size 5MB
+	}
+
+	header {
+		-Server
+		-X-Powered-By
+	}
+
+	log {
+		output file /data/logs/sim-access.log {
+			roll_size 20MiB
+			roll_keep 10
+		}
+		format json
+	}
+
+	reverse_proxy sim-app:3000
+}

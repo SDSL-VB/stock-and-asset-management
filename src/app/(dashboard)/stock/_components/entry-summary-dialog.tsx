@@ -20,7 +20,7 @@ type SummaryEntry = {
   itemName: string;
   supplierName: string;
   /** Bought in, built here, or sent from another site */
-  source: "PURCHASED" | "BUILT" | "TRANSFERRED";
+  source: "PURCHASED" | "BUILT" | "TRANSFERRED" | "CALLBACK";
   quantity: number;
   unitPrice: number;
   totalPrice: number;

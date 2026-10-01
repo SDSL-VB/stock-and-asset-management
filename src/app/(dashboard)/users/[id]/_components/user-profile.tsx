@@ -43,6 +43,8 @@ interface User {
   avatar: string | null;
   createdAt: Date;
   role: { id: string; name: string };
+  /** Roles held on top of the main one */
+  additionalRoles: { role: { id: string; name: string } }[];
   department: { id: string; name: string } | null;
 }
 
@@ -128,11 +130,11 @@ export function UserProfile({
   const canEditPassword =
     currentUserPermissions.includes("users.password.edit") &&
     (!isSuperAdminTarget || isSuperAdminViewer);
-  // Hard deletion is an admin action; guarded further server-side
+  // The permission, exactly as deleteUser checks it — never a role's name.
+  // Only the Super Admin may act on the Super Admin (see rbac/authority.ts).
   const canDelete =
     !isSelf &&
     currentUserPermissions.includes("users.delete") &&
-    (isSuperAdminViewer || currentUserRoles.includes("Admin")) &&
     (!isSuperAdminTarget || isSuperAdminViewer);
 
   // Two steps by design: the first call reports what would be destroyed and
@@ -238,8 +240,24 @@ export function UserProfile({
               </AvatarFallback>
             </Avatar>
             <h2 className="mt-4 text-lg font-semibold">{user.name}</h2>
-            <div className="flex justify-center gap-2 mt-2">
+            {/* Every role they hold — the main one, then any held on top */}
+            <div className="mt-3 space-y-1.5 text-left">
+              <p className="text-caption text-muted-foreground">Main role</p>
               <Badge variant="outline">{user.role.name}</Badge>
+              <p className="pt-1 text-caption text-muted-foreground">Additional roles</p>
+              <div className="flex flex-wrap gap-1.5">
+                {user.additionalRoles.length > 0 ? (
+                  user.additionalRoles.map((held) => (
+                    <Badge key={held.role.id} variant="secondary">
+                      {held.role.name}
+                    </Badge>
+                  ))
+                ) : (
+                  <span className="text-caption text-muted-foreground">None</span>
+                )}
+              </div>
+            </div>
+            <div className="flex justify-center gap-2 mt-3">
               <Badge
                 variant={user.isActive ? "default" : "secondary"}
                 className={

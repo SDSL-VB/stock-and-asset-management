@@ -187,7 +187,13 @@ export async function saveBom(
   // Two things decide whether a new version goes live immediately: the
   // company-wide rule, and whether this person is allowed to skip the queue.
   const flow = await getBomFlow();
-  const canPublish = !flow.requiresApproval || user.permissions.includes(PERMISSIONS.BOM_PUBLISH);
+  // Published on submitting when no review is required, by someone who may
+  // publish unreviewed, or by someone who may approve it anyway — raise what
+  // you may approve, and it is approved
+  const canPublish =
+    !flow.requiresApproval ||
+    user.permissions.includes(PERMISSIONS.BOM_PUBLISH) ||
+    user.permissions.includes(PERMISSIONS.BOM_APPROVE);
 
   const parsed = bomLinesSchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
@@ -364,8 +370,8 @@ function bomReviewRefusal(
 
 /**
  * A manager approves a submitted bill of materials, which publishes it and
- * retires whatever was in force. Approving your own work is refused — someone
- * who should not have to wait holds `bom.publish` and never lands here.
+ * retires whatever was in force. Someone who may approve publishes their own
+ * work on submitting (saveBom), so their own drafts never wait here.
  */
 export async function approveBom(bomId: string) {
   const user = await requirePermission(PERMISSIONS.BOM_APPROVE);
@@ -376,9 +382,6 @@ export async function approveBom(bomId: string) {
   });
   if (!bom) return { error: "That version does not exist" };
   if (bom.status !== "PENDING") return { error: "That version is not waiting for approval" };
-  if (bom.createdById === user.id && !user.permissions.includes(PERMISSIONS.BOM_PUBLISH)) {
-    return { error: "You cannot approve a bill of materials you wrote yourself" };
-  }
 
   const wrongDepartment = bomReviewRefusal(bom, user);
   if (wrongDepartment) return { error: wrongDepartment };

@@ -2,10 +2,20 @@
 
 import { prisma } from "@/lib/prisma";
 import { requirePermission, requireAnyPermission } from "@/lib/rbac/check";
-import { PERMISSIONS, BOM_PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
+import {
+  PERMISSIONS,
+  BOM_PERMISSIONS,
+  BUILDS_PAGE_PERMISSIONS,
+  resolveStockScope,
+} from "@/lib/rbac/permissions";
+import { NO_SITE } from "@/lib/stock-visibility";
+import { builtGoodsRefusal } from "@/lib/review-rules";
+import { builtGoodsWaiting } from "@/lib/notifications/events";
 import {
   availableQuantity,
   availabilityInclude,
+  availableFromIssue,
+  issueDrawdownsInclude,
   round,
 } from "@/lib/stock-availability";
 import { buildSchema } from "@/lib/validations/bom";
@@ -16,21 +26,27 @@ import { after } from "next/server";
 import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 import type { Prisma } from "@prisma/client";
-import { lockEntries } from "@/lib/stock-locks";
+import { lockIssues } from "@/lib/stock-locks";
 
 /**
  * FLOW: making something — components out, finished product in.
  *
  *   1. createBuild        a published bill of materials plus a quantity. The
- *                         components leave central stock IMMEDIATELY, oldest
- *                         entries first, whether the work finishes today or not.
+ *                         components leave the BUILDER'S DEPARTMENT stock (never
+ *                         its assets) IMMEDIATELY, oldest first, whether the
+ *                         work finishes today or not. What the department lacks
+ *                         is requested from central stock first (materials.ts).
  *                         "Build now" completes at once; "Start work" leaves the
  *                         run ON THE FLOOR — counted, visible, not dispatchable.
- *   2. finishBuild        books finished units in as an ordinary approved stock
- *                         entry. Can be called repeatedly: start 10, finish 6,
- *                         and 4 stay on the floor. How many are finished is
- *                         never stored — it is the sum of the entries produced,
- *                         so the two numbers cannot drift.
+ *   2. finishBuild        books finished units into central stock. They WAIT
+ *                         for whoever approves built goods (bom.build.approve)
+ *                         unless that person finished them. Can be called
+ *                         repeatedly: start 10, finish 6, and 4 stay on the
+ *                         floor. How many are finished is never stored — it is
+ *                         the sum of the entries produced, so the two numbers
+ *                         cannot drift.
+ *      approveBuiltGoods  makes waiting units stock; returnBuiltGoods sends
+ *                         them back to the floor.
  *      closeBuildShort    ends a run that will not be completed. The components
  *                         for the shortfall stay consumed: they are in scrap or
  *                         half-built units, not back on the shelf.
@@ -45,13 +61,11 @@ import { lockEntries } from "@/lib/stock-locks";
 /**
  * Building is the verb a bill of materials was missing.
  *
- * Components genuinely leave central stock and the assembled product genuinely
- * arrives as an ordinary stock entry — which is why dispatch needs no special
- * case for it, and why whatever was left over still shows as itself.
+ * Components genuinely leave the department's stock and the assembled product
+ * genuinely arrives as an ordinary stock entry in central stock — which is why
+ * dispatch needs no special case for it, and why whatever was left over still
+ * shows as itself.
  */
-
-/** Oldest entries are drawn down first, so stock rotates instead of ageing. */
-const FIFO_ORDER = { createdAt: "asc" } as const;
 
 /**
  * What one unit needs, and whether the location can supply it.
@@ -63,6 +77,19 @@ const FIFO_ORDER = { createdAt: "asc" } as const;
  */
 export async function getBuildReadiness(productId: string, quantity: number, locationId: string) {
   const user = await requireAnyPermission(BOM_PERMISSIONS);
+
+  // The same site rule createBuild enforces. The site arrives from the browser,
+  // and without this a person tied to Bengaluru could ask about Hyderabad and
+  // read its component stock — and its value — without being able to build
+  // there. Refusing to answer is the only way to stop a question leaking what
+  // the person could not otherwise see.
+  const scope = resolveStockScope(user);
+  if (scope !== "all" && user.locationId !== locationId) {
+    return { ok: false as const, error: "You can only check stock at your own site" };
+  }
+  // A build draws on the builder's own department stock
+  const department = await buildingDepartment(user, locationId);
+  if ("error" in department) return { ok: false as const, error: department.error };
 
   const bom = await prisma.billOfMaterials.findFirst({
     where: { productId, isActive: true, status: "PUBLISHED" },
@@ -88,16 +115,16 @@ export async function getBuildReadiness(productId: string, quantity: number, loc
   // only offers what nobody has asked for yet, and reads "Requested" once done
   const coming = await onTheWay(bom.lines.map((l) => l.componentProductId), [locationId]);
 
-  const lines = await Promise.all(
+  const allLines = await Promise.all(
     bom.lines.map(async (line) => {
-      const entries = await entriesFor(line.componentProductId, locationId);
-      const available = round(entries.reduce((sum, e) => sum + availableQuantity(e), 0));
+      const holdings = await holdingsFor(line.componentProductId, department.id);
+      const available = round(holdings.reduce((sum, h) => sum + availableFromIssue(h), 0));
       const needed = round(line.quantityPerUnit * wanted);
 
-      // Value of what this line contributes, taken from the entries that would
+      // Value of what this line contributes, taken from the holdings that would
       // actually be drawn down
-      const unitCost = entries.length
-        ? entries.reduce((sum, e) => sum + e.unitPrice, 0) / entries.length
+      const unitCost = holdings.length
+        ? holdings.reduce((sum, h) => sum + h.stockEntry.unitPrice, 0) / holdings.length
         : 0;
 
       return {
@@ -122,10 +149,16 @@ export async function getBuildReadiness(productId: string, quantity: number, loc
 
   // The shared rule — see src/lib/build-readiness.ts. An optional line never
   // blocks a build: nobody ordered that add-on.
-  const blocking = lines.filter((l) => !l.isOptional);
+  const blocking = allLines.filter((l) => !l.isOptional);
   const maxBuildable = unitsSupported(
-    lines.map((l) => ({ perUnit: l.perUnit, available: l.available, isOptional: l.isOptional }))
+    allLines.map((l) => ({ perUnit: l.perUnit, available: l.available, isOptional: l.isOptional }))
   );
+
+  // Someone who builds but may not read bills of materials learns only whether
+  // it can be built and, if not, what is missing — never the whole recipe. Cut
+  // here, so the rest never reaches their browser.
+  const seesRecipe = user.permissions.includes(PERMISSIONS.BOM_VIEW);
+  const lines = seesRecipe ? allLines : allLines.filter((l) => l.short > 0 && !l.isOptional);
 
   return {
     ok: true as const,
@@ -134,36 +167,54 @@ export async function getBuildReadiness(productId: string, quantity: number, loc
     product: bom.product,
     quantity: wanted,
     lines,
+    departmentName: department.name,
     canBuild: blocking.every((l) => l.short === 0),
     maxBuildable,
     estimatedCost: canSeeValue
-      ? round(lines.reduce((sum, l) => sum + (l.estimatedCost ?? 0), 0))
+      ? round(allLines.reduce((sum, l) => sum + (l.estimatedCost ?? 0), 0))
       : null,
   };
 }
 
-/** Uncommitted central-stock entries of one product at one location, oldest first. */
-async function entriesFor(
+/**
+ * The department whose stock a build at this site draws on: the builder's own,
+ * which has to be at that site. Someone in no department has no stock to build
+ * from.
+ */
+async function buildingDepartment(
+  user: { departmentId?: string | null },
+  locationId: string
+): Promise<{ id: string; name: string } | { error: string }> {
+  if (!user.departmentId) {
+    return { error: "Builds draw on your department's stock, and you are not in a department" };
+  }
+  const department = await prisma.department.findUnique({
+    where: { id: user.departmentId },
+    select: { id: true, name: true, locationId: true, isActive: true },
+  });
+  if (!department || !department.isActive) return { error: "Your department was not found" };
+  if (department.locationId !== locationId) {
+    return { error: "Your department is at another site — build where its stock is" };
+  }
+  return { id: department.id, name: department.name };
+}
+
+/**
+ * A department's holdings of one product — stock only, never assets — oldest
+ * first, with everything needed to tell how much is still free.
+ */
+async function holdingsFor(
   productId: string,
-  locationId: string,
+  departmentId: string,
   client: Prisma.TransactionClient | typeof prisma = prisma
 ) {
-  return client.stockEntry.findMany({
-    where: {
-      productId,
-      status: "APPROVED",
-      departmentId: null,
-      locationId,
+  return client.stockIssue.findMany({
+    where: { departmentId, isAsset: false, stockEntry: { productId } },
+    include: {
+      ...issueDrawdownsInclude,
+      stockEntry: { select: { id: true, unitPrice: true } },
     },
-    select: {
-      id: true,
-      entryNumber: true,
-      quantity: true,
-      unitPrice: true,
-      batchNumber: true,
-      ...availabilityInclude,
-    },
-    orderBy: FIFO_ORDER,
+    orderBy: { createdAt: "asc" },
   });
 }
 
@@ -230,6 +281,9 @@ export async function createBuild(data: unknown) {
   if (scope !== "all" && user.locationId !== locationId) {
     return { error: "You can only build at your own site" };
   }
+  // ...and from their own department's stock
+  const department = await buildingDepartment(user, locationId);
+  if ("error" in department) return { error: department.error };
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -243,29 +297,29 @@ export async function createBuild(data: unknown) {
       const location = await tx.location.findUnique({ where: { id: locationId } });
       if (!location) throw new Error("SOFT:That site does not exist");
 
-      // Hold every component entry at this site still while it is counted and
-      // drawn down, so two builds at the same moment cannot use the same stock
-      const candidates = await tx.stockEntry.findMany({
+      // Hold every one of the department's holdings of these components still
+      // while it is counted and drawn down, so two builds at the same moment
+      // cannot use the same stock
+      const candidates = await tx.stockIssue.findMany({
         where: {
-          productId: { in: bom.lines.map((l) => l.componentProductId) },
-          status: "APPROVED",
-          departmentId: null,
-          locationId,
+          departmentId: department.id,
+          isAsset: false,
+          stockEntry: { productId: { in: bom.lines.map((l) => l.componentProductId) } },
         },
         select: { id: true },
       });
-      await lockEntries(tx, candidates.map((c) => c.id));
+      await lockIssues(tx, candidates.map((c) => c.id));
 
-      // Draw down each component, oldest entry first
-      const consumptions: { stockEntryId: string; quantity: number }[] = [];
+      // Draw down each component from the department's stock, oldest first
+      const consumptions: { stockEntryId: string; stockIssueId: string; quantity: number }[] = [];
       let rolledUpCost = 0;
 
       for (const line of bom.lines) {
         let remaining = round(line.quantityPerUnit * quantity);
         if (remaining <= 0) continue;
 
-        const entries = await entriesFor(line.componentProductId, locationId, tx);
-        const total = round(entries.reduce((sum, e) => sum + availableQuantity(e), 0));
+        const holdings = await holdingsFor(line.componentProductId, department.id, tx);
+        const total = round(holdings.reduce((sum, h) => sum + availableFromIssue(h), 0));
 
         if (total < remaining) {
           if (line.isOptional) continue; // an add-on nobody ordered
@@ -274,18 +328,18 @@ export async function createBuild(data: unknown) {
             select: { name: true, unit: true },
           });
           throw new Error(
-            `SOFT:Not enough ${product?.name ?? "of one component"} — need ${remaining} ${product?.unit ?? ""}, ${total} available at ${location.name}`
+            `SOFT:Not enough ${product?.name ?? "of one component"} in ${department.name} — need ${remaining} ${product?.unit ?? ""}, ${total} there. Request it from central stock.`
           );
         }
 
-        for (const entry of entries) {
+        for (const holding of holdings) {
           if (remaining <= 0) break;
-          const canTake = availableQuantity(entry);
+          const canTake = availableFromIssue(holding);
           if (canTake <= 0) continue;
 
           const take = round(Math.min(canTake, remaining));
-          consumptions.push({ stockEntryId: entry.id, quantity: take });
-          rolledUpCost += take * entry.unitPrice;
+          consumptions.push({ stockEntryId: holding.stockEntry.id, stockIssueId: holding.id, quantity: take });
+          rolledUpCost += take * holding.stockEntry.unitPrice;
           remaining = round(remaining - take);
         }
       }
@@ -299,6 +353,7 @@ export async function createBuild(data: unknown) {
           bomId: bom.id,
           quantity,
           locationId,
+          departmentId: department.id,
           // Starting work consumes the components and produces nothing yet —
           // the run sits on the floor until someone finishes it.
           status: startOnly ? "IN_PROGRESS" : "COMPLETED",
@@ -322,6 +377,7 @@ export async function createBuild(data: unknown) {
           locationId,
           batchNumber: chosenBatch || buildNumber,
           userId: user.id,
+          approved: builtGoodsRefusal(user, { locationId }) === null,
         });
       }
 
@@ -366,12 +422,14 @@ async function createOutputEntry(
   tx: Prisma.TransactionClient,
   input: {
     build: { id: string; buildNumber: string };
-    product: { code: string; name: string };
+    product: { id: string; code: string; name: string };
     quantity: number;
     unitPrice: number;
     locationId: string;
     batchNumber: string;
     userId: string;
+    /** Finished by someone who may approve built goods: approved at once */
+    approved: boolean;
   }
 ) {
   const entryNumber = await nextEntryNumber(tx);
@@ -379,7 +437,11 @@ async function createOutputEntry(
   return tx.stockEntry.create({
     data: {
       entryNumber,
-      productId: undefined,
+      // Linked to its product like every other entry. It was left unset, so
+      // everything built was invisible to anything that finds stock BY product
+      // — Find Stock, low stock, the site's shelf list — and a consignment of it
+      // carried the missing link on to the site that received it.
+      productId: input.product.id,
       itemCode: input.product.code,
       itemName: input.product.name,
       supplierName: "Built in-house",
@@ -389,12 +451,13 @@ async function createOutputEntry(
       locationId: input.locationId,
       // Whatever was typed, else the build number — a recall follows this
       batchNumber: input.batchNumber,
-      status: "APPROVED",
+      // Waits for whoever approves built goods — it is not stock until then
+      status: input.approved ? "APPROVED" : "SUBMITTED",
       departmentId: null,
       source: "BUILT",
       buildId: input.build.id,
       createdById: input.userId,
-      approvedById: input.userId,
+      approvedById: input.approved ? input.userId : null,
     },
   });
 }
@@ -441,6 +504,10 @@ export async function finishBuild(buildId: string, quantity: number, batchNumber
   const unitPrice = build.outputs[0]?.unitPrice ?? (await unitCostOf(build.id));
 
   const finishesIt = wanted === outstanding;
+  // Typing a batch is its own grant, exactly as when starting the run
+  const typedBatch = user.permissions.includes(PERMISSIONS.STOCK_BATCH_EDIT) ? batchNumber?.trim() : "";
+  // Raise what you may approve: finished by the approver, approved at once
+  const approved = builtGoodsRefusal(user, build) === null;
 
   const done = await prisma.$transaction(async (tx) => {
     // Locked and recounted: two people finishing the same run at once cannot
@@ -455,8 +522,9 @@ export async function finishBuild(buildId: string, quantity: number, batchNumber
       quantity: wanted,
       unitPrice,
       locationId: build.locationId,
-      batchNumber: batchNumber?.trim() || build.buildNumber,
+      batchNumber: typedBatch || build.buildNumber,
       userId: user.id,
+      approved,
     });
 
     if (finishesIt) {
@@ -473,13 +541,86 @@ export async function finishBuild(buildId: string, quantity: number, batchNumber
     "UPDATED",
     "Build",
     buildId,
-    `Finished ${wanted} of ${build.buildNumber} — ${build.product.code}${finishesIt ? ", run complete" : `, ${outstanding - wanted} still on the floor`}`
+    `Finished ${wanted} of ${build.buildNumber} — ${build.product.code}${finishesIt ? ", run complete" : `, ${outstanding - wanted} still on the floor`}${approved ? "" : " — waiting for approval"}`
   );
+  if (!approved) {
+    await builtGoodsWaiting({ buildNumber: build.buildNumber, productName: build.product.name, quantity: wanted, locationId: build.locationId, finishedById: user.id });
+  }
 
   revalidatePath("/builds");
   revalidatePath("/stock");
   revalidatePath("/dispatch");
-  return { success: true, finished: wanted, complete: finishesIt };
+  return { success: true, finished: wanted, complete: finishesIt, approved };
+}
+
+/**
+ * Approve finished units from a build into stock. Until then they are not
+ * stock — nothing can dispatch, move or build with them.
+ */
+export async function approveBuiltGoods(entryId: string) {
+  const user = await requirePermission(PERMISSIONS.BOM_BUILD_APPROVE);
+  const entry = await prisma.stockEntry.findUnique({
+    where: { id: entryId },
+    include: { build: { select: { buildNumber: true, locationId: true } } },
+  });
+  if (!entry || entry.source !== "BUILT" || !entry.build) return { error: "Those built goods were not found" };
+  const refusal = builtGoodsRefusal(user, entry.build);
+  if (refusal) return { error: refusal };
+
+  // Conditional, so two approvals at once cannot both go through
+  const claimed = await prisma.stockEntry.updateMany({
+    where: { id: entryId, status: "SUBMITTED" },
+    data: { status: "APPROVED", approvedById: user.id },
+  });
+  if (claimed.count !== 1) return { error: "Those built goods have already been decided" };
+
+  await logActivity("APPROVED", "StockEntry", entryId, `Approved ${entry.quantity} × ${entry.itemName} from ${entry.build.buildNumber} into stock`);
+  after(() => syncBomWatches().catch((e) => console.error("Low-stock BOM sync failed:", e)));
+  revalidatePath("/builds");
+  revalidatePath("/stock");
+  revalidatePath("/dispatch");
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+/**
+ * Send finished units back to the floor: they were not right. The run's
+ * finished count is the sum of its entries, so removing this one returns its
+ * units to "on the floor", to be finished again.
+ */
+export async function returnBuiltGoods(entryId: string, reason: string) {
+  const user = await requirePermission(PERMISSIONS.BOM_BUILD_APPROVE);
+  if (typeof reason !== "string" || !reason.trim()) return { error: "Say why they are going back" };
+  const entry = await prisma.stockEntry.findUnique({
+    where: { id: entryId },
+    include: { build: { select: { id: true, buildNumber: true, locationId: true } } },
+  });
+  if (!entry || entry.source !== "BUILT" || !entry.build) return { error: "Those built goods were not found" };
+  const refusal = builtGoodsRefusal(user, entry.build);
+  if (refusal) return { error: refusal };
+  const build = entry.build;
+
+  const returned = await prisma.$transaction(async (tx) => {
+    // Only while still waiting — approved stock is never quietly deleted
+    const removed = await tx.stockEntry.deleteMany({ where: { id: entryId, status: "SUBMITTED" } });
+    if (removed.count !== 1) return false;
+    await tx.build.updateMany({
+      where: { id: build.id, status: "COMPLETED" },
+      data: { status: "IN_PROGRESS", completedAt: null },
+    });
+    return true;
+  });
+  if (!returned) return { error: "Those built goods have already been decided" };
+
+  await logActivity(
+    "REJECTED",
+    "Build",
+    build.id,
+    `Sent ${entry.quantity} × ${entry.itemName} from ${build.buildNumber} back to the floor — ${reason.trim().slice(0, 300)}`
+  );
+  revalidatePath("/builds");
+  revalidatePath("/dashboard");
+  return { success: true };
 }
 
 /** What one unit of a run cost, from the components it consumed. */
@@ -614,14 +755,12 @@ export async function reverseBuild(buildId: string) {
 
 /** Everything built, narrowed to what the viewer's scope allows. */
 export async function getBuilds() {
-  const user = await requireAnyPermission([
-    PERMISSIONS.BOM_VIEW,
-    PERMISSIONS.BOM_BUILD,
-  ]);
+  const user = await requireAnyPermission(BUILDS_PAGE_PERMISSIONS);
 
   const scope = resolveStockScope(user);
   const where: Prisma.BuildWhereInput = {};
-  if (scope !== "all" && user.locationId) where.locationId = user.locationId;
+  // Someone limited to their site with no site on record sees none, not all
+  if (scope !== "all") where.locationId = user.locationId ?? NO_SITE;
 
   const builds = await prisma.build.findMany({
     where,
@@ -630,7 +769,7 @@ export async function getBuilds() {
       location: { select: { name: true } },
       builtBy: { select: { name: true } },
       bom: { select: { version: true } },
-      outputs: { select: { id: true, entryNumber: true, quantity: true } },
+      outputs: { select: { id: true, entryNumber: true, quantity: true, status: true } },
       consumptions: {
         include: {
           stockEntry: {
@@ -662,9 +801,17 @@ export async function getBuilds() {
         ? b.quantity - b.outputs.reduce((sum, o) => sum + o.quantity, 0)
         : 0,
     outputEntryNumbers: b.outputs.map((o) => o.entryNumber),
+    // What a run consumed is its recipe — only for those who may read BOMs
+    seesRecipe: user.permissions.includes(PERMISSIONS.BOM_VIEW),
+    // Finished but not yet stock: waiting for whoever approves built goods
+    waiting: b.outputs
+      .filter((o) => o.status === "SUBMITTED")
+      .map((o) => ({ id: o.id, entryNumber: o.entryNumber, quantity: o.quantity })),
+    // The approve action's own rule, so no button is offered that it refuses
+    canApproveWaiting: builtGoodsRefusal(user, b) === null,
     closedShortReason: b.closedShortReason,
     completedAt: b.completedAt,
-    consumptions: b.consumptions.map((c) => ({
+    consumptions: (user.permissions.includes(PERMISSIONS.BOM_VIEW) ? b.consumptions : []).map((c) => ({
       quantity: c.quantity,
       entryNumber: c.stockEntry.entryNumber,
       itemCode: c.stockEntry.itemCode,
@@ -733,3 +880,33 @@ export async function getBuildLocations() {
   });
 }
 
+
+/**
+ * Finished units waiting on this person, shaped for the dashboard's review
+ * queue — the approve action's own rule decides which.
+ */
+export async function getReviewableBuiltGoods() {
+  const user = await requirePermission(PERMISSIONS.BOM_BUILD_APPROVE);
+  const scope = resolveStockScope(user);
+
+  const waiting = await prisma.stockEntry.findMany({
+    where: {
+      source: "BUILT",
+      status: "SUBMITTED",
+      ...(scope === "all" ? {} : { build: { locationId: user.locationId ?? NO_SITE } }),
+    },
+    select: { id: true, quantity: true, itemName: true, build: { select: { buildNumber: true, locationId: true } } },
+    orderBy: { createdAt: "asc" },
+    take: 10,
+  });
+
+  return waiting
+    .filter((e) => e.build && builtGoodsRefusal(user, e.build) === null)
+    .map((e) => ({
+      kind: "BUILT_GOODS" as const,
+      id: e.id,
+      title: `${e.quantity} × ${e.itemName}`,
+      subtitle: `Built in ${e.build!.buildNumber} — approve into stock`,
+      href: "/builds",
+    }));
+}

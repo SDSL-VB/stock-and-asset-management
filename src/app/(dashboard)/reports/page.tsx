@@ -1,5 +1,5 @@
 import { requirePermission } from "@/lib/rbac/check";
-import { PERMISSIONS } from "@/lib/rbac/permissions";
+import { PERMISSIONS, BUILDS_PAGE_PERMISSIONS } from "@/lib/rbac/permissions";
 import {
   getInventoryOverview,
   getWorkInProgress,
@@ -12,6 +12,8 @@ import { WorkInProgressCard } from "./_components/work-in-progress-card";
 
 export default async function ReportsPage() {
   const user = await requirePermission(PERMISSIONS.REPORTS_VIEW);
+  // Work on the floor is build runs — only for those who may see builds
+  const canSeeBuilds = BUILDS_PAGE_PERMISSIONS.some((p) => user.permissions.includes(p));
 
   const [inventoryOverview, wip] = await Promise.all([
     getInventoryOverview(),
@@ -36,11 +38,13 @@ export default async function ReportsPage() {
           />
         )}
       </PageHeader>
-      <WorkInProgressCard
-        rows={wip.rows}
-        totalOnFloor={wip.totalOnFloor}
-        tiedUpValue={wip.tiedUpValue}
-      />
+      {canSeeBuilds && (
+        <WorkInProgressCard
+          rows={wip.rows}
+          totalOnFloor={wip.totalOnFloor}
+          tiedUpValue={wip.tiedUpValue}
+        />
+      )}
       <StockReports
         userPermissions={user.permissions}
         inventoryOverview={inventoryOverview}

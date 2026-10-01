@@ -62,6 +62,8 @@ export async function createDepartment(data: unknown) {
     where: { name: parsed.data.name },
   });
   if (existing) return { error: "A department with this name already exists" };
+  const siteRefusal = await retiredSiteRefusal(parsed.data.locationId || null);
+  if (siteRefusal) return { error: siteRefusal };
 
   const dept = await prisma.department.create({
     data: { ...parsed.data, locationId: parsed.data.locationId || null },
@@ -79,7 +81,7 @@ export async function createDepartment(data: unknown) {
 }
 
 export async function updateDepartment(id: string, data: unknown) {
-  await requirePermission(PERMISSIONS.DEPARTMENTS_EDIT);
+  const user = await requirePermission(PERMISSIONS.DEPARTMENTS_EDIT);
 
   const parsed = departmentSchema.safeParse(data);
   if (!parsed.success) {
@@ -90,6 +92,29 @@ export async function updateDepartment(id: string, data: unknown) {
     where: { name: parsed.data.name, id: { not: id } },
   });
   if (existing) return { error: "A department with this name already exists" };
+
+  // Moving a department to another site moves everything it holds with it, so
+  // while it holds any stock or assets that is a move across sites
+  const current = await prisma.department.findUnique({
+    where: { id },
+    select: { locationId: true, _count: { select: { stockIssues: true, stockEntries: true } } },
+  });
+  if (!current) return { error: "Department not found" };
+  const newLocationId = parsed.data.locationId || null;
+  if (newLocationId !== current.locationId) {
+    const siteRefusal = await retiredSiteRefusal(newLocationId);
+    if (siteRefusal) return { error: siteRefusal };
+  }
+  const holdsAnything = current._count.stockIssues > 0 || current._count.stockEntries > 0;
+  if (
+    newLocationId !== current.locationId &&
+    holdsAnything &&
+    !user.permissions.includes(PERMISSIONS.ASSETS_MOVE_CROSS_SITE)
+  ) {
+    return {
+      error: "This department holds stock or assets, so moving it to another site needs permission to move stock between sites",
+    };
+  }
 
   const dept = await prisma.department.update({
     where: { id },
@@ -251,4 +276,11 @@ export async function toggleDepartmentStatus(id: string) {
 
   revalidatePath("/departments");
   return { success: true };
+}
+
+/** A department can only be placed at a site that is still in use. */
+async function retiredSiteRefusal(locationId: string | null): Promise<string | null> {
+  if (!locationId) return null;
+  const site = await prisma.location.findUnique({ where: { id: locationId }, select: { isActive: true } });
+  return site?.isActive ? null : "That site is not in use";
 }

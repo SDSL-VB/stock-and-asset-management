@@ -13,7 +13,6 @@ import {
   createSiteRequestSchema,
   reviewSiteRequestSchema,
 } from "@/lib/validations/fulfilment";
-import { SELF_APPROVAL_REFUSAL } from "@/lib/review-rules";
 import { buildableAtSites, centralAvailability } from "@/lib/build-readiness";
 import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
@@ -28,8 +27,9 @@ import { NO_SITE } from "@/lib/stock-visibility";
  *                          each site, what could be built there, and what is
  *                          still short. Stores nothing.
  *   2. createSiteRequest   the site that needs it asks the site that has it.
- *   3. acceptSiteRequest   the HOLDING site agrees → a real consignment is
- *                          raised, already IN_TRANSIT rather than pending,
+ *   3. acceptSiteRequest   the HOLDING site agrees to send all of it, or only
+ *                          part → a real consignment is raised for what they
+ *                          send, already IN_TRANSIT rather than pending,
  *                          because the destination asking for it WAS the
  *                          acceptance. Picks are oldest-first.
  *      rejectSiteRequest   or declines. Nobody may answer their own request.
@@ -51,9 +51,10 @@ import { NO_SITE } from "@/lib/stock-visibility";
 type SiteStock = {
   locationId: string;
   locationName: string;
-  available: number;
+  /** Null for a site the viewer may not see into — they have to ask it */
+  available: number | null;
   /** Complete units this site could build from components it already holds */
-  buildable: number;
+  buildable: number | null;
 };
 
 
@@ -83,17 +84,14 @@ export async function getFulfilmentPlan(productId: string, quantity: number) {
   });
   if (!product) return { ok: false as const, error: "That product does not exist" };
 
-  // Every site, for everybody holding fulfilment.view.
-  //
-  // This used to narrow to the viewer's own site unless they held
-  // stock.scope.all, which made the feature useless for the two jobs it exists
-  // for: an engineer cannot ask another site for stock without first seeing
-  // that they have it, and neither can a dispatch operator.
-  //
-  // What is returned is a COUNT per site — how many are free there. The entries
-  // behind it, with their vendor, price, batch and invoice, stay behind the
-  // ordinary stock scopes. Knowing Hyderabad holds nine is what makes asking
-  // possible; it says nothing about what they cost or who supplied them.
+  // Every site is listed, but only someone who sees every site
+  // (stock.scope.all) is told what the others hold. Everybody else sees their
+  // own site's count and has to ASK another site — which answers with how much
+  // it can send. That answer is the only way they learn what is there.
+  const seesAllSites = resolveStockScope(user) === "all";
+  const countsFor = (locationId: string) =>
+    seesAllSites || locationId === user.locationId;
+
   const locations = await prisma.location.findMany({
     where: { isActive: true },
     select: { id: true, name: true },
@@ -111,12 +109,13 @@ export async function getFulfilmentPlan(productId: string, quantity: number) {
   const sites: SiteStock[] = locations.map((l) => ({
     locationId: l.id,
     locationName: l.name,
-    available: stock.get(l.id) ?? 0,
-    buildable: buildable.get(l.id) ?? 0,
+    available: countsFor(l.id) ? (stock.get(l.id) ?? 0) : null,
+    buildable: countsFor(l.id) ? (buildable.get(l.id) ?? 0) : null,
   }));
 
-  const totalAvailable = round(sites.reduce((sum, s) => sum + s.available, 0));
-  const totalBuildable = sites.reduce((sum, s) => sum + s.buildable, 0);
+  // Totals only ever add up what the viewer may see
+  const totalAvailable = round(sites.reduce((sum, s) => sum + (s.available ?? 0), 0));
+  const totalBuildable = sites.reduce((sum, s) => sum + (s.buildable ?? 0), 0);
   const shortAfterStock = Math.max(0, wanted - totalAvailable);
   const shortAfterBuilding = Math.max(0, shortAfterStock - totalBuildable);
 
@@ -137,9 +136,9 @@ export async function getFulfilmentPlan(productId: string, quantity: number) {
   // site, which is how a Hyderabad operator was told to ask Hyderabad.
   const moves: { locationId: string; locationName: string; quantity: number }[] = [];
   let stillNeeded = round(Math.max(0, wanted - availableHere));
-  for (const site of [...sites].sort((a, b) => b.available - a.available)) {
+  for (const site of [...sites].sort((a, b) => (b.available ?? 0) - (a.available ?? 0))) {
     if (stillNeeded <= 0) break;
-    if (site.available <= 0) continue;
+    if (!site.available || site.available <= 0) continue;
     if (site.locationId === viewerLocationId) continue;
     const take = Math.min(site.available, stillNeeded);
     moves.push({
@@ -171,7 +170,9 @@ export async function getFulfilmentPlan(productId: string, quantity: number) {
     coveredWithBuilding: totalAvailable + totalBuildable >= wanted,
     /** Which OTHER sites would have to send stock, and how much from each */
     moves,
-    singleSite: sites.find((s) => s.available >= wanted)?.locationName ?? null,
+    singleSite: sites.find((s) => (s.available ?? 0) >= wanted)?.locationName ?? null,
+    /** False when other sites' counts are hidden and have to be asked for */
+    seesAllSites,
     /** The site the viewer belongs to, or null for someone with no department */
     viewerLocationId,
     /** How much of the want is already standing at the viewer's own site */
@@ -302,9 +303,13 @@ export async function createSiteRequest(data: unknown) {
 
   // Only worth asking for what is actually free there. This is a courtesy
   // check, not the guarantee — acceptance re-checks, because stock moves.
-  const held = (await centralAvailability([productId])).get(productId)?.get(fromLocationId) ?? 0;
-  if (held <= 0) {
-    return { error: "That site is not holding any of this product" };
+  // Skipped for someone who may not see other sites: telling them "they have
+  // none" would answer the very question they are meant to ask.
+  if (seesAllSites) {
+    const held = (await centralAvailability([productId])).get(productId)?.get(fromLocationId) ?? 0;
+    if (held <= 0) {
+      return { error: "That site is not holding any of this product" };
+    }
   }
 
   const [product, fromLocation, toLocation] = await Promise.all([
@@ -335,6 +340,22 @@ export async function createSiteRequest(data: unknown) {
     `Asked ${fromLocation.name} for ${quantity} × ${product.name} on behalf of ${toLocation.name} (${request.requestNumber})`
   );
 
+  // Raise what you may answer, and it is answered: someone who may agree to
+  // requests for the site being asked (fulfilment.approve, and every site or
+  // that site) agrees in full on raising — through the accept action itself,
+  // so its stock checks still apply. If the stock is not there it stays open.
+  const mayAnswer =
+    user.permissions.includes(PERMISSIONS.FULFILMENT_APPROVE) &&
+    (seesAllSites || fromLocationId === user.locationId);
+  if (mayAnswer) {
+    const answer = await acceptSiteRequest(request.id);
+    if ("success" in answer && answer.success) {
+      revalidatePath("/dispatch");
+      revalidatePath("/fulfilment");
+      return { success: true, request, approved: true };
+    }
+  }
+
   await siteRequested({
     requestNumber: request.requestNumber,
     productName: product.name,
@@ -344,8 +365,8 @@ export async function createSiteRequest(data: unknown) {
     requestedById: user.id,
   });
   revalidatePath("/dispatch");
-  revalidatePath("/builds");
-  return { success: true, request };
+  revalidatePath("/fulfilment");
+  return { success: true, request, approved: false };
 }
 
 /**
@@ -369,7 +390,10 @@ export async function getSiteRequests() {
       toLocation: { select: { id: true, name: true } },
       requestedBy: { select: { name: true } },
       reviewedBy: { select: { name: true } },
-      dispatch: { select: { id: true, dispatchNumber: true, status: true } },
+      // What was actually sent — less than asked when only part was agreed
+      dispatch: {
+        select: { id: true, dispatchNumber: true, status: true, items: { select: { quantity: true } } },
+      },
     },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
   });
@@ -394,6 +418,10 @@ export async function getSiteRequests() {
 
 /**
  * Agree to a request, which raises the consignment that carries it.
+ *
+ * The holding site says how much it can send: all of it (the default), or only
+ * part. A partial answer ships what they can spare and closes the request; the
+ * asking site sees "3 of 5" and can ask elsewhere for the rest.
  *
  * Stock is drawn oldest-first from this site's central stock, the same rotation
  * rule building uses. The dispatch is created in transit rather than pending,
@@ -427,9 +455,12 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
   ) {
     return { error: "Only the site being asked can answer this request" };
   }
-  if (request.requestedById === user.id) {
-    return { error: SELF_APPROVAL_REFUSAL };
+
+  const sending = parsed.data.quantity ?? request.quantity;
+  if (sending > request.quantity) {
+    return { error: `They asked for ${request.quantity} — you cannot send more than that` };
   }
+  const partial = sending < request.quantity;
 
   // Oldest first, so stock rotates rather than ageing at the back.
   const entries = await prisma.stockEntry.findMany({
@@ -438,6 +469,7 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
       locationId: request.fromLocationId,
       status: "APPROVED",
       departmentId: null,
+      forService: false,
     },
     select: {
       id: true,
@@ -449,7 +481,7 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
   });
 
   const picks: { stockEntryId: string; quantity: number; batchNumber: string | null }[] = [];
-  let remaining = request.quantity;
+  let remaining = sending;
   for (const entry of entries) {
     if (remaining <= 0) break;
     const free = Math.floor(availableQuantity(entry));
@@ -460,9 +492,11 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
   }
 
   if (remaining > 0) {
-    const found = request.quantity - remaining;
+    const found = sending - remaining;
     return {
-      error: `Only ${found} of ${request.quantity} ${request.product.name} is still free here. Reject the request, or ask them to lower it.`,
+      error: found > 0
+        ? `Only ${found} ${request.product.name} is free here. Send ${found} as a partial answer, or decline.`
+        : `None of ${request.product.name} is free here. Decline the request.`,
     };
   }
 
@@ -518,16 +552,18 @@ export async function acceptSiteRequest(id: string, data: unknown = {}) {
     "DISPATCHED",
     "SiteRequest",
     request.id,
-    `Accepted ${request.requestNumber} — sent ${request.quantity} × ${request.product.name} from ${request.fromLocation.name} to ${request.toLocation.name} as ${dispatch.dispatchNumber}`
+    `Accepted ${request.requestNumber} ${partial ? "in part" : "in full"} — sent ${sending} of ${request.quantity} × ${request.product.name} from ${request.fromLocation.name} to ${request.toLocation.name} as ${dispatch.dispatchNumber}`
   );
 
   revalidatePath("/dispatch");
-  revalidatePath("/builds");
+  revalidatePath("/fulfilment");
   revalidatePath("/stock");
   await siteRequestDecided(
     { requestNumber: request.requestNumber, productName: request.product.name, requestedById: request.requestedById },
     true,
-    `On its way as ${dispatch.dispatchNumber}`
+    partial
+      ? `Partly — ${sending} of ${request.quantity} on its way as ${dispatch.dispatchNumber}`
+      : `In full — all ${request.quantity} on its way as ${dispatch.dispatchNumber}`
   );
   return { success: true, dispatchNumber: dispatch.dispatchNumber };
 }
@@ -550,9 +586,9 @@ export async function rejectSiteRequest(id: string, data: unknown) {
   if (resolveStockScope(user) !== "all" && request.fromLocationId !== user.locationId) {
     return { error: "Only the site being asked can answer this request" };
   }
-  // Withdrawing your own ask is "Cancel", not "Decline".
+  // Withdrawing your own ask is "Withdraw", not "Decline".
   if (request.requestedById === user.id) {
-    return { error: SELF_APPROVAL_REFUSAL };
+    return { error: "This is your own request — withdraw it instead of declining it" };
   }
 
   await prisma.siteRequest.update({
@@ -574,7 +610,7 @@ export async function rejectSiteRequest(id: string, data: unknown) {
 
   await siteRequestDecided({ requestNumber: request.requestNumber, productName: request.product.name, requestedById: request.requestedById }, false);
   revalidatePath("/dispatch");
-  revalidatePath("/builds");
+  revalidatePath("/fulfilment");
   return { success: true };
 }
 
@@ -612,6 +648,6 @@ export async function cancelSiteRequest(id: string) {
   );
 
   revalidatePath("/dispatch");
-  revalidatePath("/builds");
+  revalidatePath("/fulfilment");
   return { success: true };
 }

@@ -6,6 +6,7 @@ import {
   Activity,
   Package,
   Tags,
+  Workflow,
   Contact,
   Truck,
   Boxes,
@@ -17,6 +18,11 @@ import {
   Trash2,
   TriangleAlert,
   MapPin,
+  Wrench,
+  ClipboardCheck,
+  PackagePlus,
+  Megaphone,
+  MapPinned,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -29,6 +35,11 @@ import {
   DISPATCH_PAGE_PERMISSIONS,
   BOM_PERMISSIONS,
   PROCUREMENT_PAGE_PERMISSIONS,
+  STOCK_ENTRIES_PAGE_PERMISSIONS,
+  FIND_STOCK_PERMISSIONS,
+  MATERIALS_PAGE_PERMISSIONS,
+  CALLBACKS_PAGE_PERMISSIONS,
+  LOCATIONS_PAGE_PERMISSIONS,
 } from "@/lib/rbac/permissions";
 
 /**
@@ -95,8 +106,17 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Stock Entries",
     href: "/stock",
     icon: Package,
-    // Someone who books goods in without stock.view still needs the way in
-    anyPermission: [PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE],
+    // Entry operators reach their drafts here, approvers their queue
+    anyPermission: STOCK_ENTRIES_PAGE_PERMISSIONS,
+    group: "stock",
+  },
+  {
+    // Goods received for service, held apart from central stock — the same
+    // list, filtered to them
+    label: "Service Stock",
+    href: "/stock?holding=SERVICE",
+    icon: Wrench,
+    permission: PERMISSIONS.STOCK_SERVICE_VIEW,
     group: "stock",
   },
   {
@@ -104,7 +124,7 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Find Stock",
     href: "/stock/find",
     icon: MapPin,
-    anyPermission: [PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE],
+    anyPermission: FIND_STOCK_PERMISSIONS,
     group: "stock",
   },
   {
@@ -135,6 +155,15 @@ export const NAV_ITEMS: NavItem[] = [
   /* ---- Admin: people, roles and departments ----------------------------- */
   { label: "Team Members", href: "/users", icon: Users, permission: PERMISSIONS.USERS_VIEW, group: "admin" },
   { label: "Roles", href: "/roles", icon: Shield, permission: PERMISSIONS.ROLES_VIEW, group: "admin" },
+  { label: "Permission Names", href: "/permissions", icon: Tags, permission: PERMISSIONS.PERMISSIONS_RENAME, group: "admin" },
+  { label: "Approval Flows", href: "/approvals", icon: Workflow, permission: PERMISSIONS.APPROVALS_CONFIGURE, group: "admin" },
+  {
+    label: "Locations",
+    href: "/locations",
+    icon: MapPinned,
+    anyPermission: LOCATIONS_PAGE_PERMISSIONS,
+    group: "admin",
+  },
   {
     label: "Departments",
     href: "/departments",
@@ -155,8 +184,31 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Builds",
     href: "/builds",
     icon: Hammer,
-    // Runs, and the Plan tab — which is why fulfilment.view opens it
     anyPermission: BUILDS_PAGE_PERMISSIONS,
+    group: "production",
+  },
+  {
+    // A batch recalled, and Service following up with the customers
+    label: "Call-backs",
+    href: "/callbacks",
+    icon: Megaphone,
+    anyPermission: CALLBACKS_PAGE_PERMISSIONS,
+    group: "production",
+  },
+  {
+    // A department asking central stock for materials
+    label: "Material Requests",
+    href: "/materials",
+    icon: PackagePlus,
+    anyPermission: MATERIALS_PAGE_PERMISSIONS,
+    group: "production",
+  },
+  {
+    // "Can we meet this order, and from where?"
+    label: "Fulfilment",
+    href: "/fulfilment",
+    icon: ClipboardCheck,
+    permission: PERMISSIONS.FULFILMENT_VIEW,
     group: "production",
   },
 
@@ -182,7 +234,7 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Products Catalog",
     href: "/stock/products",
     icon: Tags,
-    // Wider than managing the catalog: the request queue lives here too
+    // Managing the catalog, or reviewing requests to add to it
     anyPermission: CATALOG_PAGE_PERMISSIONS,
     group: "stock",
   },

@@ -19,6 +19,7 @@
 import { PrismaClient } from "@prisma/client";
 import { PERMISSION_CATALOG } from "./lib/permission-catalog";
 import { applyRolesAndPeople, DEFAULT_PASSWORD } from "./setup-roles-and-people";
+import { ATTACHMENT_TYPES, DOCUMENT_MIME_TYPES } from "./lib/reference-data";
 
 const prisma = new PrismaClient();
 
@@ -49,13 +50,6 @@ const LOCATIONS = [
 ];
 
 /** Document types an entry can carry. Invoice is required before submitting. */
-const ATTACHMENT_TYPES = [
-  { name: "Invoice", isRequired: true, maxSizeBytes: 10_485_760 },
-  { name: "Bill", isRequired: false, maxSizeBytes: 10_485_760 },
-  { name: "Delivery Note", isRequired: false, maxSizeBytes: 5_242_880 },
-];
-
-const DOCUMENT_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 
 async function wipe() {
   // Children before parents. Anything with a foreign key has to go first.

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ import {
 import Link from "next/link";
 import { hasPermission } from "@/lib/rbac/check";
 import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
-import { deleteAttachment, getAttachmentViewUrl } from "@/lib/actions/stock";
+import { deleteAttachment, getAttachmentViewUrl, setEntryAsset } from "@/lib/actions/stock";
 import { MoveStockDialog } from "./move-stock-dialog";
 import { RequestTransferDialog } from "./request-transfer-dialog";
 import { WriteOffDialog } from "./write-off-dialog";
@@ -32,16 +33,23 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { formatMoney } from "@/lib/format";
 import { statusPill } from "@/lib/design/status";
+import { maySeeEntryMoney } from "@/lib/stock-visibility";
 import { RackEditor } from "./rack-editor";
 
 type Entry = {
   id: string;
   entryNumber: string;
+  /** Held as service stock, apart from central stock */
+  forService: boolean;
+  /** Classified as an asset by the Stock Manager (stock.classify) */
+  isAsset: boolean;
+  /** The client a service item came from */
+  serviceClient?: { name: string; city: string } | null;
   itemCode: string | null;
   itemName: string;
   supplierName: string;
   /** How these goods came to be here: bought, built, or sent from another site */
-  source: "PURCHASED" | "BUILT" | "TRANSFERRED";
+  source: "PURCHASED" | "BUILT" | "TRANSFERRED" | "CALLBACK";
   batchNumber: string | null;
   /** Where it sits in the store — "10.3" */
   rackLocation?: string | null;
@@ -179,7 +187,11 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
   // Seeing every site is what lets someone edit an entry they did not create.
   // Resolved from permissions; the role name is not consulted anywhere here.
   const hasFullScope = resolveStockScope({ role: "", permissions: userPermissions }) === "all";
-  const canSeeValue = hasPermission(userPermissions, PERMISSIONS.STOCK_VALUE_VIEW);
+  // The same rule the server used to decide whether the price was sent
+  const canSeeValue = maySeeEntryMoney(
+    { createdById: entry.createdBy.id, status: entry.status },
+    { id: userId, permissions: userPermissions }
+  );
 
   const issuedQuantity = entry.issues.reduce((sum, i) => sum + i.quantity, 0);
   const writtenOffQuantity = entry.writeOffs
@@ -237,9 +249,36 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
     (entry.status === "DRAFT" || entry.status === "REJECTED") &&
     (entry.createdBy.id === userId || hasFullScope);
 
+  // Classifying stock as an asset: the permission, for central stock that is
+  // waiting or approved — the server checks the same, and the site
+  const canClassify =
+    hasPermission(userPermissions, PERMISSIONS.STOCK_CLASSIFY) &&
+    !entry.forService &&
+    entry.department === null &&
+    (entry.status === "SUBMITTED" || entry.status === "APPROVED");
+  const [classifying, setClassifying] = useState(false);
+  async function classify(asAsset: boolean) {
+    setClassifying(true);
+    try {
+      const res = await setEntryAsset(entry.id, asAsset);
+      if ("error" in res && res.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success(asAsset ? "Classified as an asset" : "Classified as stock");
+      router.refresh();
+    } finally {
+      setClassifying(false);
+    }
+  }
+
+  // Service stock has its own approvers; built goods are approved on Builds
   const canApprove =
-    hasPermission(userPermissions, PERMISSIONS.STOCK_APPROVE) &&
-    entry.status === "SUBMITTED";
+    entry.source !== "BUILT" &&
+    hasPermission(
+      userPermissions,
+      entry.forService ? PERMISSIONS.STOCK_SERVICE_APPROVE : PERMISSIONS.STOCK_APPROVE
+    ) && entry.status === "SUBMITTED";
 
   // Transferred stock names its consignment for everyone; only someone who may
   // open the dispatch page gets a link to it, so nobody is offered a dead end.
@@ -296,6 +335,23 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
           <StatusIcon className="mr-1 h-3.5 w-3.5" />
           {status.label}
         </Badge>
+        {entry.forService && (
+          <Badge variant="outline" className="text-sm px-3 py-1">
+            For service{entry.serviceClient ? ` · from ${entry.serviceClient.name}, ${entry.serviceClient.city}` : ""}
+          </Badge>
+        )}
+        {!entry.forService && (
+          <Badge variant="outline" className="text-sm px-3 py-1">
+            {entry.isAsset ? "Asset" : "Stock"}
+          </Badge>
+        )}
+        {/* Classifying is the Stock Manager's call; the server re-checks site,
+            status and that it is still central stock */}
+        {canClassify && (
+          <Button size="sm" variant="outline" disabled={classifying} onClick={() => classify(!entry.isAsset)}>
+            {entry.isAsset ? "Mark as stock" : "Mark as asset"}
+          </Button>
+        )}
       </div>
 
       {entry.status === "REJECTED" && entry.rejectionReason && (
@@ -494,6 +550,8 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
                       itemName={entry.itemName}
                       remainingQuantity={remainingQuantity}
                       departments={departments}
+                      entryIsAsset={entry.isAsset}
+                      canClassify={hasPermission(userPermissions, PERMISSIONS.STOCK_CLASSIFY)}
                     />
                   )}
                   {canRequestTransfer && (
@@ -502,6 +560,8 @@ export function StockEntryDetail({ entry, userPermissions, userId, attachmentTyp
                       itemName={entry.itemName}
                       availableQuantity={availableToRequest}
                       departments={departments}
+                      entryIsAsset={entry.isAsset}
+                      canClassify={hasPermission(userPermissions, PERMISSIONS.STOCK_CLASSIFY)}
                     />
                   )}
                   {canWriteOff && (

@@ -24,13 +24,14 @@ import { KIND_LABEL, type ProductKind } from "@/lib/vocabulary";
  */
 
 /** How a batch of goods came to be here. Narrower than the `source` column. */
-type SourceFilter = "ALL" | "FRESH" | "ORDER" | "BUILT" | "TRANSFERRED";
+type SourceFilter = "ALL" | "FRESH" | "ORDER" | "BUILT" | "TRANSFERRED" | "CALLBACK";
 
 export const SOURCE_LABEL: Record<Exclude<SourceFilter, "ALL">, string> = {
   FRESH: "Fresh stock",
   ORDER: "Against an order",
   BUILT: "Built here",
   TRANSFERRED: "Transferred in",
+  CALLBACK: "Returned on a call-back",
 };
 
 export type Filters = {
@@ -38,7 +39,7 @@ export type Filters = {
   kind: ProductKind | "ALL";
   category: string;
   site: string;
-  holding: "ALL" | "STOCK" | "ASSET";
+  holding: "ALL" | "STOCK" | "ASSET" | "SERVICE";
   /** When it was booked in. "YYYY-MM-DD", or "" for no bound. */
   from: string;
   to: string;
@@ -73,6 +74,7 @@ export function sourceOf(entry: {
 }): Exclude<SourceFilter, "ALL"> {
   if (entry.source === "BUILT") return "BUILT";
   if (entry.source === "TRANSFERRED") return "TRANSFERRED";
+  if (entry.source === "CALLBACK") return "CALLBACK";
   // Bought in, either way — an order line is what separates the two
   return entry.purchaseOrderLineId ? "ORDER" : "FRESH";
 }
@@ -152,7 +154,7 @@ export function EntryFilters({ filters, onChange, options, showing, total, onExp
         onValueChange={(v) => onChange({ ...filters, kind: v as Filters["kind"] })}
       />
       <FilterSelect
-        label="However it arrived"
+        label="All"
         value={filters.source}
         options={options.sources}
         onValueChange={(v) => onChange({ ...filters, source: v as SourceFilter })}

@@ -45,14 +45,24 @@ function visibleSites(user: {
   return { locationIds: user.locationId ? [user.locationId] : [] };
 }
 
+/** May this person see — and so manage — the watches at this site? */
+function siteIsTheirs(
+  user: { role: string; permissions: string[]; locationId?: string | null },
+  locationId: string
+): boolean {
+  const { locationIds } = visibleSites(user);
+  return locationIds === undefined || locationIds.includes(locationId);
+}
+
 export async function getStockLevels() {
   const user = await requirePermission(PERMISSIONS.STOCK_LOWSTOCK_VIEW);
   return stockLevelReport(visibleSites(user));
 }
 
-/** What the "Watch a product" form offers. */
+/** What the "Watch a product" form offers — only the sites this person may manage. */
 export async function getStockLevelFormData() {
-  await requirePermission(PERMISSIONS.STOCK_LOWSTOCK_MANAGE);
+  const user = await requirePermission(PERMISSIONS.STOCK_LOWSTOCK_MANAGE);
+  const { locationIds } = visibleSites(user);
   const [products, locations] = await Promise.all([
     prisma.product.findMany({
       where: { isActive: true },
@@ -67,7 +77,11 @@ export async function getStockLevelFormData() {
       },
       orderBy: { name: "asc" },
     }),
-    prisma.location.findMany({ where: { isActive: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.location.findMany({
+      where: { isActive: true, ...(locationIds ? { id: { in: locationIds } } : {}) },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
   ]);
   return { products, locations };
 }
@@ -84,6 +98,11 @@ export async function saveStockLevel(data: unknown) {
   const parsed = stockLevelSchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const { productId, locationId, minimum } = parsed.data;
+
+  // Setting a site's minimum is managing that site's stock. The same site rule
+  // as reading it: somebody who cannot see Hyderabad's low stock does not get
+  // to decide what Hyderabad should keep.
+  if (!siteIsTheirs(user, locationId)) return { error: "You can only watch stock at your own site" };
 
   const [product, location] = await Promise.all([
     prisma.product.findUnique({ where: { id: productId }, select: { name: true, isActive: true } }),
@@ -113,13 +132,15 @@ export async function saveStockLevel(data: unknown) {
  * bring back a component somebody deliberately stopped watching.
  */
 export async function removeStockLevel(stockLevelId: string) {
-  await requirePermission(PERMISSIONS.STOCK_LOWSTOCK_MANAGE);
+  const user = await requirePermission(PERMISSIONS.STOCK_LOWSTOCK_MANAGE);
 
   const level = await prisma.stockLevel.findUnique({
     where: { id: stockLevelId },
     include: { product: { select: { name: true } }, location: { select: { name: true } } },
   });
-  if (!level) return { error: "That product is not being watched" };
+  // Not theirs is reported as not there, as elsewhere — the id alone should not
+  // confirm that a watch exists at a site they cannot see
+  if (!level || !siteIsTheirs(user, level.locationId)) return { error: "That product is not being watched" };
 
   await prisma.stockLevel.update({ where: { id: stockLevelId }, data: { stopped: true, fromBom: false } });
   await logActivity("DELETED", "StockLevel", level.productId, `Stopped watching ${level.product.name} at ${level.location.name}`);

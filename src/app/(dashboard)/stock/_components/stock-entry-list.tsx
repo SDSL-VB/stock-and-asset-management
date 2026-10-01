@@ -3,6 +3,7 @@
 import { type ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/shared/data-table";
 import { Badge } from "@/components/ui/badge";
+import { PRODUCT_KINDS, type ProductKind } from "@/lib/vocabulary";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -63,7 +64,7 @@ type StockEntry = {
   itemName: string;
   supplierName: string;
   /** Bought in, built here, or sent from another site */
-  source: "PURCHASED" | "BUILT" | "TRANSFERRED";
+  source: "PURCHASED" | "BUILT" | "TRANSFERRED" | "CALLBACK";
   quantity: number;
   unitPrice: number;
   totalPrice: number;
@@ -82,12 +83,14 @@ type StockEntry = {
   batchNumber: string | null;
   rackLocation?: string | null;
   isAsset: boolean;
+  forService: boolean;
+  serviceClient?: { name: string } | null;
   purchaseOrderLineId: string | null;
   product: {
     id: string;
     code: string;
     name: string;
-    kind: "RAW" | "FINISHED" | "KIT";
+    kind: ProductKind;
     category: { id: string; name: string };
   } | null;
   client: { id: string; name: string; city: string; gstNumber: string | null; address: string | null } | null;
@@ -182,6 +185,11 @@ function buildColumns(
           )}
           {row.original.supplierName}
         </p>
+        {row.original.forService && (
+          <Badge variant="outline" className="mt-1 mr-1">
+            For service{row.original.serviceClient ? ` · ${row.original.serviceClient.name}` : ""}
+          </Badge>
+        )}
         {/* Transferred stock keeps the origin's vendor name, so without this it
             reads as a purchase this site never made. */}
         {row.original.source === "TRANSFERRED" && (
@@ -346,6 +354,16 @@ function oneOf<T extends string>(value: string | undefined, allowed: readonly T[
   return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
+/** What an entry is held as: service stock, or stock/assets in central stock */
+function holdingOf(e: { forService: boolean; isAsset: boolean }) {
+  return e.forService ? "SERVICE" : e.isAsset ? "ASSET" : "STOCK";
+}
+const HOLDING_LABEL = {
+  STOCK: "Stock only",
+  ASSET: "Assets only",
+  SERVICE: "Service stock",
+} as const;
+
 export function StockEntryList({
   entries,
   stats,
@@ -363,11 +381,11 @@ export function StockEntryList({
     oneOf(initialFilters?.status, STATUSES, "ALL")
   );
   const [filters, setFilters] = useState<Filters>({
-    source: oneOf(initialFilters?.source, ["ALL", "FRESH", "ORDER", "BUILT", "TRANSFERRED"] as const, "ALL"),
-    kind: oneOf(initialFilters?.kind, ["ALL", "RAW", "FINISHED", "KIT"] as const, "ALL"),
+    source: oneOf(initialFilters?.source, ["ALL", "FRESH", "ORDER", "BUILT", "TRANSFERRED", "CALLBACK"] as const, "ALL"),
+    kind: oneOf(initialFilters?.kind, ["ALL", ...PRODUCT_KINDS] as const, "ALL"),
     category: initialFilters?.category ?? "ALL",
     site: initialFilters?.site ?? "ALL",
-    holding: oneOf(initialFilters?.holding, ["ALL", "STOCK", "ASSET"] as const, "ALL"),
+    holding: oneOf(initialFilters?.holding, ["ALL", "STOCK", "ASSET", "SERVICE"] as const, "ALL"),
     from: initialFilters?.from ?? "",
     to: initialFilters?.to ?? "",
   });
@@ -427,8 +445,8 @@ export function StockEntryList({
     ),
     holdings: uniqueOptions(
       entries.map((e) => ({
-        value: e.isAsset ? "ASSET" : "STOCK",
-        label: e.isAsset ? "Assets only" : "Stock only",
+        value: holdingOf(e),
+        label: HOLDING_LABEL[holdingOf(e)],
       }))
     ),
   };
@@ -439,7 +457,7 @@ export function StockEntryList({
     if (filters.kind !== "ALL" && e.product?.kind !== filters.kind) return false;
     if (filters.category !== "ALL" && e.product?.category.id !== filters.category) return false;
     if (filters.site !== "ALL" && e.location?.id !== filters.site) return false;
-    if (filters.holding !== "ALL" && (e.isAsset ? "ASSET" : "STOCK") !== filters.holding) return false;
+    if (filters.holding !== "ALL" && holdingOf(e) !== filters.holding) return false;
     if (!withinDates(e.createdAt, filters)) return false;
     return true;
   });

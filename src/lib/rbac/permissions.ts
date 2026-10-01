@@ -33,6 +33,7 @@ export const PERMISSIONS = {
 
   // Roles
   ROLES_VIEW: "roles.view",
+  PERMISSIONS_RENAME: "permissions.rename",
   ROLES_CREATE: "roles.create",
   ROLES_EDIT: "roles.edit",
   ROLES_DELETE: "roles.delete",
@@ -85,18 +86,30 @@ export const PERMISSIONS = {
 
   // Settings
   SETTINGS_VIEW: "settings.view",
+  APPROVALS_CONFIGURE: "approvals.configure",
   SETTINGS_EDIT: "settings.edit",
 
   // Assets — stock that was moved into a department as one, not a separate
   // catalog. Seeing what a department holds and turning central stock into a
   // holding are different acts, so they are different keys.
   ASSETS_VIEW: "assets.view",
+  // Moving stock or assets into a department at ANOTHER site. Without it, a
+  // move stays within the stock's own site.
+  ASSETS_MOVE_CROSS_SITE: "assets.move.crosssite",
+  // The Stock Manager's view of assets: what left its site's central stock
+  // into departments, wherever those assets are now
+  ASSETS_REPORT_VIEW: "assets.report.view",
+
+  // Sites: adding one, and renaming or retiring one
+  LOCATIONS_CREATE: "locations.create",
+  LOCATIONS_EDIT: "locations.edit",
   ASSETS_CREATE: "assets.create",
   // Moving stock into a department by asking rather than doing. Asking and
   // answering are separate keys because they sit with different people: a
   // member raises it, their manager decides.
   ASSETS_TRANSFER_REQUEST: "assets.transfer.request",
   ASSETS_TRANSFER_APPROVE: "assets.transfer.approve",
+  ASSETS_TRANSFER_DEPARTMENT: "assets.transfer.department",
 
   // Products (item code catalog) — each catalog action is its own permission
   PRODUCTS_VIEW: "products.view",
@@ -140,6 +153,12 @@ export const PERMISSIONS = {
   BOM_UNBUILD: "bom.unbuild",
   // Signing off finished work is a different act from starting it
   BOM_BUILD_FINISH: "bom.build.finish",
+  // Finished units wait for this before they count as stock — the Production
+  // Manager. Units finished by someone holding it are approved at once.
+  BOM_BUILD_APPROVE: "bom.build.approve",
+  // Seeing the build runs. Separate from bom.view (what a product is made of)
+  // and from fulfilment.view (planning), which used to open the page too.
+  BUILDS_VIEW: "builds.view",
 
   // Stock Entry (Phase 3)
   STOCK_VIEW: "stock.view",
@@ -177,9 +196,37 @@ export const PERMISSIONS = {
   // Setting or changing the batch a stock entry belongs to. Dispatch inherits
   // the batch, so this is the only place it is ever typed.
   STOCK_BATCH_EDIT: "stock.batch.edit",
+  STOCK_OPENING: "stock.opening",
 
   // Monetary visibility: prices/values are hidden without this
   STOCK_VALUE_VIEW: "stock.value.view",
+  // The price on an entry while it waits for this person's approval — and only
+  // then. For approvers who otherwise never see money.
+  STOCK_VALUE_APPROVING: "stock.value.approving",
+  // Find Stock on its own: what is free and on which rack, with no entries list
+  STOCK_FIND: "stock.find",
+  // Marking stock as an asset (or back) — the Stock Manager's call, once the
+  // goods are received. Booking-in and dispatch never set it.
+  STOCK_CLASSIFY: "stock.classify",
+
+  // Call-backs: recalling a batch (raise), following up with customers (view),
+  // booking returned goods in (receive), and parts swapped on site (swap)
+  CALLBACKS_RAISE: "callbacks.raise",
+  CALLBACKS_VIEW: "callbacks.view",
+  CALLBACKS_RECEIVE: "callbacks.receive",
+  SERVICE_SWAP: "service.swap",
+
+  // A department asking central stock for materials: raise, the department's
+  // manager approves, the Stock Manager supplies (moves it in)
+  MATERIALS_REQUEST: "materials.request",
+  MATERIALS_APPROVE_DEPARTMENT: "materials.approve.department",
+  MATERIALS_SUPPLY: "materials.supply",
+
+  // Service stock — goods received for service, held apart from central stock.
+  // Seeing it and approving it are their own keys: stock.view and
+  // stock.approve never reach it.
+  STOCK_SERVICE_VIEW: "stock.service.view",
+  STOCK_SERVICE_APPROVE: "stock.service.approve",
 
   // Low stock. Being told a watched product is running out, and deciding what
   // is watched (minimums per site, vendor lead times), are separate keys: the
@@ -259,13 +306,6 @@ export const PRODUCT_MANAGE_PERMISSIONS: PermissionKey[] = [
 ];
 
 /**
- * Opening the Catalog page.
- *
- * Wider than managing it, because the request queue lives there too: someone
- * who can only ASK for a product still needs the page to see what happened to
- * what they asked for. Keep `middleware.ts` in step with this list.
- */
-/**
  * Who may raise a write-off at all: central stock, a department's holding, or
  * both. The Wastage page's own "Report wastage" needs either one, and what it
  * offers depends on which is held.
@@ -275,12 +315,74 @@ export const WRITE_OFF_RAISE_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.STOCK_WRITEOFF_DEPARTMENT,
 ];
 
+/**
+ * Opening the Catalog page: managing the catalog, or reviewing requests to add
+ * to it. Asking for a product is NOT enough — someone who can only ask does so
+ * from the stock entry form, and hears the answer as a notification. Keep
+ * `middleware.ts` in step with this list.
+ */
 export const CATALOG_PAGE_PERMISSIONS: PermissionKey[] = [
   ...PRODUCT_MANAGE_PERMISSIONS,
-  PERMISSIONS.PRODUCTS_REQUEST_CREATE,
   PERMISSIONS.PRODUCTS_REQUEST_APPROVE,
-  PERMISSIONS.CATEGORIES_REQUEST_CREATE,
   PERMISSIONS.CATEGORIES_REQUEST_APPROVE,
+];
+
+/**
+ * Opening the stock entries list and an entry's page. Wider than stock.view:
+ * someone who only enters stock sees their own drafts there, an approver sees
+ * what waits for them, and service stock has its own key. What each one sees
+ * is decided by src/lib/stock-visibility.ts, not by this list.
+ */
+export const STOCK_ENTRIES_PAGE_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.STOCK_VIEW,
+  PERMISSIONS.STOCK_CREATE,
+  PERMISSIONS.STOCK_APPROVE,
+  PERMISSIONS.STOCK_SERVICE_VIEW,
+  PERMISSIONS.STOCK_SERVICE_APPROVE,
+];
+
+/** Opening the Locations page. */
+export const LOCATIONS_PAGE_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.LOCATIONS_CREATE,
+  PERMISSIONS.LOCATIONS_EDIT,
+];
+
+/** Opening the Call-backs page. */
+export const CALLBACKS_PAGE_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.CALLBACKS_RAISE,
+  PERMISSIONS.CALLBACKS_VIEW,
+  PERMISSIONS.CALLBACKS_RECEIVE,
+  PERMISSIONS.SERVICE_SWAP,
+];
+
+/** Opening the Material Requests page. */
+export const MATERIALS_PAGE_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.MATERIALS_REQUEST,
+  PERMISSIONS.MATERIALS_APPROVE_DEPARTMENT,
+  PERMISSIONS.MATERIALS_SUPPLY,
+];
+
+/** Opening Find Stock. */
+export const FIND_STOCK_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.STOCK_VIEW,
+  PERMISSIONS.STOCK_CREATE,
+  PERMISSIONS.STOCK_FIND,
+];
+
+/**
+ * Picking a product from the catalog on a form — the category list, the
+ * product list and product search. Booking stock in needs it, so stock.create
+ * and stock.edit count, without opening the Catalog page itself.
+ */
+export const PRODUCT_PICK_PERMISSIONS: PermissionKey[] = [
+  PERMISSIONS.PRODUCTS_VIEW,
+  ...PRODUCT_MANAGE_PERMISSIONS,
+  PERMISSIONS.STOCK_CREATE,
+  PERMISSIONS.STOCK_EDIT,
+  // Asking central stock for materials means naming them
+  PERMISSIONS.MATERIALS_REQUEST,
+  // ...and so does asking it to send a part for a swap at a customer
+  PERMISSIONS.SERVICE_SWAP,
 ];
 
 /**
@@ -288,8 +390,10 @@ export const CATALOG_PAGE_PERMISSIONS: PermissionKey[] = [
  */
 export const ASSET_PAGE_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.ASSETS_VIEW,
+  PERMISSIONS.ASSETS_REPORT_VIEW,
   PERMISSIONS.ASSETS_TRANSFER_REQUEST,
   PERMISSIONS.ASSETS_TRANSFER_APPROVE,
+  PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT,
 ];
 
 /**
@@ -301,6 +405,8 @@ export const ASSET_PAGE_PERMISSIONS: PermissionKey[] = [
 export const WASTAGE_PAGE_PERMISSIONS: PermissionKey[] = [
   PERMISSIONS.STOCK_WRITEOFF_VIEW,
   PERMISSIONS.STOCK_WRITEOFF_APPROVE,
+  // Service stock's write-offs are decided by its own approvers
+  PERMISSIONS.STOCK_SERVICE_APPROVE,
 ];
 
 export const DISPATCH_PERMISSIONS: PermissionKey[] = [
@@ -352,17 +458,17 @@ const FULFILMENT_PERMISSIONS: PermissionKey[] = [
 ];
 
 /**
- * Opening the Builds page — the runs themselves, or the "Plan" tab.
+ * Seeing build runs: builds.view, or any of the keys that act on a run.
  *
- * The fulfilment planner ("can we meet this order, and from where?") lives here
- * now, beside the builds it plans, so fulfilment.view opens the page too.
- * Keep `middleware.ts` in step with this.
+ * Nothing else opens it. The fulfilment planner used to live here as a tab,
+ * which let fulfilment.view open a page full of builds; it has its own page.
  */
 export const BUILDS_PAGE_PERMISSIONS: PermissionKey[] = [
-  PERMISSIONS.BOM_VIEW,
+  PERMISSIONS.BUILDS_VIEW,
   PERMISSIONS.BOM_BUILD,
   PERMISSIONS.BOM_UNBUILD,
-  PERMISSIONS.FULFILMENT_VIEW,
+  PERMISSIONS.BOM_BUILD_FINISH,
+  PERMISSIONS.BOM_BUILD_APPROVE,
 ];
 
 /**

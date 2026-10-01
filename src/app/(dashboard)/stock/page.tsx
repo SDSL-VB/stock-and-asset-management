@@ -1,5 +1,8 @@
 import { requireAnyPermission } from "@/lib/rbac/check";
-import { PERMISSIONS } from "@/lib/rbac/permissions";
+import {
+  PERMISSIONS,
+  STOCK_ENTRIES_PAGE_PERMISSIONS,
+} from "@/lib/rbac/permissions";
 import { getStockEntries, getStockEntryStats } from "@/lib/actions/stock";
 import { PageHeader } from "@/components/shared/page-header";
 import { StockEntryList } from "./_components/stock-entry-list";
@@ -20,7 +23,7 @@ export default async function StockPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireAnyPermission([PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE]);
+  const user = await requireAnyPermission(STOCK_ENTRIES_PAGE_PERMISSIONS);
   const [entries, stats, params] = await Promise.all([
     getStockEntries(),
     getStockEntryStats(),
@@ -85,22 +88,28 @@ export default async function StockPage({
         )}
       </PageHeader>
 
-      <StockEntryList
-        entries={entries}
-        stats={stats}
-        canSeeWarranty={user.permissions.includes(PERMISSIONS.STOCK_WARRANTY_VIEW)}
-        canSeeValue={hasPermission(user.permissions, PERMISSIONS.STOCK_VALUE_VIEW)}
-        initialFilters={{
-          status: one("status"),
-          source: one("source"),
-          kind: one("kind"),
-          category: one("category"),
-          site: one("site"),
-          holding: one("holding"),
-          from: one("from"),
-          to: one("to"),
-        }}
-      />
+      {/* Someone without stock.view (or service stock) only ever has their own
+          drafts and sent-back entries here — no list at all when there are none */}
+      {(hasPermission(user.permissions, PERMISSIONS.STOCK_VIEW) ||
+        hasPermission(user.permissions, PERMISSIONS.STOCK_SERVICE_VIEW) ||
+        entries.length > 0) && (
+        <StockEntryList
+          entries={entries}
+          stats={stats}
+          canSeeWarranty={user.permissions.includes(PERMISSIONS.STOCK_WARRANTY_VIEW)}
+          canSeeValue={hasPermission(user.permissions, PERMISSIONS.STOCK_VALUE_VIEW)}
+          initialFilters={{
+            status: one("status"),
+            source: one("source"),
+            kind: one("kind"),
+            category: one("category"),
+            site: one("site"),
+            holding: one("holding"),
+            from: one("from"),
+            to: one("to"),
+          }}
+        />
+      )}
     </div>
   );
 }

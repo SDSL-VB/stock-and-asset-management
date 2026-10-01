@@ -58,8 +58,9 @@ type Product = {
 type Site = {
   locationId: string;
   locationName: string;
-  available: number;
-  buildable: number;
+  /** Null for a site the viewer may not see into — they have to ask it */
+  available: number | null;
+  buildable: number | null;
 };
 
 type Plan = {
@@ -74,6 +75,8 @@ type Plan = {
   coveredWithBuilding: boolean;
   moves: { locationId: string; locationName: string; quantity: number }[];
   singleSite: string | null;
+  /** False when other sites' counts are hidden and have to be asked for */
+  seesAllSites: boolean;
   /** The viewer's own site — you never ask it for what is already there */
   viewerLocationId: string | null;
   availableHere: number;
@@ -155,9 +158,11 @@ export function FulfilmentPlanner({ products, canRequest, destinations }: Props)
 
   function openAsk(site: Site) {
     setAskSite(site);
-    // Default to what is actually missing, capped at what they can spare
+    // Default to what is actually missing, capped at what they can spare when
+    // that is known
     const gap = plan ? Math.max(1, Math.ceil(plan.shortAfterStock || plan.wanted)) : 1;
-    setAskQty(String(Math.min(gap, Math.floor(site.available)) || 1));
+    const cap = site.available === null ? gap : Math.floor(site.available);
+    setAskQty(String(Math.min(gap, cap) || 1));
     setAskNotes("");
     // Default to the first site that is not the one being asked
     setAskFor(destinations.find((d) => d.id !== site.locationId)?.id ?? "");
@@ -206,7 +211,7 @@ export function FulfilmentPlanner({ products, canRequest, destinations }: Props)
         <CardHeader>
           <CardTitle>Can we supply this?</CardTitle>
           <CardDescription>
-            Pick what is being asked for and how many. Every site is checked at once.
+            Pick what is being asked for and how many.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -304,8 +309,9 @@ export function FulfilmentPlanner({ products, canRequest, destinations }: Props)
           <CardHeader>
             <CardTitle>Where it is</CardTitle>
             <CardDescription>
-              Uncommitted central stock at each site, and what each could build from
-              components it already holds.
+              {plan.seesAllSites
+                ? "Uncommitted central stock at each site, and what each could build from components it already holds."
+                : "Your site's uncommitted central stock. Other sites are not shown — ask one, and they reply with how much they can send."}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -323,14 +329,18 @@ export function FulfilmentPlanner({ products, canRequest, destinations }: Props)
                   <TableRow key={site.locationId}>
                     <TableCell className="font-medium">{site.locationName}</TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {site.available > 0 ? (
+                      {site.available === null ? (
+                        <span className="text-xs text-muted-foreground">Ask them</span>
+                      ) : site.available > 0 ? (
                         formatQty(site.available)
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {site.buildable > 0 ? (
+                      {site.buildable === null ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : site.buildable > 0 ? (
                         formatQty(site.buildable)
                       ) : (
                         <span className="text-muted-foreground">—</span>
@@ -345,7 +355,7 @@ export function FulfilmentPlanner({ products, canRequest, destinations }: Props)
                             Your site
                           </span>
                         ) : (
-                          site.available > 0 && (
+                          (site.available === null || site.available > 0) && (
                             <Button variant="outline" size="sm" onClick={() => openAsk(site)}>
                               <Truck className="size-4" />
                               Ask for stock
@@ -431,15 +441,15 @@ export function FulfilmentPlanner({ products, canRequest, destinations }: Props)
                 id="ask-qty"
                 type="number"
                 min={1}
-                max={askSite ? Math.floor(askSite.available) : undefined}
+                max={askSite?.available != null ? Math.floor(askSite.available) : undefined}
                 value={askQty}
                 onChange={(e) => setAskQty(e.target.value)}
               />
-              {askSite && (
-                <p className="text-xs text-muted-foreground">
-                  {formatQty(askSite.available)} free there right now.
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground">
+                {askSite?.available != null
+                  ? `${formatQty(askSite.available)} free there right now.`
+                  : "They will reply with whether they can send all of it, part of it, or none."}
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -473,11 +483,29 @@ export function FulfilmentPlanner({ products, canRequest, destinations }: Props)
 function Verdict({ plan }: { plan: Plan }) {
   const unit = plan.product.unit;
 
+  // Someone who sees only their own site gets an answer about that site, and
+  // is pointed at asking the others rather than told what they hold
+  if (!plan.seesAllSites && !plan.coveredByStock) {
+    return (
+      <Banner tone="warn" icon={<Truck className="size-5" />}>
+        <strong>
+          Your site has {formatQty(plan.availableHere)} of {formatQty(plan.wanted)}.
+        </strong>{" "}
+        {plan.totalBuildable > 0 &&
+          `${formatQty(plan.totalBuildable)} more could be built here. `}
+        For the rest, ask another site below — they will say whether they can send it
+        in full or in part.
+      </Banner>
+    );
+  }
+
   if (plan.coveredByStock) {
     return (
       <Banner tone="good" icon={<PackageCheck className="size-5" />}>
         <strong>Yes — this can ship from stock.</strong>{" "}
-        {plan.singleSite
+        {!plan.seesAllSites
+          ? "Your site is holding enough."
+          : plan.singleSite
           ? `${plan.singleSite} alone is holding enough.`
           : `No single site has all ${formatQty(plan.wanted)}, but together they do.`}
       </Banner>

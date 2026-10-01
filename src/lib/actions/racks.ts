@@ -3,9 +3,13 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { requireAnyPermission } from "@/lib/rbac/check";
-import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
+import {
+  PERMISSIONS,
+  resolveStockScope,
+  FIND_STOCK_PERMISSIONS,
+} from "@/lib/rbac/permissions";
 import { availabilityInclude, availableQuantity, round } from "@/lib/stock-availability";
-import { isStockVisible } from "@/lib/stock-visibility";
+import { isStockVisible, seesStockEntries } from "@/lib/stock-visibility";
 import { normalizeRack } from "@/lib/racks";
 import { rackField } from "@/lib/validations/stock";
 import { logActivity } from "@/lib/activity-log";
@@ -14,6 +18,9 @@ import { labelOfKind } from "@/lib/vocabulary";
 /**
  * Racks: where stock sits in the store, and finding it again.
  *
+ *   getMySiteStock what is on the shelves at YOUR site, before anything is
+ *                  typed: code, how much, which rack. Nothing at all for
+ *                  somebody with no site — they search instead.
  *   findStock      "is there any, and where?" — every approved central entry of
  *                  the matching products that still has something free,
  *                  grouped by site and then by rack, so the answer reads
@@ -30,7 +37,7 @@ import { labelOfKind } from "@/lib/vocabulary";
  * learns of stock at a site they may not see.
  */
 
-const WHO_MAY_SEE = [PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE];
+const WHO_MAY_SEE = FIND_STOCK_PERMISSIONS;
 /** The people who put goods away or move them in the store */
 const WHO_MAY_MOVE = [
   PERMISSIONS.STOCK_CREATE,
@@ -38,6 +45,25 @@ const WHO_MAY_MOVE = [
   PERMISSIONS.STOCK_MOVE,
   PERMISSIONS.STOCK_APPROVE,
 ];
+
+/**
+ * Whether one entry's free stock counts in Find Stock for this person.
+ *
+ * Finding stock and reading stock entries are different things. Somebody who
+ * may see entries gets the stock list's own rule. An entry operator — who may
+ * find stock but not read entries (no `stock.view`) — sees what is free at
+ * their own site: enough to know whether a thing exists before asking for it to
+ * be added, and nothing about who booked it, when, or at what price. With no
+ * site on record they see nothing, never everything.
+ */
+function countsForFinding(
+  entry: Parameters<typeof isStockVisible>[0],
+  user: Parameters<typeof isStockVisible>[1],
+  scope: Parameters<typeof isStockVisible>[2]
+): boolean {
+  if (seesStockEntries(user)) return isStockVisible(entry, user, scope);
+  return !!user.locationId && entry.locationId === user.locationId;
+}
 
 export type FoundStock = {
   productId: string;
@@ -72,11 +98,15 @@ export async function findStock(
 ): Promise<FoundStock[]> {
   const user = await requireAnyPermission(WHO_MAY_SEE);
   const canSeeValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
-  const q = query.trim();
+  // Bounded before it becomes a query. Each word turns into five LIKE clauses,
+  // so an unbounded search is a cheap way to hand the database a very
+  // expensive question. Nobody looks for stock in more than a few words.
+  if (typeof query !== "string") return [];
+  const q = query.trim().slice(0, 100);
   if (!q) return [];
 
   // Every word must match somewhere, as in the product pickers
-  const words = q.split(/\s+/).filter(Boolean);
+  const words = q.split(/\s+/).filter(Boolean).slice(0, 6);
   const products = await prisma.product.findMany({
     where: {
       isActive: true,
@@ -110,6 +140,8 @@ export async function findStock(
       productId: { in: products.map((p) => p.id) },
       status: "APPROVED",
       departmentId: null,
+      // Service stock is held apart and never counts as central stock
+      forService: false,
       // A site asked for narrows the answer; what may be SEEN is decided
       // below by the stock list's own rule, never by this.
       ...(filter.locationId ? { locationId: filter.locationId } : {}),
@@ -124,9 +156,12 @@ export async function findStock(
   });
 
   const scope = resolveStockScope(user);
+  // Entry numbers and batches identify the records themselves — only for
+  // people who may read them
+  const showEntries = seesStockEntries(user);
   const byProduct = new Map<string, FoundStock["sites"]>();
   for (const entry of entries) {
-    if (!isStockVisible(entry, user, scope)) continue;
+    if (!countsForFinding(entry, user, scope)) continue;
     const available = round(availableQuantity(entry));
     if (available <= 0 || !entry.productId) continue;
 
@@ -150,7 +185,9 @@ export async function findStock(
       site.racks.push(rack);
     }
     rack.available = round(rack.available + available);
-    rack.entries.push({ id: entry.id, entryNumber: entry.entryNumber, batchNumber: entry.batchNumber, available });
+    if (showEntries) {
+      rack.entries.push({ id: entry.id, entryNumber: entry.entryNumber, batchNumber: entry.batchNumber, available });
+    }
     site.total = round(site.total + available);
     // Valued at what the goods were booked in at, the same as the stock report
     if (site.value !== null) site.value = round(site.value + available * entry.unitPrice);
@@ -177,6 +214,96 @@ export async function findStock(
       sites,
     };
   });
+}
+
+/** One product on the shelves at a site — the short form, not the rack detail. */
+export type SiteStockRow = {
+  productId: string;
+  code: string;
+  name: string;
+  unit: string;
+  /** Free to use at this site */
+  available: number;
+  /** Every rack it is on, in shelf order; empty when none was recorded */
+  racks: string[];
+};
+
+/** The most a site's list returns — enough for a store, not a data dump */
+const SITE_STOCK_LIMIT = 500;
+
+/**
+ * What is on the shelves at the person's own site, before they type anything.
+ *
+ * The short form of the stock report, for the place people come to when they
+ * are looking for something: code, how much is free, and which rack — nothing
+ * about value, receipts or batches, which the report and the rack view carry.
+ *
+ * Only the person's OWN site, and only when they have one. Somebody attached to
+ * no site gets `site: null` and an empty list rather than every site's stock:
+ * "show me what is here" has no answer for them, and the search box does. That
+ * includes admins who see everything — seeing everything is a reason to ask a
+ * question, not to be handed the whole warehouse on arrival.
+ *
+ * Visibility still runs entry by entry, the same rule as the stock list, so a
+ * department-scoped person sees only what that rule lets them see even at
+ * their own site.
+ */
+export async function getMySiteStock(): Promise<{
+  site: { id: string; name: string } | null;
+  rows: SiteStockRow[];
+  /** More was held than was returned */
+  truncated: boolean;
+}> {
+  const user = await requireAnyPermission(WHO_MAY_SEE);
+  if (!user.locationId) return { site: null, rows: [], truncated: false };
+
+  const site = await prisma.location.findUnique({
+    where: { id: user.locationId },
+    select: { id: true, name: true },
+  });
+  if (!site) return { site: null, rows: [], truncated: false };
+
+  const entries = await prisma.stockEntry.findMany({
+    where: { status: "APPROVED", departmentId: null, forService: false, locationId: site.id },
+    include: {
+      ...availabilityInclude,
+      issues: { select: { quantity: true, departmentId: true } },
+      product: { select: { id: true, code: true, name: true, unit: true } },
+    },
+  });
+
+  const scope = resolveStockScope(user);
+  const byProduct = new Map<string, SiteStockRow>();
+  for (const entry of entries) {
+    if (!entry.product || !countsForFinding(entry, user, scope)) continue;
+    const available = round(availableQuantity(entry));
+    if (available <= 0) continue;
+
+    const row = byProduct.get(entry.product.id) ?? {
+      productId: entry.product.id,
+      code: entry.product.code,
+      name: entry.product.name,
+      unit: entry.product.unit,
+      available: 0,
+      racks: [],
+    };
+    row.available = round(row.available + available);
+    if (entry.rackLocation && !row.racks.includes(entry.rackLocation)) row.racks.push(entry.rackLocation);
+    byProduct.set(entry.product.id, row);
+  }
+
+  const rows = [...byProduct.values()]
+    .map((row) => ({
+      ...row,
+      racks: row.racks.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+    }))
+    .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+
+  return {
+    site,
+    rows: rows.slice(0, SITE_STOCK_LIMIT),
+    truncated: rows.length > SITE_STOCK_LIMIT,
+  };
 }
 
 /** Record where an entry's goods now sit. An empty rack clears it. */

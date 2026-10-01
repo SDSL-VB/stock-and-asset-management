@@ -3,7 +3,8 @@
 import { prisma } from "@/lib/prisma";
 import { requireAnyPermission, requirePermission } from "@/lib/rbac/check";
 import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
-import { stockCandidatesWhere, isStockVisible } from "@/lib/stock-visibility";
+import { stockCandidatesWhere, isStockVisible, maySeeEntryMoney } from "@/lib/stock-visibility";
+import { hideMoney } from "@/lib/hide-money";
 import {
   heldQuantity,
   committingDispatchItemsWhere,
@@ -50,6 +51,7 @@ type Viewer = {
  */
 const VISIBILITY_SELECT = {
   status: true,
+  forService: true,
   quantity: true,
   departmentId: true,
   locationId: true,
@@ -124,6 +126,9 @@ export async function getStockDashboardStats() {
 
   const visible = rows.filter((row) => isStockVisible(row, user, scope));
   const withStatus = (status: string) => visible.filter((e) => e.status === status);
+  // Money never leaves the server for someone who may not see it — hiding a
+  // tile in the browser would still send the figure in the page's data
+  const seesValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
 
   return {
     total: visible.length,
@@ -131,30 +136,44 @@ export async function getStockDashboardStats() {
     submitted: withStatus("SUBMITTED").length,
     approved: withStatus("APPROVED").length,
     rejected: withStatus("REJECTED").length,
-    recentEntries: visible.slice(0, 5),
+    recentEntries: visible
+      .slice(0, 5)
+      .map((e) => (maySeeEntryMoney(e, user) ? e : hideMoney(e))),
     // The value of what is STILL HERE. Summing totalPrice counted goods that
-    // had already been dispatched away or consumed by a build.
-    approvedValue: withStatus("APPROVED").reduce(
-      (sum, e) => sum + heldQuantity(e) * e.unitPrice,
-      0
-    ),
+    // had already been dispatched away or consumed by a build. Service stock
+    // is held apart from stock, so it is left out.
+    approvedValue: seesValue
+      ? withStatus("APPROVED").reduce(
+          (sum, e) => (e.forService ? sum : sum + heldQuantity(e) * e.unitPrice),
+          0
+        )
+      : 0,
   };
 }
 
 /**
  * Entries waiting on this person.
  *
- * Authority is stock.approve plus the same where-it-arrived rules the approve
- * action enforces, so the queue never offers something that would be refused.
+ * Authority is stock.approve (stock.service.approve for service stock) plus the
+ * same where-it-arrived rules the approve action enforces, so the queue never
+ * offers something that would be refused.
  * It used to match the approver's ROLE against the step, which is why the queue
  * was empty for everyone once the role named on the step had no members.
  */
 export async function getPendingApprovals() {
-  const user: Viewer = await requirePermission(PERMISSIONS.STOCK_APPROVE);
+  const user: Viewer = await requireAnyPermission([
+    PERMISSIONS.STOCK_APPROVE,
+    PERMISSIONS.STOCK_SERVICE_APPROVE,
+  ]);
   const scope = resolveStockScope(user);
+  const approves = (forService: boolean) =>
+    user.permissions.includes(
+      forService ? PERMISSIONS.STOCK_SERVICE_APPROVE : PERMISSIONS.STOCK_APPROVE
+    );
 
   const rows = await prisma.stockEntry.findMany({
-    where: { status: "SUBMITTED", ...stockCandidatesWhere(user, scope) },
+    // Built goods waiting are the Production Manager's, approved on Builds
+    where: { status: "SUBMITTED", source: { not: "BUILT" }, ...stockCandidatesWhere(user, scope) },
     select: {
       ...VISIBILITY_SELECT,
       id: true,
@@ -173,7 +192,7 @@ export async function getPendingApprovals() {
   const seesEverySite = scope === "all";
 
   return rows
-    .filter((row) => isStockVisible(row, user, scope))
+    .filter((row) => isStockVisible(row, user, scope) && approves(row.forService))
     .filter((entry) => {
       if (seesEverySite) return true;
       // An entry already in a department is that department's business;
@@ -181,7 +200,8 @@ export async function getPendingApprovals() {
       if (entry.departmentId !== null) return entry.departmentId === user.departmentId;
       return entry.locationId === null || entry.locationId === user.locationId;
     })
-    .slice(0, 10);
+    .slice(0, 10)
+    .map((e) => (maySeeEntryMoney(e, user) ? e : hideMoney(e)));
 }
 
 /* ------------------------------------------------------------------------
@@ -244,6 +264,7 @@ export async function getDashboardTrends(): Promise<{
     PERMISSIONS.STOCK_CREATE,
   ]);
   const scope = resolveStockScope(user);
+  const seesValue = user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW);
 
   const start = windowStart();
   const size = TREND_DAYS * 2;
@@ -277,7 +298,7 @@ export async function getDashboardTrends(): Promise<{
     if (row.status === "SUBMITTED") pending[i] += 1;
     if (row.status === "APPROVED") {
       approved[i] += 1;
-      approvedValue[i] += row.totalPrice ?? 0;
+      if (!row.forService && seesValue) approvedValue[i] += row.totalPrice ?? 0;
     }
   }
 

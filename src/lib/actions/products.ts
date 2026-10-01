@@ -7,7 +7,11 @@ import {
   requireAuth,
   hasPermission,
 } from "@/lib/rbac/check";
-import { PERMISSIONS, PRODUCT_MANAGE_PERMISSIONS } from "@/lib/rbac/permissions";
+import {
+  PERMISSIONS,
+  PRODUCT_MANAGE_PERMISSIONS,
+  PRODUCT_PICK_PERMISSIONS,
+} from "@/lib/rbac/permissions";
 import {
   createProductSchema,
   updateProductSchema,
@@ -33,7 +37,7 @@ import {
   rejectRequestSchema,
 } from "@/lib/validations/request";
 import { archive } from "@/lib/recycle-bin";
-import { labelOfKind, isMadeKind } from "@/lib/vocabulary";
+import { labelOfKind, isMadeKind, SERVICEABLE_KINDS } from "@/lib/vocabulary";
 import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 import { catalogDecided, catalogRequested } from "@/lib/notifications/events";
@@ -140,7 +144,7 @@ async function nextProductCode(
 // ---------- Read (operators + admins) ----------
 
 export async function getProductCategories() {
-  await requireAnyPermission([PERMISSIONS.PRODUCTS_VIEW, ...PRODUCT_MANAGE_PERMISSIONS]);
+  await requireAnyPermission(PRODUCT_PICK_PERMISSIONS);
 
   return prisma.productCategory.findMany({
     where: { isActive: true },
@@ -168,7 +172,7 @@ export async function getProductCategories() {
  * chosen one after another and a round trip per keystroke would drag.
  */
 export async function getProductOptions() {
-  await requireAnyPermission([PERMISSIONS.PRODUCTS_VIEW, ...PRODUCT_MANAGE_PERMISSIONS]);
+  await requireAnyPermission(PRODUCT_PICK_PERMISSIONS);
   return prisma.product.findMany({
     where: { isActive: true },
     select: {
@@ -177,6 +181,7 @@ export async function getProductOptions() {
       name: true,
       unit: true,
       description: true,
+      kind: true,
       category: { select: { name: true } },
       subcategory: { select: { name: true } },
     },
@@ -186,16 +191,25 @@ export async function getProductOptions() {
 
 // Search active products by name (or code) within a category — powers the
 // autocomplete in the stock entry form.
-export async function searchProducts(query: string, categoryId?: string) {
-  await requireAnyPermission([PERMISSIONS.PRODUCTS_VIEW, ...PRODUCT_MANAGE_PERMISSIONS]);
+/**
+ * `serviceable` narrows to what can come in for service: made here (finished
+ * and semi-finished — a simulator, a panel, a PCB) or bought whole (a TV, a
+ * PC). Never raw material.
+ */
+export async function searchProducts(query: string, categoryId?: string, serviceable = false) {
+  await requireAnyPermission(PRODUCT_PICK_PERMISSIONS);
 
-  const q = query.trim();
+  // A search term is typed, not pasted in bulk — bounded so a huge string is
+  // never handed to four LIKE clauses at once
+  if (typeof query !== "string") return [];
+  const q = query.trim().slice(0, 100);
   if (q.length < 1) return [];
 
   return prisma.product.findMany({
     where: {
       isActive: true,
       ...(categoryId ? { categoryId } : {}),
+      ...(serviceable ? { kind: { in: SERVICEABLE_KINDS } } : {}),
       OR: [
         { name: { contains: q, mode: "insensitive" } },
         { code: { contains: q, mode: "insensitive" } },
@@ -210,6 +224,7 @@ export async function searchProducts(query: string, categoryId?: string) {
       code: true,
       name: true,
       description: true,
+      kind: true,
       category: { select: { id: true, name: true } },
       subcategory: { select: { id: true, name: true } },
     },
@@ -991,6 +1006,23 @@ export async function createProductRequest(data: unknown) {
   if (!hasPermission(user.permissions, neededPermission)) {
     return {
       error: `You do not have permission to request new ${type === "PRODUCT" ? "products" : "categories"}`,
+    };
+  }
+
+  // Raise what you may approve, and it is done: someone who could approve this
+  // request — which means adding the item, with its code and kind — adds it
+  // directly instead of filing a request into their own queue
+  const mayAddDirectly =
+    type === "PRODUCT"
+      ? [PERMISSIONS.PRODUCTS_REQUEST_APPROVE, PERMISSIONS.PRODUCTS_CREATE, PERMISSIONS.PRODUCTS_CREATE_MADE].some((p) =>
+          hasPermission(user.permissions, p)
+        )
+      : [PERMISSIONS.CATEGORIES_REQUEST_APPROVE, PERMISSIONS.CATEGORIES_CREATE].some((p) =>
+          hasPermission(user.permissions, p)
+        );
+  if (mayAddDirectly) {
+    return {
+      error: `You can add this ${type === "PRODUCT" ? "product" : "category"} yourself — use "Add" instead of asking for it`,
     };
   }
 

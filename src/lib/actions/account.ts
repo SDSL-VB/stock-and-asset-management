@@ -79,3 +79,16 @@ export async function changeOwnPasswordAction(
   // Throws a redirect, so nothing below runs.
   await signOut({ redirectTo: "/login?passwordChanged=1" });
 }
+
+/**
+ * What the signed-in person may do, as the server sees it right now.
+ *
+ * The sidebar asks on every page change. It lives in the layout, which Next.js
+ * does not re-render when moving between pages, so without this it kept the
+ * list from when the app was first loaded — and showed links that the page,
+ * checking the current list, then refused.
+ */
+export async function getMyPermissions(): Promise<string[]> {
+  const user = await requireSignedIn();
+  return user.permissions;
+}

@@ -154,8 +154,12 @@ export function readCsvTable(
     };
   }
 
+  // Rows have no prototype. A heading is text a person typed, and a column
+  // called "__proto__" or "constructor" written into an ordinary {} would reach
+  // the object's prototype rather than becoming a field — a file should never
+  // be able to change what an object IS.
   const rows = cells.slice(1).map((line) => {
-    const row: CsvRow = {};
+    const row = Object.create(null) as CsvRow;
     keys.forEach((key, i) => {
       row[key] = (line[i] ?? "").trim();
     });

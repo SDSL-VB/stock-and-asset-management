@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { availabilityInclude, availableQuantity, round } from "@/lib/stock-availability";
+import {
+  availabilityInclude,
+  availableQuantity,
+  availableFromIssue,
+  issueDrawdownsInclude,
+  round,
+} from "@/lib/stock-availability";
 
 /**
  * "How many can we build?" — the one place that answers it.
@@ -19,8 +25,9 @@ import { availabilityInclude, availableQuantity, round } from "@/lib/stock-avail
  *   the build supports the SMALLEST of those, over the lines that are required
  *   an optional line never blocks a build — nobody ordered that add-on
  *
- * "Free stock" is central stock at the site, approved, less everything already
- * promised — `availableQuantity()`, never the raw entry quantity.
+ * "Free stock" for building is DEPARTMENT stock at the site (never assets) —
+ * builds draw on their department's own stock, not central stock. Central
+ * stock is still what dispatch and the low-stock alert count.
  */
 
 /** One component line, reduced to what the rule needs. */
@@ -65,6 +72,8 @@ export async function centralAvailability(
       // Central stock only: an entry booked straight to a department is that
       // department's, not something a build or another site can draw on.
       departmentId: null,
+      // Service stock is held apart and never counts as central stock
+      forService: false,
       locationId: { not: null },
     },
     select: { productId: true, locationId: true, quantity: true, ...availabilityInclude },
@@ -96,7 +105,7 @@ export async function buildableAtSites(
   });
   if (!bom || bom.lines.length === 0) return result;
 
-  const stock = await centralAvailability(bom.lines.map((l) => l.componentProductId));
+  const stock = await departmentStockBySite(bom.lines.map((l) => l.componentProductId));
 
   for (const locationId of locationIds) {
     result.set(
@@ -111,4 +120,35 @@ export async function buildableAtSites(
     );
   }
   return result;
+}
+
+/**
+ * Free DEPARTMENT stock (never assets) of several products at every site, in
+ * one query: productId → (locationId → free quantity). What builds draw on.
+ */
+export async function departmentStockBySite(
+  productIds: string[]
+): Promise<Map<string, Map<string, number>>> {
+  const out = new Map<string, Map<string, number>>();
+  if (productIds.length === 0) return out;
+
+  const holdings = await prisma.stockIssue.findMany({
+    where: { isAsset: false, stockEntry: { productId: { in: productIds } } },
+    include: {
+      ...issueDrawdownsInclude,
+      stockEntry: { select: { productId: true } },
+      department: { select: { locationId: true } },
+    },
+  });
+
+  for (const h of holdings) {
+    const free = availableFromIssue(h);
+    const productId = h.stockEntry.productId;
+    const locationId = h.department.locationId;
+    if (free <= 0 || !productId || !locationId) continue;
+    const bySite = out.get(productId) ?? new Map<string, number>();
+    bySite.set(locationId, round((bySite.get(locationId) ?? 0) + free));
+    out.set(productId, bySite);
+  }
+  return out;
 }

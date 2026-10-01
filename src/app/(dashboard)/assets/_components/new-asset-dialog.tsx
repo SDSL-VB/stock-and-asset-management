@@ -29,13 +29,16 @@ type CentralEntry = {
   entryNumber: string;
   itemCode: string | null;
   itemName: string;
+  locationId: string | null;
   locationName: string | null;
   available: number;
 };
 
 interface Props {
   entries: CentralEntry[];
-  departments: { id: string; name: string }[];
+  departments: { id: string; name: string; locationId: string | null }[];
+  /** May move stock into a department at another site (assets.move.crosssite) */
+  canMoveAcrossSites?: boolean;
 }
 
 /**
@@ -43,7 +46,7 @@ interface Props {
  * created from nothing — this picks approved stock that is already in central
  * and moves the chosen quantity in as an asset.
  */
-export function NewAssetDialog({ entries, departments }: Props) {
+export function NewAssetDialog({ entries, departments, canMoveAcrossSites = false }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -54,6 +57,13 @@ export function NewAssetDialog({ entries, departments }: Props) {
 
   const selected = entries.find((e) => e.id === entryId);
   const max = selected?.available ?? 0;
+  // Only departments the server will accept: the stock's own site, unless this
+  // person may move across sites. None until the stock is picked.
+  const allowedDepartments = selected
+    ? departments.filter(
+        (d) => canMoveAcrossSites || (d.locationId !== null && d.locationId === selected.locationId)
+      )
+    : [];
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -126,6 +136,8 @@ export function NewAssetDialog({ entries, departments }: Props) {
                 onValueChange={(v) => {
                   const next = (v as string) ?? "";
                   setEntryId(next);
+                  // A department picked for other stock may be at another site
+                  setDepartmentId("");
                   const entry = entries.find((x) => x.id === next);
                   setQuantity(entry ? Math.min(1, entry.available) || 1 : 1);
                 }}
@@ -149,14 +161,15 @@ export function NewAssetDialog({ entries, departments }: Props) {
               <Label>Department *</Label>
               <Select
                 value={departmentId}
-                items={departments.map((d) => ({ value: d.id, label: d.name }))}
+                items={allowedDepartments.map((d) => ({ value: d.id, label: d.name }))}
                 onValueChange={(v) => setDepartmentId((v as string) ?? "")}
+                disabled={!selected}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Which department will hold it" />
+                  <SelectValue placeholder={selected ? "Which department will hold it" : "Pick the stock first"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {departments.map((d) => (
+                  {allowedDepartments.map((d) => (
                     <SelectItem key={d.id} value={d.id}>
                       {d.name}
                     </SelectItem>

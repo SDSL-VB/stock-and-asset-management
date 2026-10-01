@@ -20,7 +20,7 @@ import { SELF_APPROVAL_REFUSAL } from "@/lib/review-rules";
 import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
 import { lockEntries } from "@/lib/stock-locks";
-import { NO_SITE } from "@/lib/stock-visibility";
+import { NO_SITE, stockKindWhere } from "@/lib/stock-visibility";
 import { toCsv } from "@/lib/csv";
 import { DISPATCH_STATUS_LABEL } from "@/lib/vocabulary";
 import { renderDispatchReceiptPdf } from "@/lib/dispatch-receipt-pdf";
@@ -170,7 +170,8 @@ export async function getDispatchableStock(originLocationId?: string) {
   const user = await requirePermission(PERMISSIONS.DISPATCH_CREATE);
 
   const scope = resolveStockScope(user);
-  const where: Record<string, unknown> = { status: "APPROVED", departmentId: null };
+  // Ordinary stock, service stock, or both — whichever this person may see
+  const where: Record<string, unknown> = { status: "APPROVED", departmentId: null, ...stockKindWhere(user) };
   // Everyone else dispatches only from their own site — with none, nothing
   const originId = scope === "all" ? originLocationId : user.locationId ?? NO_SITE;
   if (originId) {
@@ -185,6 +186,7 @@ export async function getDispatchableStock(originLocationId?: string) {
       itemCode: true,
       itemName: true,
       quantity: true,
+      forService: true,
       locationId: true,
       location: { select: { name: true } },
       ...availabilityInclude,
@@ -200,6 +202,7 @@ export async function getDispatchableStock(originLocationId?: string) {
       itemName: e.itemName,
       locationId: e.locationId,
       locationName: e.location?.name ?? null,
+      forService: e.forService,
       available: availableQuantity(e),
     }))
     .filter((e) => e.available > 0);
@@ -232,6 +235,10 @@ export async function createDispatch(data: unknown) {
   if (destination === "LOCATION" && toLocationId === originId) {
     return { error: "The destination must be a different location" };
   }
+  if (destination === "LOCATION") {
+    const site = await prisma.location.findUnique({ where: { id: toLocationId ?? "" }, select: { isActive: true } });
+    if (!site?.isActive) return { error: "Choose a destination site that is in use" };
+  }
 
   // One line per stock entry — two lines drawing on the same entry would each
   // be checked against the same free quantity
@@ -247,6 +254,7 @@ export async function createDispatch(data: unknown) {
 
   // Checked and taken in one transaction, with the entries locked, so two
   // dispatches raised at the same moment cannot both take the last units
+  const kind = stockKindWhere(user);
   const outcome = await prisma.$transaction(async (tx) => {
     await lockEntries(tx, entryIds);
 
@@ -258,11 +266,16 @@ export async function createDispatch(data: unknown) {
           quantity: true,
           status: true,
           departmentId: true,
+          forService: true,
           locationId: true,
           ...availabilityInclude,
         },
       });
       if (!entry) return { error: "One of the selected items no longer exists" };
+      // Service stock only by those who may see it, and ordinary stock likewise
+      if (kind.forService !== undefined && entry.forService !== kind.forService) {
+        return { error: "One of the selected items no longer exists" };
+      }
       if (entry.status !== "APPROVED" || entry.departmentId !== null) {
         return { error: `${entry.itemName} is not available in central stock` };
       }
@@ -300,7 +313,9 @@ export async function createDispatch(data: unknown) {
           create: items.map((item) => ({
             stockEntryId: item.stockEntryId,
             quantity: item.quantity,
-            isAsset: item.isAsset ?? false,
+            // Never sent as an asset: goods travel as stock, and the Stock
+            // Manager classifies them once received (stock.classify)
+            isAsset: false,
             batchNumber: sourceBatches.get(item.stockEntryId) ?? null,
           })),
         },
@@ -570,7 +585,10 @@ export async function markDispatchReceived(id: string) {
             totalPrice: item.quantity * source.unitPrice,
             invoiceNumber: source.invoiceNumber,
             locationId: dispatch.toLocationId,
-            isAsset: item.isAsset,
+            // Arrives as stock; the Stock Manager classifies it (stock.classify)
+            isAsset: false,
+            // Service stock arrives as service stock
+            forService: source.forService,
             // Carried from the consignment line, not left blank: a batch is
             // only worth stamping if it survives the journey, and a recall
             // starts from the number on the goods at whichever site holds them.

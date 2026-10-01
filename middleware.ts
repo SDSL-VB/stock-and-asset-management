@@ -8,15 +8,19 @@ const { auth } = NextAuth(authConfig);
 const ROUTE_PERMISSIONS: Record<string, string[]> = {
   "/users": ["users.view"],
   "/roles": ["roles.view"],
+  "/permissions": ["permissions.rename"],
+  "/approvals": ["approvals.configure"],
   "/departments": ["departments.view"],
+  // Keep in step with LOCATIONS_PAGE_PERMISSIONS
+  "/locations": ["locations.create", "locations.edit"],
   "/clients": ["clients.view", "clients.create", "clients.edit"],
   "/vendors": ["vendors.view", "vendors.create", "vendors.edit"],
   // Wider than assets.view: the transfer queue lives on this page too.
   // Keep in step with ASSET_PAGE_PERMISSIONS.
-  "/assets": ["assets.view", "assets.transfer.request", "assets.transfer.approve"],
+  "/assets": ["assets.view", "assets.report.view", "assets.transfer.request", "assets.transfer.approve", "assets.transfer.department"],
   // Wider than stock.writeoff.view: the review queue lives on this page too.
   // Keep in step with WASTAGE_PAGE_PERMISSIONS.
-  "/wastage": ["stock.writeoff.view", "stock.writeoff.approve"],
+  "/wastage": ["stock.writeoff.view", "stock.writeoff.approve", "stock.service.approve"],
   // Keep in step with DISPATCH_PAGE_PERMISSIONS. The fulfilment keys are here
   // because site requests moved onto this page from the old Fulfilment page.
   "/dispatch": [
@@ -51,15 +55,23 @@ const ROUTE_PERMISSIONS: Record<string, string[]> = {
     "categories.create",
     "categories.edit",
     "categories.prefix.edit",
-    "products.request.create",
     "products.request.approve",
-    "categories.request.create",
     "categories.request.approve",
   ],
-  "/stock": ["stock.view", "stock.create"],
+  // Service stock is the same list, filtered — so its key opens it too
+  // Keep in step with STOCK_ENTRIES_PAGE_PERMISSIONS
+  "/stock": ["stock.view", "stock.create", "stock.approve", "stock.service.view", "stock.service.approve"],
+  // Keep in step with FIND_STOCK_PERMISSIONS. Central stock only; service
+  // stock does not open it
+  "/stock/find": ["stock.view", "stock.create", "stock.find"],
   "/bom": ["bom.view", "bom.create", "bom.edit", "bom.approve", "bom.publish", "bom.build"],
-  // Keep in step with BUILDS_PAGE_PERMISSIONS: fulfilment.view opens the Plan tab
-  "/builds": ["bom.view", "bom.build", "bom.unbuild", "fulfilment.view"],
+  // Keep in step with BUILDS_PAGE_PERMISSIONS
+  "/builds": ["builds.view", "bom.build", "bom.unbuild", "bom.build.finish", "bom.build.approve"],
+  "/fulfilment": ["fulfilment.view"],
+  // Keep in step with CALLBACKS_PAGE_PERMISSIONS
+  "/callbacks": ["callbacks.raise", "callbacks.view", "callbacks.receive", "service.swap"],
+  // Keep in step with MATERIALS_PAGE_PERMISSIONS
+  "/materials": ["materials.request", "materials.approve.department", "materials.supply"],
   "/recycle-bin": ["recyclebin.view", "recyclebin.restore", "recyclebin.purge"],
   "/reports": ["reports.view"],
   "/procurement": [

@@ -1,6 +1,11 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { directEntryRefusal } from "@/lib/made-products";
+import { approvalRefusal } from "@/lib/review-rules";
+import { findApprovalFlow, NO_FLOW_CONFIGURED } from "@/lib/approval-flow";
+import type { ProductKind } from "@prisma/client";
+import { SERVICEABLE_KINDS } from "@/lib/vocabulary";
 import { nextReference } from "@/lib/reference-numbers";
 import {
   requireAnyPermission,
@@ -8,7 +13,7 @@ import {
   requireAuth,
   resolveStockScope,
 } from "@/lib/rbac/check";
-import { stockCandidatesWhere, isStockVisible } from "@/lib/stock-visibility";
+import { stockCandidatesWhere, isStockVisible, maySeeEntryMoney, crossSiteRefusal } from "@/lib/stock-visibility";
 import {
   availableQuantity,
   availabilityInclude,
@@ -16,7 +21,10 @@ import {
   committingBuildConsumptionsWhere,
   centralWriteOffsWhere,
 } from "@/lib/stock-availability";
-import { PERMISSIONS } from "@/lib/rbac/permissions";
+import {
+  PERMISSIONS,
+  STOCK_ENTRIES_PAGE_PERMISSIONS,
+} from "@/lib/rbac/permissions";
 import {
   createStockEntrySchema,
   updateStockEntrySchema,
@@ -59,6 +67,22 @@ import { entryDecided, entrySubmitted } from "@/lib/notifications/events";
  * issue, dispatch or build, never by changing the entry.
  */
 
+/**
+ * Goods are booked in at your own site, unless you see every site — and only
+ * at a site still in use.
+ */
+async function bookingSiteRefusal(
+  user: Awaited<ReturnType<typeof requireAuth>>,
+  locationId: string | null
+): Promise<string | null> {
+  if (resolveStockScope(user) !== "all" && locationId !== user.locationId) {
+    return "You can only book goods in at your own site";
+  }
+  if (!locationId) return null;
+  const site = await prisma.location.findUnique({ where: { id: locationId }, select: { isActive: true } });
+  return site?.isActive ? null : "That site is not in use";
+}
+
 /** A caller's own site, inherited from their department. Null for admins. */
 async function getCallerLocationId(user: {
   departmentId?: string | null;
@@ -72,7 +96,7 @@ async function getCallerLocationId(user: {
 }
 
 export async function getStockEntries() {
-  const user = await requireAnyPermission([PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE]);
+  const user = await requireAnyPermission(STOCK_ENTRIES_PAGE_PERMISSIONS);
 
   // How much stock this person may see, and the query that narrows to it.
   // The query is deliberately loose; isStockVisible finishes the job below.
@@ -92,6 +116,7 @@ export async function getStockEntries() {
           category: { select: { id: true, name: true } },
         },
       },
+      serviceClient: { select: { name: true } },
       location: { select: { id: true, name: true, code: true } },
       client: { select: { id: true, name: true, city: true, gstNumber: true, address: true } },
       warranty: true,
@@ -117,19 +142,22 @@ export async function getStockEntries() {
   });
 
   const visible = entries.filter((entry) => isStockVisible(entry, user, scope));
-  // Prices leave the server only for those allowed to see them
-  return user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW) ? visible : hideMoney(visible);
+  // Prices leave the server only for those allowed to see them — decided per
+  // entry, because an author sees the price they typed while it is theirs
+  return visible.map((entry) => (maySeeEntryMoney(entry, user) ? entry : hideMoney(entry)));
 }
 
 export async function getStockEntryById(id: string) {
-  const user = await requireAnyPermission([PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE]);
+  const user = await requireAnyPermission(STOCK_ENTRIES_PAGE_PERMISSIONS);
 
   const entry = await prisma.stockEntry.findUnique({
     where: { id },
     include: {
-      product: { select: { id: true, code: true, name: true, category: { select: { id: true, name: true } } } },
+      product: { select: { id: true, code: true, name: true, kind: true, category: { select: { id: true, name: true } } } },
       location: { select: { id: true, name: true, code: true } },
       client: { select: { id: true, name: true, city: true, gstNumber: true, address: true } },
+      // The client a service item came from
+      serviceClient: { select: { name: true, city: true } },
       warranty: true,
       department: { select: { id: true, name: true } },
       createdBy: { select: { id: true, name: true, email: true } },
@@ -195,7 +223,38 @@ export async function getStockEntryById(id: string) {
   // Not visible is reported as not existing, so the detail page cannot be used
   // to confirm that an entry exists at another site.
   if (!isStockVisible(entry, user, resolveStockScope(user))) return null;
-  return user.permissions.includes(PERMISSIONS.STOCK_VALUE_VIEW) ? entry : hideMoney(entry);
+  return maySeeEntryMoney(entry, user) ? entry : hideMoney(entry);
+}
+
+/**
+ * The service half of an entry, checked. A service item names the client it
+ * came from, is something that can be serviced (made here or bought whole,
+ * never raw material — see SERVICEABLE_KINDS), and does not also ship straight
+ * to a client. An ordinary entry carries no service client.
+ */
+async function serviceFields(
+  forService: boolean | undefined,
+  serviceClientId: string | undefined,
+  isDirectToClient: boolean | undefined,
+  productKind: ProductKind
+): Promise<
+  { forService: boolean; serviceClientId: string | null; serviceClientName: string | null } | { error: string }
+> {
+  if (!forService) return { forService: false, serviceClientId: null, serviceClientName: null };
+  if (isDirectToClient) {
+    return { error: "A service item comes in from a client — it cannot also ship straight to one" };
+  }
+  if (!SERVICEABLE_KINDS.includes(productKind)) {
+    return { error: "Raw material cannot come in for service — pick a finished or ready product" };
+  }
+  const client = serviceClientId
+    ? await prisma.client.findUnique({
+        where: { id: serviceClientId },
+        select: { id: true, name: true, isActive: true },
+      })
+    : null;
+  if (!client || !client.isActive) return { error: "Select the client this came from" };
+  return { forService: true, serviceClientId: client.id, serviceClientName: client.name };
 }
 
 export async function createStockEntry(data: unknown) {
@@ -219,8 +278,14 @@ export async function createStockEntry(data: unknown) {
     supplierName: _sn,
     clientName: _cn,
     clientLocation: _cl,
+    forService,
+    serviceClientId,
+    isAsset: requestedAsset,
     ...rest
   } = parsed.data;
+  // Whether goods are an asset is the Stock Manager's call (stock.classify);
+  // anyone else books them in as stock
+  const isAsset = user.permissions.includes(PERMISSIONS.STOCK_CLASSIFY) ? requestedAsset ?? false : false;
 
   // Goods that ship straight to a client never reach a warehouse, so the form
   // does not ask where they arrived. They still belong to a site for the books,
@@ -229,17 +294,18 @@ export async function createStockEntry(data: unknown) {
     ? locationId || (await getCallerLocationId(user))
     : locationId ?? null;
 
-  // Goods are booked in at your own site, unless you see every site
-  if (resolveStockScope(user) !== "all" && effectiveLocationId !== user.locationId) {
-    return { error: "You can only book goods in at your own site" };
-  }
+  const siteRefusal = await bookingSiteRefusal(user, effectiveLocationId);
+  if (siteRefusal) return { error: siteRefusal };
 
   // The batch is only accepted from someone allowed to set one
   const canSetBatch = user.permissions.includes(PERMISSIONS.STOCK_BATCH_EDIT);
   const effectiveBatch = canSetBatch ? batchNumber?.trim() || null : undefined;
 
-  const vendor = await prisma.vendor.findUnique({ where: { id: vendorId } });
-  if (!vendor || !vendor.isActive) {
+  // A service item comes from a client, not a vendor, so it has no vendor
+  const vendor = forService
+    ? null
+    : await prisma.vendor.findUnique({ where: { id: vendorId ?? "" } });
+  if (!forService && (!vendor || !vendor.isActive)) {
     return { error: "Selected vendor not found" };
   }
 
@@ -257,6 +323,13 @@ export async function createStockEntry(data: unknown) {
   const product = await prisma.product.findUnique({ where: { id: productId } });
   if (!product || !product.isActive) {
     return { error: "Selected product not found in the catalog" };
+  }
+
+  const service = await serviceFields(forService, serviceClientId, isDirectToClient, product.kind);
+  if ("error" in service) return service;
+  if (!service.forService) {
+    const madeRefusal = await directEntryRefusal(user, [product.id]);
+    if (madeRefusal) return { error: madeRefusal };
   }
 
   // Booked against a purchase order, if the operator said so. Checked rather
@@ -287,11 +360,17 @@ export async function createStockEntry(data: unknown) {
       locationId: effectiveLocationId,
       ...(effectiveBatch !== undefined ? { batchNumber: effectiveBatch } : {}),
       rackLocation: normalizeRack(rackLocation),
-      vendorId: vendor.id,
-      supplierName: vendor.name,
+      // For a service item the "supplier" is the client it came from, and
+      // there is no vendor invoice
+      vendorId: vendor?.id ?? null,
+      supplierName: vendor?.name ?? service.serviceClientName ?? "",
+      ...(forService ? { invoiceNumber: null } : {}),
       clientId: client?.id ?? null,
       clientName: client?.name ?? null,
       clientLocation: client?.city ?? null,
+      forService: service.forService,
+      serviceClientId: service.serviceClientId,
+      isAsset,
       status: "DRAFT",
       createdById: user.id,
       customFields: rest.customFields ? JSON.parse(JSON.stringify(rest.customFields)) : undefined,
@@ -327,7 +406,15 @@ export async function updateStockEntry(id: string, data: unknown) {
     return { error: "You can only edit your own entries" };
   }
 
-  const parsed = updateStockEntrySchema.safeParse(data);
+  // Somebody who cannot see this entry's price was shown no price to edit, so
+  // the one that is validated and saved is the stored one — never whatever the
+  // form happened to hold.
+  const seesMoney = maySeeEntryMoney(entry, user);
+  const input = seesMoney || typeof data !== "object" || data === null
+    ? data
+    : { ...(data as Record<string, unknown>), unitPrice: entry.unitPrice };
+
+  const parsed = updateStockEntrySchema.safeParse(input);
   if (!parsed.success) {
     return { error: parsed.error.issues[0].message };
   }
@@ -335,7 +422,7 @@ export async function updateStockEntry(id: string, data: unknown) {
   const {
     productId,
     quantity,
-    unitPrice,
+    unitPrice: submittedPrice,
     locationId,
     isDirectToClient,
     clientId,
@@ -345,8 +432,19 @@ export async function updateStockEntry(id: string, data: unknown) {
     supplierName: _sn,
     clientName: _cn,
     clientLocation: _cl,
+    forService,
+    serviceClientId,
+    isAsset: requestedAsset,
     ...rest
   } = parsed.data;
+  // Whether goods are an asset is the Stock Manager's call (stock.classify);
+  // anyone else books them in as stock
+  const isAsset = user.permissions.includes(PERMISSIONS.STOCK_CLASSIFY) ? requestedAsset ?? false : false;
+
+  // A price this person cannot see is a price they cannot change. The form
+  // they were given showed it masked as 0, so saving it would have written ₹0
+  // over the real figure — keep what is stored instead.
+  const unitPrice = seesMoney ? submittedPrice : entry.unitPrice;
 
   // Goods that ship straight to a client never reach a warehouse, so the form
   // does not ask where they arrived. They still belong to a site for the books,
@@ -354,13 +452,20 @@ export async function updateStockEntry(id: string, data: unknown) {
   const effectiveLocationId = isDirectToClient
     ? locationId || (await getCallerLocationId(user))
     : locationId ?? null;
+  if (effectiveLocationId !== entry.locationId) {
+    const siteRefusal = await bookingSiteRefusal(user, effectiveLocationId);
+    if (siteRefusal) return { error: siteRefusal };
+  }
 
   // The batch is only accepted from someone allowed to set one
   const canSetBatch = user.permissions.includes(PERMISSIONS.STOCK_BATCH_EDIT);
   const effectiveBatch = canSetBatch ? batchNumber?.trim() || null : undefined;
 
-  const vendor = await prisma.vendor.findUnique({ where: { id: vendorId } });
-  if (!vendor || !vendor.isActive) {
+  // A service item comes from a client, not a vendor, so it has no vendor
+  const vendor = forService
+    ? null
+    : await prisma.vendor.findUnique({ where: { id: vendorId ?? "" } });
+  if (!forService && (!vendor || !vendor.isActive)) {
     return { error: "Selected vendor not found" };
   }
 
@@ -378,6 +483,15 @@ export async function updateStockEntry(id: string, data: unknown) {
   const product = await prisma.product.findUnique({ where: { id: productId } });
   if (!product || !product.isActive) {
     return { error: "Selected product not found in the catalog" };
+  }
+
+  const service = await serviceFields(forService, serviceClientId, isDirectToClient, product.kind);
+  if ("error" in service) return service;
+  // Switching an entry to a made product (or out of service stock) is booking
+  // it in directly, so the same rule applies
+  if (!service.forService && (product.id !== entry.productId || entry.forService)) {
+    const madeRefusal = await directEntryRefusal(user, [product.id]);
+    if (madeRefusal) return { error: madeRefusal };
   }
 
   // The same check as creating one. Editing used to accept the order line
@@ -408,11 +522,17 @@ export async function updateStockEntry(id: string, data: unknown) {
       locationId: effectiveLocationId,
       ...(effectiveBatch !== undefined ? { batchNumber: effectiveBatch } : {}),
       rackLocation: normalizeRack(rackLocation),
-      vendorId: vendor.id,
-      supplierName: vendor.name,
+      // For a service item the "supplier" is the client it came from, and
+      // there is no vendor invoice
+      vendorId: vendor?.id ?? null,
+      supplierName: vendor?.name ?? service.serviceClientName ?? "",
+      ...(forService ? { invoiceNumber: null } : {}),
       clientId: client?.id ?? null,
       clientName: client?.name ?? null,
       clientLocation: client?.city ?? null,
+      forService: service.forService,
+      serviceClientId: service.serviceClientId,
+      isAsset,
       status: "DRAFT", // Reset to DRAFT if it was REJECTED
       rejectionReason: null,
       customFields: rest.customFields ? JSON.parse(JSON.stringify(rest.customFields)) : undefined,
@@ -431,36 +551,6 @@ export async function updateStockEntry(id: string, data: unknown) {
   return { success: true, entry: updated };
 }
 
-const NO_FLOW_CONFIGURED = "No approval flow configured. Contact an administrator.";
-
-/**
- * The approval flow that governs an entry: its department's own, or the
- * company default. Returns null when there is nothing usable to snapshot.
- *
- * Shared by submitting and by rebuilding a lost snapshot, so the two can never
- * disagree about which steps an entry should have.
- *
- * Worth knowing: the steps are copied onto the entry as VALUES, not as links to
- * this flow. Editing the flow afterwards therefore never changes an entry that
- * is already in flight — which is deliberate, and also why changing the flow
- * cannot rescue an entry whose snapshot is missing. Rebuilding it can.
- */
-async function findApprovalFlow(departmentId: string | null) {
-  const flow = await prisma.approvalFlowConfig.findFirst({
-    where: {
-      isActive: true,
-      OR: [{ departmentId }, { departmentId: null }],
-    },
-    include: { steps: { orderBy: { stepOrder: "asc" } } },
-    // Prefer a department's own flow over the company default. `nulls: "last"`
-    // is what makes that true: Postgres puts NULLs FIRST on a plain DESC, so
-    // the default flow used to win and a department's own flow was ignored.
-    orderBy: { departmentId: { sort: "desc", nulls: "last" } },
-  });
-
-  return flow && flow.steps.length > 0 ? flow : null;
-}
-
 export async function submitStockEntry(id: string) {
   const user = await requirePermission(PERMISSIONS.STOCK_CREATE);
 
@@ -474,12 +564,20 @@ export async function submitStockEntry(id: string) {
   if (entry.createdById !== user.id) {
     return { error: "You can only submit your own entries" };
   }
+  // A draft saved before its product gained a bill of materials
+  if (entry.source === "PURCHASED" && !entry.forService && entry.productId) {
+    const madeRefusal = await directEntryRefusal(user, [entry.productId]);
+    if (madeRefusal) return { error: madeRefusal };
+  }
 
-  // Check required attachments
-  const requiredTypes = await prisma.attachmentTypeConfig.findMany({
-    where: { isRequired: true, isActive: true },
-    select: { name: true },
-  });
+  // Check required attachments. Not for a service item: those documents are
+  // a vendor's (an invoice), and a service item came from a client.
+  const requiredTypes = entry.forService
+    ? []
+    : await prisma.attachmentTypeConfig.findMany({
+        where: { isRequired: true, isActive: true },
+        select: { name: true },
+      });
 
   if (requiredTypes.length > 0) {
     const attachments = await prisma.stockEntryAttachment.findMany({
@@ -516,6 +614,12 @@ export async function submitStockEntry(id: string) {
     return { error: NO_FLOW_CONFIGURED };
   }
 
+  // Raise what you may approve, and it is approved: someone who could press
+  // Approve on this entry right now — the permission, and the entry at their
+  // site and department — signs every step on submitting, recorded as the
+  // approver. Anyone else's entry waits for its approvers as usual.
+  const approvesOwn = approvalRefusal(entry, user) === null;
+
   // Snapshot the flow steps into approval records. A rejected entry that is
   // edited and resubmitted still has the previous round's approval rows, so
   // clear them first — the new submission starts a fresh approval cycle.
@@ -523,7 +627,9 @@ export async function submitStockEntry(id: string) {
     prisma.stockApproval.deleteMany({ where: { stockEntryId: id } }),
     prisma.stockEntry.update({
       where: { id },
-      data: { status: "SUBMITTED" },
+      data: approvesOwn
+        ? { status: "APPROVED", approvedById: user.id }
+        : { status: "SUBMITTED" },
     }),
     prisma.stockApproval.createMany({
       data: flow.steps.map((step) => ({
@@ -531,16 +637,20 @@ export async function submitStockEntry(id: string) {
         stepOrder: step.stepOrder,
         stepLabel: step.stepLabel,
         approverRoleId: step.approverRoleId,
-        status: "PENDING",
+        ...(approvesOwn
+          ? { status: "APPROVED" as const, approverUserId: user.id, comments: "Approved on raising" }
+          : { status: "PENDING" as const }),
       })),
     }),
   ]);
 
   await logActivity(
-    "SUBMITTED",
+    approvesOwn ? "APPROVED" : "SUBMITTED",
     "StockEntry",
     id,
-    `Submitted stock entry ${entry.entryNumber} for approval`
+    approvesOwn
+      ? `Submitted and approved stock entry ${entry.entryNumber} (raised by an approver)`
+      : `Submitted stock entry ${entry.entryNumber} for approval`
   );
 
   // Submitting is the point the goods count as delivered, so this may be the
@@ -549,47 +659,23 @@ export async function submitStockEntry(id: string) {
     await syncPurchaseOrderFromEntry(entry.purchaseOrderLineId);
   }
 
-  await entrySubmitted(entry);
+  if (approvesOwn) {
+    // Exactly what a final approval does — see approveStockEntry
+    await raiseClientDispatchForEntry(id, user.id);
+    after(() => syncBomWatches().catch((e) => console.error("Low-stock BOM sync failed:", e)));
+    revalidatePath("/dashboard");
+  } else {
+    await entrySubmitted(entry);
+  }
 
   revalidatePath("/stock");
   revalidatePath(`/stock/${id}`);
-  return { success: true };
+  return { success: true, approved: approvesOwn };
 }
 
-/**
- * Why this person may not act on this entry, or null if they may.
- *
- * Authority is `stock.approve` — a permission, never a role name. What narrows
- * it is WHERE the goods are:
- *
- *   department  an entry already in a department is that department's business
- *   site        central stock belongs to the site it arrived at
- *
- * The site rule is the one that was missing. Central stock has no department,
- * so the department check passed by default and any approver anywhere could
- * sign off another city's goods.
- */
-function approvalRefusal(
-  entry: { departmentId: string | null; locationId: string | null },
-  user: { departmentId?: string | null; locationId?: string | null; role: string; permissions: string[] }
-): string | null {
-  // Seeing every site means being able to approve at every site
-  if (resolveStockScope(user) === "all") return null;
-
-  if (entry.departmentId !== null && entry.departmentId !== user.departmentId) {
-    return "That entry belongs to another department";
-  }
-
-  // An entry with no location predates locations, so nobody is shut out of it
-  if (entry.locationId !== null && entry.locationId !== user.locationId) {
-    return "Those goods arrived at another site, so someone there has to approve them";
-  }
-
-  return null;
-}
 
 export async function approveStockEntry(id: string, stepOrder: number, comments?: string) {
-  const user = await requirePermission(PERMISSIONS.STOCK_APPROVE);
+  const user = await requireAnyPermission([PERMISSIONS.STOCK_APPROVE, PERMISSIONS.STOCK_SERVICE_APPROVE]);
 
   const entry = await prisma.stockEntry.findUnique({
     where: { id },
@@ -680,7 +766,7 @@ export async function approveStockEntry(id: string, stepOrder: number, comments?
  * a half-finished approval or to reach another site's goods.
  */
 export async function rebuildApprovalSteps(id: string) {
-  const user = await requirePermission(PERMISSIONS.STOCK_APPROVE);
+  const user = await requireAnyPermission([PERMISSIONS.STOCK_APPROVE, PERMISSIONS.STOCK_SERVICE_APPROVE]);
 
   const entry = await prisma.stockEntry.findUnique({
     where: { id },
@@ -723,7 +809,7 @@ export async function rebuildApprovalSteps(id: string) {
 }
 
 export async function rejectStockEntry(id: string, stepOrder: number, reason: string, comments?: string) {
-  const user = await requirePermission(PERMISSIONS.STOCK_APPROVE);
+  const user = await requireAnyPermission([PERMISSIONS.STOCK_APPROVE, PERMISSIONS.STOCK_SERVICE_APPROVE]);
 
   const entry = await prisma.stockEntry.findUnique({
     where: { id },
@@ -803,10 +889,7 @@ const ATTACHMENT_LINK_MINUTES = 10;
  * departments' stock hide their paperwork with it.
  */
 export async function getAttachmentViewUrl(attachmentId: string) {
-  const user = await requireAnyPermission([
-    PERMISSIONS.STOCK_VIEW,
-    PERMISSIONS.STOCK_CREATE,
-  ]);
+  const user = await requireAnyPermission(STOCK_ENTRIES_PAGE_PERMISSIONS);
 
   const attachment = await prisma.stockEntryAttachment.findUnique({
     where: { id: attachmentId },
@@ -817,6 +900,7 @@ export async function getAttachmentViewUrl(attachmentId: string) {
       stockEntry: {
         select: {
           status: true,
+          forService: true,
           quantity: true,
           departmentId: true,
           locationId: true,
@@ -1060,11 +1144,7 @@ export async function deleteAttachment(attachmentId: string) {
 }
 
 export async function getStockEntryStats() {
-  const user = await requireAnyPermission([
-    PERMISSIONS.STOCK_VIEW,
-    PERMISSIONS.STOCK_CREATE,
-    PERMISSIONS.STOCK_APPROVE,
-  ]);
+  const user = await requireAnyPermission(STOCK_ENTRIES_PAGE_PERMISSIONS);
 
   // Counted in memory rather than with SQL COUNTs, because the numbers have to
   // match the list exactly — and the list's last rule ("central stock at my
@@ -1074,6 +1154,7 @@ export async function getStockEntryStats() {
     where: stockCandidatesWhere(user, scope),
     select: {
       status: true,
+      forService: true,
       quantity: true,
       departmentId: true,
       locationId: true,
@@ -1121,6 +1202,9 @@ export async function moveStockToDepartment(stockEntryId: string, data: unknown)
   if (entry.status !== "APPROVED") {
     return { error: "Only approved stock can be moved to a department" };
   }
+  if (entry.forService) {
+    return { error: "Service stock is held apart and cannot be moved into a department" };
+  }
 
   const department = await prisma.department.findUnique({
     where: { id: parsed.data.departmentId },
@@ -1128,11 +1212,14 @@ export async function moveStockToDepartment(stockEntryId: string, data: unknown)
   if (!department || !department.isActive) {
     return { error: "Department not found or inactive" };
   }
-  // Central stock moves into a department at its own site; another site's
-  // stock travels by dispatch
-  if (entry.locationId && department.locationId && entry.locationId !== department.locationId) {
-    return { error: "That department is at another site — send the stock by dispatch instead" };
+  // Central stock is where stock comes FROM; a central-stock department is
+  // never somewhere to move it to
+  if (department.isCentralStock) {
+    return { error: "That is central stock itself — pick the department the stock is going to" };
   }
+  // Within the stock's own site, unless this person may move across sites
+  const crossSite = crossSiteRefusal(entry, department, user);
+  if (crossSite) return { error: crossSite };
 
   // Dispatched quantity has left the building too — it is not movable
   const remaining = availableQuantity(entry);
@@ -1156,7 +1243,10 @@ export async function moveStockToDepartment(stockEntryId: string, data: unknown)
         stockEntryId,
         departmentId: parsed.data.departmentId,
         quantity: parsed.data.quantity,
-        isAsset: parsed.data.isAsset ?? entry.isAsset,
+        // Lands as the entry is classified, unless the mover may classify
+        isAsset: user.permissions.includes(PERMISSIONS.STOCK_CLASSIFY)
+          ? parsed.data.isAsset ?? entry.isAsset
+          : entry.isAsset,
         notes: parsed.data.notes?.trim() || null,
         issuedById: user.id,
       },
@@ -1192,4 +1282,42 @@ export async function getAttachmentTypeConfigs() {
     where: { isActive: true },
     orderBy: { name: "asc" },
   });
+}
+
+/**
+ * Classify central stock as an asset, or back as stock — the Stock Manager's
+ * call (stock.classify), made while approving or once the goods are received.
+ * Booking-in and dispatch never set it. What a department later receives
+ * follows this.
+ */
+export async function setEntryAsset(entryId: string, isAsset: boolean) {
+  const user = await requirePermission(PERMISSIONS.STOCK_CLASSIFY);
+  if (typeof isAsset !== "boolean") return { error: "Say whether it is an asset" };
+
+  const entry = await prisma.stockEntry.findUnique({
+    where: { id: entryId },
+    include: { issues: { select: { quantity: true, departmentId: true } } },
+  });
+  // Only what they may see, at their own site unless they see every site
+  if (!entry || !isStockVisible(entry, user, resolveStockScope(user))) return { error: "Stock entry not found" };
+  if (resolveStockScope(user) !== "all" && entry.locationId !== user.locationId) {
+    return { error: "That stock is at another site" };
+  }
+  if (entry.status !== "SUBMITTED" && entry.status !== "APPROVED") {
+    return { error: "Only stock waiting for approval or already approved can be classified" };
+  }
+  if (entry.departmentId !== null) return { error: "That stock already belongs to a department" };
+  if (entry.forService) return { error: "Service stock is held apart and is never an asset" };
+
+  await prisma.stockEntry.update({ where: { id: entryId }, data: { isAsset } });
+  await logActivity(
+    "UPDATED",
+    "StockEntry",
+    entryId,
+    `Classified ${entry.entryNumber} (${entry.itemName}) as ${isAsset ? "an asset" : "stock"}`
+  );
+  revalidatePath(`/stock/${entryId}`);
+  revalidatePath("/stock");
+  revalidatePath("/assets");
+  return { success: true };
 }

@@ -2,10 +2,17 @@
 
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { directEntryRefusal } from "@/lib/made-products";
 import { revalidatePath } from "next/cache";
 import { requirePermission, requireAnyPermission } from "@/lib/rbac/check";
-import { PERMISSIONS, resolveStockScope } from "@/lib/rbac/permissions";
-import { isStockVisible } from "@/lib/stock-visibility";
+import { SERVICEABLE_KINDS } from "@/lib/vocabulary";
+import {
+  PERMISSIONS,
+  resolveStockScope,
+  STOCK_ENTRIES_PAGE_PERMISSIONS,
+} from "@/lib/rbac/permissions";
+import { isStockVisible, maySeeEntryMoney } from "@/lib/stock-visibility";
+import { hideMoney } from "@/lib/hide-money";
 import { nextReference } from "@/lib/reference-numbers";
 import { canonicalBlobUrl, isBlobUrl } from "@/lib/blob-urls";
 import { attachRefusal, typeLimits } from "@/lib/attachment-rules";
@@ -52,9 +59,14 @@ const lineSchema = z.object({
 });
 
 const deliverySchema = z.object({
-  vendorId: z.string().min(1, "Pick the vendor"),
+  // Not for a service delivery, which came from a client — see createDelivery
+  vendorId: z.string().optional(),
   invoiceNumber: z.string().trim().max(60).optional(),
   locationId: z.string().min(1, "Pick the site the goods arrived at"),
+  /** The whole delivery was received for service — held as service stock */
+  forService: z.boolean().optional(),
+  /** The client it came from — required when forService */
+  serviceClientId: z.string().optional(),
   lines: z.array(lineSchema).min(1, "Add at least one item").max(100, "Book at most 100 items at once"),
 });
 
@@ -63,17 +75,17 @@ export async function createDelivery(data: unknown) {
 
   const parsed = deliverySchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
-  const { vendorId, invoiceNumber, locationId, lines } = parsed.data;
+  const { vendorId, invoiceNumber, locationId, forService, serviceClientId, lines } = parsed.data;
 
   const [vendor, location, products] = await Promise.all([
-    prisma.vendor.findUnique({ where: { id: vendorId } }),
+    forService ? null : prisma.vendor.findUnique({ where: { id: vendorId ?? "" } }),
     prisma.location.findUnique({ where: { id: locationId }, select: { id: true, isActive: true } }),
     prisma.product.findMany({
       where: { id: { in: lines.map((l) => l.productId) } },
-      select: { id: true, name: true, code: true, isActive: true },
+      select: { id: true, name: true, code: true, isActive: true, kind: true },
     }),
   ]);
-  if (!vendor || !vendor.isActive) return { error: "Selected vendor not found" };
+  if (!forService && (!vendor || !vendor.isActive)) return { error: "Pick the vendor" };
   if (!location || !location.isActive) return { error: "Selected site not found" };
   // Goods are booked in at your own site, unless you see every site
   if (resolveStockScope(user) !== "all" && locationId !== user.locationId) {
@@ -82,6 +94,27 @@ export async function createDelivery(data: unknown) {
   const productById = new Map(products.map((p) => [p.id, p]));
   const retired = lines.find((l) => !productById.get(l.productId)?.isActive);
   if (retired) return { error: "One of the products is not in the catalog any more" };
+  if (!forService) {
+    const madeRefusal = await directEntryRefusal(user, lines.map((l) => l.productId));
+    if (madeRefusal) return { error: madeRefusal };
+  }
+
+  // A service delivery names its client and holds only serviceable products
+  let serviceClient: { id: string; name: string } | null = null;
+  if (forService) {
+    const raw = lines.find((l) => !SERVICEABLE_KINDS.includes(productById.get(l.productId)!.kind));
+    if (raw) {
+      return { error: `${productById.get(raw.productId)!.name} is raw material, which cannot come in for service` };
+    }
+    const client = serviceClientId
+      ? await prisma.client.findUnique({
+          where: { id: serviceClientId },
+          select: { id: true, name: true, isActive: true },
+        })
+      : null;
+    if (!client || !client.isActive) return { error: "Select the client this came from" };
+    serviceClient = client;
+  }
 
   // An order line is checked against everything claimed from it in THIS
   // delivery too, so two lines cannot each take the whole outstanding amount.
@@ -114,13 +147,16 @@ export async function createDelivery(data: unknown) {
           quantity: line.quantity,
           unitPrice: line.unitPrice,
           totalPrice: line.quantity * line.unitPrice,
-          invoiceNumber: invoiceNumber || null,
+          invoiceNumber: forService ? null : invoiceNumber || null,
           locationId,
           batchNumber: canSetBatch ? line.batchNumber || null : null,
           rackLocation: normalizeRack(line.rackLocation),
           purchaseOrderLineId: line.purchaseOrderLineId || null,
-          vendorId: vendor.id,
-          supplierName: vendor.name,
+          // For a service item the "supplier" is the client it came from
+          vendorId: vendor?.id ?? null,
+          supplierName: vendor?.name ?? serviceClient?.name ?? "",
+          forService: forService ?? false,
+          serviceClientId: serviceClient?.id ?? null,
           status: "DRAFT",
           createdById: user.id,
         },
@@ -133,7 +169,7 @@ export async function createDelivery(data: unknown) {
     "CREATED",
     "StockEntry",
     delivery.id,
-    `Booked in delivery ${delivery.deliveryNumber} from ${vendor.name}: ${lines.length} item${lines.length === 1 ? "" : "s"}`
+    `Booked in delivery ${delivery.deliveryNumber} from ${vendor?.name ?? serviceClient?.name}${forService ? " for service" : ""}: ${lines.length} item${lines.length === 1 ? "" : "s"}`
   );
 
   revalidatePath("/stock");
@@ -143,7 +179,7 @@ export async function createDelivery(data: unknown) {
 
 /** One delivery with the lines this person may see; null when they see none. */
 export async function getDelivery(id: string) {
-  const user = await requireAnyPermission([PERMISSIONS.STOCK_VIEW, PERMISSIONS.STOCK_CREATE]);
+  const user = await requireAnyPermission(STOCK_ENTRIES_PAGE_PERMISSIONS);
 
   const delivery = await prisma.delivery.findUnique({
     where: { id },
@@ -168,9 +204,13 @@ export async function getDelivery(id: string) {
   });
   if (!delivery) return null;
 
-  // Each line is judged exactly as the entry would be on its own page
+  // Each line is judged exactly as the entry would be on its own page — what
+  // it shows, and whether its price leaves the server at all. Hiding a column
+  // in the browser is not enough: the page's data would still carry it.
   const scope = resolveStockScope(user);
-  const entries = delivery.entries.filter((e) => isStockVisible(e, user, scope));
+  const entries = delivery.entries
+    .filter((e) => isStockVisible(e, user, scope))
+    .map((e) => (maySeeEntryMoney(e, user) ? e : hideMoney(e)));
   if (entries.length === 0) return null;
 
   // The same upload sits on every line; show each file once
@@ -316,7 +356,8 @@ async function waitingSteps(deliveryId: string) {
  * approving their own entry.
  */
 export async function approveDelivery(deliveryId: string, comments?: string) {
-  await requirePermission(PERMISSIONS.STOCK_APPROVE);
+  // Either key; each line re-checks the one it needs (service or ordinary)
+  await requireAnyPermission([PERMISSIONS.STOCK_APPROVE, PERMISSIONS.STOCK_SERVICE_APPROVE]);
 
   const waiting = await waitingSteps(deliveryId);
   if (waiting.length === 0) return { error: "Nothing here is waiting for approval" };
@@ -334,7 +375,7 @@ export async function approveDelivery(deliveryId: string, comments?: string) {
 
 /** Send every waiting line back to its author, with one reason. */
 export async function sendBackDelivery(deliveryId: string, reason: string) {
-  await requirePermission(PERMISSIONS.STOCK_APPROVE);
+  await requireAnyPermission([PERMISSIONS.STOCK_APPROVE, PERMISSIONS.STOCK_SERVICE_APPROVE]);
   if (!reason.trim()) return { error: "Say what needs fixing" };
 
   const waiting = await waitingSteps(deliveryId);

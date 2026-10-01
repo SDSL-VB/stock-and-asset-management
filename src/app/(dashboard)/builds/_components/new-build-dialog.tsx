@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { getBuildableProducts, getBuildReadiness, createBuild } from "@/lib/actions/builds";
 import { NeedDialog, type NeedPrefill, type NeedProduct } from "@/components/shared/need-dialog";
 import { toast } from "sonner";
+import { createMaterialRequest } from "@/lib/actions/materials";
 import { Plus, Search, Loader2, Hammer, AlertTriangle, Check } from "lucide-react";
 
 type Buildable = {
@@ -53,6 +54,8 @@ type ReadinessLine = {
 };
 
 interface Props {
+  /** May ask central stock for what the department is short of (materials.request) */
+  canRequestMaterials?: boolean;
   locations: { id: string; name: string }[];
   canSetBatch: boolean;
   /**
@@ -78,7 +81,7 @@ function formatQty(n: number) {
  * which is most of the time. It picks the bill of materials first, then asks
  * the same questions.
  */
-export function NewBuildDialog({ locations, canSetBatch, needForm }: Props) {
+export function NewBuildDialog({ locations, canSetBatch, needForm, canRequestMaterials = false }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
@@ -97,7 +100,37 @@ export function NewBuildDialog({ locations, canSetBatch, needForm }: Props) {
     lines: ReadinessLine[];
     canBuild: boolean;
     maxBuildable: number;
+    /** Whose stock the build draws on */
+    departmentName: string;
   } | null>(null);
+
+  /**
+   * Ask central stock for exactly what is missing. The server works out the
+   * department and checks every line; this only names what and how much.
+   */
+  function requestFromCentral() {
+    if (!readiness || !picked) return;
+    const missing = readiness.lines.filter((l) => l.short > 0 && !l.isOptional);
+    if (missing.length === 0) return;
+    startTransition(async () => {
+      const res = await createMaterialRequest({
+        lines: missing.map((l) => ({ productId: l.componentProductId, quantity: l.short })),
+        forProductId: picked.id,
+        forQuantity: Number(quantity) || undefined,
+        notes: `Short for a build of ${picked.name}`,
+      });
+      if ("error" in res && res.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success(
+        "status" in res && (res.status === "SUPPLIED" || res.status === "PARTLY_SUPPLIED")
+          ? `${res.requestNumber} supplied — check again`
+          : `${"requestNumber" in res ? res.requestNumber : "Request"} sent to central stock`
+      );
+      void check();
+    });
+  }
 
   async function toggle(next: boolean) {
     setOpen(next);
@@ -146,6 +179,7 @@ export function NewBuildDialog({ locations, canSetBatch, needForm }: Props) {
         lines: res.lines,
         canBuild: res.canBuild,
         maxBuildable: res.maxBuildable,
+        departmentName: res.departmentName,
       });
     });
   }
@@ -332,14 +366,23 @@ export function NewBuildDialog({ locations, canSetBatch, needForm }: Props) {
                 )}
               </div>
 
+              {/* The answer first. Someone who may not read bills of materials
+                  gets only the missing lines from the server — never the recipe */}
               {readiness && (
+                <p className="text-sm font-medium">
+                  {readiness.canBuild
+                    ? `Everything needed is in ${readiness.departmentName}.`
+                    : `Missing from ${readiness.departmentName}:`}
+                </p>
+              )}
+              {readiness && readiness.lines.length > 0 && (
                 <div className="overflow-x-auto rounded-lg border">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b bg-muted/40 text-micro font-bold uppercase tracking-[0.1em] text-muted-foreground">
                         <th className="px-3 py-2 text-left">Component</th>
                         <th className="px-3 py-2 text-right">Need</th>
-                        <th className="px-3 py-2 text-right">Available</th>
+                        <th className="px-3 py-2 text-right">In the department</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -389,6 +432,13 @@ export function NewBuildDialog({ locations, canSetBatch, needForm }: Props) {
                       and not already asked for; the person picks vendors and the
                       date. Once everything short is on its way the button reads
                       "Requested", so the same shortage is not asked for twice. */}
+                  {/* First port of call: central stock. The department's manager
+                      approves, then the Stock Manager moves it in. */}
+                  {canRequestMaterials && picked && (
+                    <Button type="button" size="sm" disabled={pending} onClick={requestFromCentral}>
+                      Request from central stock
+                    </Button>
+                  )}
                   {needForm && picked && (
                     stillToAsk.length === 0 ? (
                       <Button type="button" variant="outline" size="sm" disabled>
@@ -398,7 +448,7 @@ export function NewBuildDialog({ locations, canSetBatch, needForm }: Props) {
                     ) : (
                       <>
                         <Button type="button" variant="outline" size="sm" onClick={() => setAsking(true)}>
-                          Request what&apos;s short ({stillToAsk.length})
+                          Raise as needs for the Buyer ({stillToAsk.length})
                         </Button>
                         {asking && (
                           <NeedDialog

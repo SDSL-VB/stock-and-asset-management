@@ -11,20 +11,25 @@ import { PERMISSIONS } from "@/lib/rbac/permissions";
 import {
   availableQuantity,
   availabilityInclude,
-  issueWriteOffsInclude,
+  issueDrawdownsInclude,
   heldByIssue,
   availableFromIssue,
   round,
 } from "@/lib/stock-availability";
-import { stockCandidatesWhere, isStockVisible } from "@/lib/stock-visibility";
-import { SELF_APPROVAL_REFUSAL } from "@/lib/review-rules";
+import { stockCandidatesWhere, isStockVisible, crossSiteRefusal, NO_SITE } from "@/lib/stock-visibility";
+import {
+  transferDecisionRefusal,
+  transferDecidableWhere,
+  transferDepartmentRefusal,
+  transferDepartmentWhere,
+} from "@/lib/review-rules";
 import {
   createTransferRequestSchema,
   rejectRequestSchema,
 } from "@/lib/validations/request";
 import { logActivity } from "@/lib/activity-log";
 import { revalidatePath } from "next/cache";
-import { transferDecided, transferRequested } from "@/lib/notifications/events";
+import { transferDecided, transferRequested, transferNeedsDepartment } from "@/lib/notifications/events";
 
 /**
  * Assets are not a separate registry: everything arrives in central stock as
@@ -37,15 +42,20 @@ import { transferDecided, transferRequested } from "@/lib/notifications/events";
  * every asset at their site without ever seeing what it cost.
  */
 export async function getAssetHoldings() {
-  const user = await requirePermission(PERMISSIONS.ASSETS_VIEW);
+  const user = await requireAnyPermission([PERMISSIONS.ASSETS_VIEW, PERMISSIONS.ASSETS_REPORT_VIEW]);
 
   const scope = resolveStockScope(user);
   const where: Record<string, unknown> = { isAsset: true };
 
-  if (scope === "department" && user.departmentId) {
-    where.departmentId = user.departmentId;
-  } else if (scope === "location" && user.locationId) {
-    where.department = { locationId: user.locationId };
+  if (!user.permissions.includes(PERMISSIONS.ASSETS_VIEW)) {
+    // The assets report alone: what came out of this site's central stock,
+    // wherever it went — unless they see every site
+    if (scope !== "all") where.stockEntry = { locationId: user.locationId ?? NO_SITE };
+  } else if (scope === "department") {
+    // No department on record sees none, never all
+    where.departmentId = user.departmentId ?? NO_SITE;
+  } else if (scope === "location") {
+    where.department = { locationId: user.locationId ?? NO_SITE };
   } else if (scope === "own") {
     where.issuedById = user.id;
   }
@@ -56,7 +66,7 @@ export async function getAssetHoldings() {
     include: {
       // Losses charged against this holding. What the department still has is
       // the issued quantity less its approved write-offs — see heldByIssue().
-      ...issueWriteOffsInclude,
+      ...issueDrawdownsInclude,
       department: {
         select: { id: true, name: true, location: { select: { id: true, name: true } } },
       },
@@ -87,7 +97,10 @@ export async function getAssetHoldings() {
     quantity: heldByIssue(issue),
     /** How much of it is still free to write off, after anything pending */
     availableToWriteOff: availableFromIssue(issue),
-    writtenOff: round(issue.quantity - heldByIssue(issue)),
+    // Approved write-offs only — what builds used is not a loss
+    writtenOff: round(
+      issue.writeOffs.filter((w) => w.status === "APPROVED").reduce((sum, w) => sum + w.quantity, 0)
+    ),
     receivedAt: issue.createdAt,
     itemCode: issue.stockEntry.itemCode,
     itemName: issue.stockEntry.itemName,
@@ -123,10 +136,18 @@ export async function getCentralStockForAssets() {
   const user = await requirePermission(PERMISSIONS.ASSETS_CREATE);
 
   const scope = resolveStockScope(user);
-  const where: Record<string, unknown> = { status: "APPROVED", departmentId: null };
+  // Service stock is held apart and never becomes a department's asset; and
+  // only stock the Stock Manager classified as an asset, unless they classify
+  const where: Record<string, unknown> = {
+    status: "APPROVED",
+    departmentId: null,
+    forService: false,
+    ...(user.permissions.includes(PERMISSIONS.STOCK_CLASSIFY) ? {} : { isAsset: true }),
+  };
 
-  if (scope !== "all" && user.locationId) {
-    where.locationId = user.locationId;
+  // Their own site only; someone limited to a site with none on record sees none
+  if (scope !== "all") {
+    where.locationId = user.locationId ?? NO_SITE;
   }
 
   const entries = await prisma.stockEntry.findMany({
@@ -137,6 +158,7 @@ export async function getCentralStockForAssets() {
       itemCode: true,
       itemName: true,
       quantity: true,
+      locationId: true,
       location: { select: { name: true } },
       ...availabilityInclude,
     },
@@ -149,6 +171,7 @@ export async function getCentralStockForAssets() {
       entryNumber: e.entryNumber,
       itemCode: e.itemCode,
       itemName: e.itemName,
+      locationId: e.locationId,
       locationName: e.location?.name ?? null,
       available: availableQuantity(e),
     }))
@@ -164,17 +187,21 @@ export async function getDepartmentHoldingSplit(departmentId: string) {
 
   const issues = await prisma.stockIssue.findMany({
     where: { departmentId },
-    select: { isAsset: true, quantity: true },
+    // What it still holds — less write-offs and what its builds used — not
+    // the raw quantity that once moved in
+    select: { isAsset: true, quantity: true, ...issueDrawdownsInclude },
   });
 
   return issues.reduce(
     (acc, i) => {
+      const held = heldByIssue(i);
+      if (held <= 0) return acc;
       if (i.isAsset) {
         acc.assetLines += 1;
-        acc.assetQuantity += i.quantity;
+        acc.assetQuantity = round(acc.assetQuantity + held);
       } else {
         acc.stockLines += 1;
-        acc.stockQuantity += i.quantity;
+        acc.stockQuantity = round(acc.stockQuantity + held);
       }
       return acc;
     },
@@ -219,6 +246,9 @@ export async function createTransferRequest(stockEntryId: string, data: unknown)
   if (entry.status !== "APPROVED") {
     return { error: "Transfers can only be requested for approved stock" };
   }
+  if (entry.forService) {
+    return { error: "Service stock is held apart and cannot be moved into a department" };
+  }
 
   const department = await prisma.department.findUnique({
     where: { id: parsed.data.departmentId },
@@ -226,11 +256,14 @@ export async function createTransferRequest(stockEntryId: string, data: unknown)
   if (!department || !department.isActive) {
     return { error: "Department not found or inactive" };
   }
-  // Central stock moves into a department at its own site; another site's
-  // stock travels by dispatch, which that site agrees to
-  if (entry.locationId && department.locationId && entry.locationId !== department.locationId) {
-    return { error: "That stock is at another site — ask for it with a site request instead" };
+  // Central stock is where stock comes FROM; a central-stock department is
+  // never somewhere to move it to
+  if (department.isCentralStock) {
+    return { error: "That is central stock itself — pick the department the stock is going to" };
   }
+  // Within the stock's own site, unless this person may move across sites
+  const crossSite = crossSiteRefusal(entry, department, user);
+  if (crossSite) return { error: crossSite };
 
   const available = availableQuantity(entry);
   if (parsed.data.quantity > available) {
@@ -242,13 +275,23 @@ export async function createTransferRequest(stockEntryId: string, data: unknown)
     };
   }
 
+  // Step 1 is done on asking when the asker may agree for this department, or
+  // may allocate the stock outright (the Stock Manager, Accounts)
+  const target = { departmentId: department.id, siteId: department.locationId };
+  const mayDecide = transferDecisionRefusal(user, target) === null;
+  const departmentAgreed = mayDecide || transferDepartmentRefusal(user, target) === null;
+
   const request = await prisma.stockTransferRequest.create({
     data: {
       requestNumber: await nextReference("TR"),
+      ...(departmentAgreed ? { departmentApprovedById: user.id, departmentApprovedAt: new Date() } : {}),
       stockEntryId,
       departmentId: parsed.data.departmentId,
       quantity: parsed.data.quantity,
-      isAsset: parsed.data.isAsset ?? entry.isAsset,
+      // As the Stock Manager classified the entry, unless the asker may classify
+      isAsset: user.permissions.includes(PERMISSIONS.STOCK_CLASSIFY)
+        ? parsed.data.isAsset ?? entry.isAsset
+        : entry.isAsset,
       notes: parsed.data.notes?.trim() || null,
       requestedById: user.id,
     },
@@ -262,15 +305,23 @@ export async function createTransferRequest(stockEntryId: string, data: unknown)
     `Requested transfer of ${request.quantity} × ${entry.itemName} (${entry.entryNumber}) to ${request.department.name}`
   );
 
-  await transferRequested({
-    requestNumber: request.requestNumber,
-    itemName: entry.itemName,
-    requestedById: user.id,
-    departmentId: department.id,
-  });
+  // Ask for what you may approve, and it is approved — through the approve
+  // action itself, so every check it makes still applies
+  if (mayDecide) {
+    const approval = await approveTransferRequest(request.id);
+    if ("success" in approval && approval.success) {
+      revalidatePath("/assets");
+      revalidatePath(`/stock/${stockEntryId}`);
+      return { success: true, request, approved: true };
+    }
+  }
+
+  const notice = { requestNumber: request.requestNumber, itemName: entry.itemName, requestedById: user.id };
+  if (departmentAgreed) await transferRequested({ ...notice, locationId: department.locationId });
+  else await transferNeedsDepartment({ ...notice, departmentId: department.id });
   revalidatePath("/assets");
   revalidatePath(`/stock/${stockEntryId}`);
-  return { success: true, request };
+  return { success: true, request, approved: false };
 }
 
 /**
@@ -281,19 +332,16 @@ export async function getTransferRequests() {
   const user = await requireAnyPermission([
     PERMISSIONS.ASSETS_TRANSFER_REQUEST,
     PERMISSIONS.ASSETS_TRANSFER_APPROVE,
+    PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT,
   ]);
 
-  const canApprove = user.permissions.includes(PERMISSIONS.ASSETS_TRANSFER_APPROVE);
+  // What they may decide or agree, plus whatever they asked for themselves. An
+  // empty filter means "everything" — and Prisma reads `{}` inside an OR as
+  // matching nothing, so it is never put there.
+  const filters = [transferDecidableWhere(user), transferDepartmentWhere(user), { requestedById: user.id }];
+  const where = filters.some((f) => Object.keys(f).length === 0) ? {} : { OR: filters };
 
-  let where: Record<string, unknown> = {};
-  if (resolveStockScope(user) !== "all") {
-    where =
-      canApprove && user.departmentId
-        ? { OR: [{ departmentId: user.departmentId }, { requestedById: user.id }] }
-        : { requestedById: user.id };
-  }
-
-  return prisma.stockTransferRequest.findMany({
+  const requests = await prisma.stockTransferRequest.findMany({
     where,
     include: {
       stockEntry: {
@@ -306,11 +354,25 @@ export async function getTransferRequests() {
           issues: { select: { quantity: true } },
         },
       },
-      department: { select: { id: true, name: true } },
+      department: { select: { id: true, name: true, locationId: true } },
       requestedBy: { select: { id: true, name: true } },
       reviewedBy: { select: { id: true, name: true } },
     },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+  });
+
+  // The actions' own rules, so no button is offered that they refuse
+  return requests.map((r) => {
+    const waitingOnDepartment = r.status === "PENDING" && !r.departmentApprovedAt;
+    return {
+      ...r,
+      waitingOnDepartment,
+      canAgree: waitingOnDepartment && transferDepartmentRefusal(user, r) === null,
+      canDecide:
+        r.status === "PENDING" &&
+        !waitingOnDepartment &&
+        transferDecisionRefusal(user, { departmentId: r.departmentId, siteId: r.department.locationId }) === null,
+    };
   });
 }
 
@@ -329,18 +391,22 @@ export async function approveTransferRequest(id: string) {
       // All four drawdowns. Counting only issues, as this once did, let a
       // transfer be approved for stock already sitting on a consignment.
       stockEntry: { include: availabilityInclude },
-      department: { select: { id: true, name: true } },
+      department: { select: { id: true, name: true, isCentralStock: true, locationId: true } },
     },
   });
   if (!request) return { error: "Transfer request not found" };
   if (request.status !== "PENDING") return { error: "This request has already been processed" };
+  if (!request.departmentApprovedAt) return { error: "The receiving department has not agreed this request yet" };
+  // A request raised before central-stock departments were refused as targets
+  if (request.department.isCentralStock) {
+    return { error: "That request moves stock into central stock itself — reject it instead" };
+  }
 
-  if (resolveStockScope(user) !== "all" && request.departmentId !== user.departmentId) {
-    return { error: "You can only approve transfers into your own department" };
-  }
-  if (request.requestedById === user.id) {
-    return { error: SELF_APPROVAL_REFUSAL };
-  }
+  const refusal = transferDecisionRefusal(user, {
+    departmentId: request.departmentId,
+    siteId: request.department.locationId,
+  });
+  if (refusal) return { error: refusal };
 
   const entry = request.stockEntry;
   if (entry.status !== "APPROVED") {
@@ -362,7 +428,7 @@ export async function approveTransferRequest(id: string) {
   // everyone else, so nothing else can take it in between.)
   const approved = await prisma.$transaction(async (tx) => {
     const claimed = await tx.stockTransferRequest.updateMany({
-      where: { id, status: "PENDING" },
+      where: { id, status: "PENDING", departmentApprovedAt: { not: null } },
       data: { status: "APPROVED", reviewedById: user.id },
     });
     if (claimed.count !== 1) return false;
@@ -374,6 +440,8 @@ export async function approveTransferRequest(id: string) {
         quantity: request.quantity,
         isAsset: request.isAsset,
         notes: `Transfer request ${request.requestNumber}${request.notes ? ` — ${request.notes}` : ""}`,
+        // Goods coming back on a call-back stay linked to it, for rework
+        callBackId: request.callBackId,
         issuedById: user.id,
       },
     });
@@ -396,35 +464,91 @@ export async function approveTransferRequest(id: string) {
   return { success: true };
 }
 
-/** Decline a transfer, with a reason the asker can read. */
-export async function rejectTransferRequest(id: string, data: unknown) {
-  const user = await requirePermission(PERMISSIONS.ASSETS_TRANSFER_APPROVE);
+/**
+ * Step 1: the receiving department agrees. Whoever may also approve it moves
+ * the stock at once — one approval when one person holds both steps.
+ */
+export async function agreeTransferRequest(id: string) {
+  const user = await requirePermission(PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT);
 
   const request = await prisma.stockTransferRequest.findUnique({
     where: { id },
-    include: { stockEntry: { select: { entryNumber: true, itemName: true } } },
+    include: {
+      stockEntry: { select: { itemName: true } },
+      department: { select: { name: true, locationId: true } },
+    },
+  });
+  if (!request) return { error: "Transfer request not found" };
+  if (request.status !== "PENDING" || request.departmentApprovedAt) {
+    return { error: "This request has already been processed" };
+  }
+  const refusal = transferDepartmentRefusal(user, request);
+  if (refusal) return { error: refusal };
+
+  const claimed = await prisma.stockTransferRequest.updateMany({
+    where: { id, status: "PENDING", departmentApprovedAt: null },
+    data: { departmentApprovedById: user.id, departmentApprovedAt: new Date() },
+  });
+  if (claimed.count !== 1) return { error: "This request has just been answered by someone else" };
+
+  await logActivity(
+    "APPROVED",
+    "StockTransferRequest",
+    id,
+    `Agreed transfer ${request.requestNumber} for ${request.department.name}`
+  );
+
+  if (transferDecisionRefusal(user, { departmentId: request.departmentId, siteId: request.department.locationId }) === null) {
+    const approval = await approveTransferRequest(id);
+    if ("success" in approval && approval.success) return { success: true, moved: true };
+  }
+  await transferRequested({
+    requestNumber: request.requestNumber,
+    itemName: request.stockEntry.itemName,
+    requestedById: request.requestedById,
+    locationId: request.department.locationId,
+  });
+  revalidatePath("/assets");
+  revalidatePath("/dashboard");
+  return { success: true, moved: false };
+}
+
+/**
+ * Decline a transfer, with a reason the asker can read — at the department
+ * step by whoever may agree it, or at either step by whoever may approve it.
+ */
+export async function rejectTransferRequest(id: string, data: unknown) {
+  const user = await requireAnyPermission([PERMISSIONS.ASSETS_TRANSFER_APPROVE, PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT]);
+
+  const request = await prisma.stockTransferRequest.findUnique({
+    where: { id },
+    include: {
+      stockEntry: { select: { entryNumber: true, itemName: true } },
+      department: { select: { locationId: true } },
+    },
   });
   if (!request) return { error: "Transfer request not found" };
   if (request.status !== "PENDING") return { error: "This request has already been processed" };
 
-  if (resolveStockScope(user) !== "all" && request.departmentId !== user.departmentId) {
-    return { error: "You can only reject transfers into your own department" };
-  }
-  if (request.requestedById === user.id) {
-    return { error: SELF_APPROVAL_REFUSAL };
-  }
+  const refusal = transferDecisionRefusal(user, {
+    departmentId: request.departmentId,
+    siteId: request.department.locationId,
+  });
+  const departmentRefusal = request.departmentApprovedAt ? refusal : transferDepartmentRefusal(user, request);
+  if (refusal && departmentRefusal) return { error: refusal };
 
   const parsed = rejectRequestSchema.safeParse(data);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
 
-  await prisma.stockTransferRequest.update({
-    where: { id },
+  const declined = await prisma.stockTransferRequest.updateMany({
+    where: { id, status: "PENDING" },
     data: {
       status: "REJECTED",
       reviewedById: user.id,
       reviewNote: parsed.data.reviewNote.trim(),
     },
   });
+  if (declined.count !== 1) return { error: "This request has just been answered by someone else" };
 
   await logActivity(
     "REJECTED",
@@ -456,7 +580,8 @@ export async function getTransferableEntries() {
   const scope = resolveStockScope(user);
 
   const entries = await prisma.stockEntry.findMany({
-    where: { status: "APPROVED", ...stockCandidatesWhere(user, scope) },
+    // Service stock never moves into a department
+    where: { status: "APPROVED", forService: false, ...stockCandidatesWhere(user, scope) },
     select: {
       id: true,
       entryNumber: true,
@@ -464,6 +589,7 @@ export async function getTransferableEntries() {
       itemName: true,
       quantity: true,
       status: true,
+      forService: true,
       departmentId: true,
       locationId: true,
       createdById: true,
@@ -482,6 +608,7 @@ export async function getTransferableEntries() {
       entryNumber: e.entryNumber,
       itemCode: e.itemCode,
       itemName: e.itemName,
+      locationId: e.locationId,
       available: availableQuantity(e),
     }))
     .filter((e) => e.available > 0);
@@ -489,17 +616,16 @@ export async function getTransferableEntries() {
 
 /** Pending transfers waiting on this person, for the dashboard review queue. */
 export async function getReviewableTransfers() {
-  const user = await requirePermission(PERMISSIONS.ASSETS_TRANSFER_APPROVE);
+  const user = await requireAnyPermission([PERMISSIONS.ASSETS_TRANSFER_APPROVE, PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT]);
 
-  const seesEverySite = resolveStockScope(user) === "all";
-  if (!seesEverySite && !user.departmentId) return [];
-
+  // Waiting on their department step, or agreed and waiting on their approval
   const transfers = await prisma.stockTransferRequest.findMany({
     where: {
       status: "PENDING",
-      ...(seesEverySite ? {} : { departmentId: user.departmentId! }),
-      // Never your own ask
-      requestedById: { not: user.id },
+      OR: [
+        { departmentApprovedAt: null, ...transferDepartmentWhere(user) },
+        { departmentApprovedAt: { not: null }, ...transferDecidableWhere(user) },
+      ],
     },
     take: 10,
     orderBy: { createdAt: "desc" },

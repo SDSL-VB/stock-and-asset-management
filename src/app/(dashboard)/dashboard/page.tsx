@@ -15,6 +15,8 @@ import { getActivityLogs } from "@/lib/actions/activity";
 import { getDispatchDashboardCounts } from "@/lib/actions/dispatch";
 import { getReviewableSiteRequests } from "@/lib/actions/fulfilment";
 import { getReviewableIntents } from "@/lib/actions/procurement";
+import { getReviewableBuiltGoods } from "@/lib/actions/builds";
+import { getReviewableMaterialRequests } from "@/lib/actions/materials";
 import { DISPATCH_PERMISSIONS } from "@/lib/rbac/permissions";
 import { PERMISSIONS } from "@/lib/rbac/permissions";
 import { prisma } from "@/lib/prisma";
@@ -31,10 +33,10 @@ export default async function DashboardPage() {
   const has = (p: string) => user.permissions.includes(p);
 
   const canSeeStock = has(PERMISSIONS.STOCK_VIEW) || has(PERMISSIONS.STOCK_CREATE);
-  const canApprove = has(PERMISSIONS.STOCK_APPROVE);
+  const canApprove = has(PERMISSIONS.STOCK_APPROVE) || has(PERMISSIONS.STOCK_SERVICE_APPROVE);
   // Each request type is reviewed on the page that owns the thing asked for:
   // transfers on Assets, products and categories on the Catalog.
-  const canReviewTransfers = has(PERMISSIONS.ASSETS_TRANSFER_APPROVE);
+  const canReviewTransfers = has(PERMISSIONS.ASSETS_TRANSFER_APPROVE) || has(PERMISSIONS.ASSETS_TRANSFER_DEPARTMENT);
   const canReviewCatalog =
     has(PERMISSIONS.PRODUCTS_REQUEST_APPROVE) ||
     has(PERMISSIONS.CATEGORIES_REQUEST_APPROVE);
@@ -47,6 +49,9 @@ export default async function DashboardPage() {
   const canSeeDispatch = DISPATCH_PERMISSIONS.some((p) => has(p));
   const canAnswerSiteRequests = has(PERMISSIONS.FULFILMENT_APPROVE);
   const canVerifyIntents = has(PERMISSIONS.PROCUREMENT_INTENT_APPROVE);
+  const canApproveBuiltGoods = has(PERMISSIONS.BOM_BUILD_APPROVE);
+  const canDecideMaterials =
+    has(PERMISSIONS.MATERIALS_APPROVE_DEPARTMENT) || has(PERMISSIONS.MATERIALS_SUPPLY);
 
   // Every action below resolves the caller's own scope. The page used to work
   // it out and pass ids down, and had no branch for site-scoped people — so
@@ -67,6 +72,8 @@ export default async function DashboardPage() {
     dispatchCounts,
     siteRequests,
     purchaseIntents,
+    builtGoods,
+    materialRequests,
   ] = await Promise.all([
     canSeeStock ? getStockDashboardStats() : null,
     canSeeStock ? getDashboardTrends() : null,
@@ -85,6 +92,8 @@ export default async function DashboardPage() {
     canSeeDispatch ? getDispatchDashboardCounts() : null,
     canAnswerSiteRequests ? getReviewableSiteRequests() : null,
     canVerifyIntents ? getReviewableIntents() : null,
+    canApproveBuiltGoods ? getReviewableBuiltGoods() : null,
+    canDecideMaterials ? getReviewableMaterialRequests() : null,
   ]);
 
   // One unified review queue: stock entry approvals + every request type the
@@ -94,7 +103,9 @@ export default async function DashboardPage() {
     canReviewTransfers ||
     canReviewCatalog ||
     canAnswerSiteRequests ||
-    canVerifyIntents
+    canVerifyIntents ||
+    canApproveBuiltGoods ||
+    canDecideMaterials
       ? [
           ...(pendingApprovals ?? []).map((entry) => ({
             kind: "STOCK_ENTRY" as const,
@@ -108,6 +119,8 @@ export default async function DashboardPage() {
           ...(reviewableCatalog ?? []),
           ...(siteRequests ?? []),
           ...(purchaseIntents ?? []),
+          ...(builtGoods ?? []),
+          ...(materialRequests ?? []),
         ]
       : null;
 
